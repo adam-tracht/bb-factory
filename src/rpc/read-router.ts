@@ -11,6 +11,17 @@ import { factoryRpcContract, type FactoryRpcContract } from "../rpc.js";
 import type { ReadComposition } from "../services/read-composition.js";
 
 export type FactoryReadRpcHandlers = PluginRpcHandlers<FactoryRpcContract>;
+export type FactoryReadOnlyRpcHandlers = Pick<
+  FactoryReadRpcHandlers,
+  | "factory_snapshot"
+  | "factory_action"
+  | "factory_repositories"
+  | "factory_settings"
+  | "factory_health"
+  | "factory_interactions"
+  | "factory_runs"
+  | "factory_run_detail"
+>;
 
 function missingRepository(repositoryKey: RepositoryKey): Error {
   return new Error(
@@ -64,7 +75,7 @@ function hostReadFailure(repositoryKey: RepositoryKey, error: unknown): HostPref
 
 export function createFactoryReadRpcHandlers(
   getComposition: () => ReadComposition,
-): FactoryReadRpcHandlers {
+): FactoryReadOnlyRpcHandlers {
   return {
     async factory_snapshot(input) {
       const composition = getComposition();

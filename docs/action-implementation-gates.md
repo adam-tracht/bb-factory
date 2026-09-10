@@ -197,7 +197,8 @@ neither waives nor approves it.
 The implementation gates are now met by the current code and focused tests:
 
 - Native UI is the only supported initial-ready entry point. The queue
-  approval path uses `claimInitialReadyIntent`, a durable one-shot intent
+  approval path (the Work view approve control in `src/ui/views/work.ts`,
+  dispatched through `ViewContext.onAction`) uses `claimInitialReadyIntent`, a durable one-shot intent
   bound to repository, queue item, expected revision, and exact intended
   change with a 10-minute expiry. Reused, expired, mismatched, and ambiguous
   intents are rejected; `tests/actions.test.ts` covers matching and

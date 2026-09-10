@@ -1,0 +1,341 @@
+// @vitest-environment jsdom
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { createElement } from "react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type {
+  ProtocolSnapshot,
+  QueueEntry,
+  RepositoryConfiguration,
+  RepositoryRevision,
+} from "../src/contracts.js";
+import type { ViewContext } from "../src/ui/context.js";
+import type { FileLinkRenderer } from "../src/ui/primitives.js";
+import { WorkView } from "../src/ui/views/work.js";
+
+const h = createElement;
+
+const revision: RepositoryRevision = {
+  gitCommit: "abcdef1234567890",
+  protocolDigest: "a".repeat(64),
+  fileDigests: { "plans/factory/queue.md": "b".repeat(64) },
+};
+
+const repository: RepositoryConfiguration = {
+  repositoryKey: "demo",
+  repositoryRoot: "/work/demo",
+  connectedHostId: "host-1",
+  checkoutPath: "/work/demo-factory",
+  factoryBranch: "factory",
+  mainRef: "origin/main",
+};
+
+const baseSnapshot: ProtocolSnapshot = {
+  repository,
+  revision,
+  capturedAt: "2026-09-10T12:00:00Z",
+  foremanTemplate: {
+    authority: "repository-protocol",
+    relativePath: "plans/factory/foreman.md",
+    contentSha256: "c".repeat(64),
+    repositoryRevision: revision,
+  },
+  queue: [],
+  questions: [],
+  dashboard: {
+    canonicalPath: "plans/README.md",
+    factoryBranch: "factory",
+    mainRef: "origin/main",
+    factoryAhead: 0,
+    mainBehind: 0,
+    taskCommits: [],
+    safeFastForward: true,
+    canonicalDashboardUrl: null,
+  },
+  currentRun: {
+    state: "no-op",
+    lastRunAt: null,
+    currentPath: "plans/factory/current.md",
+    latestRunPath: null,
+  },
+};
+
+function snapshotWith(queue: QueueEntry[]): ProtocolSnapshot {
+  return { ...baseSnapshot, queue };
+}
+
+function makeEntry(overrides: Partial<QueueEntry> & { id: string }): QueueEntry {
+  return {
+    title: `${overrides.id} title`,
+    status: { kind: "ready" },
+    priority: 2,
+    dependsOn: [],
+    risk: "low",
+    planPath: `plans/${overrides.id}.md`,
+    approved: { kind: "none", source: "none" },
+    acceptance: [],
+    validate: [],
+    notes: null,
+    blockingQuestionIds: [],
+    blockedBy: [],
+    eligible: false,
+    eligibilityReasons: [],
+    ...overrides,
+  };
+}
+
+const stubFileLink: FileLinkRenderer = ({ target, className, children }) =>
+  h("a", { href: "#stub", className, "data-target": JSON.stringify(target) }, children);
+
+function makeCtx(overrides: Partial<ViewContext> = {}): ViewContext {
+  return {
+    repository,
+    environmentId: "environment-1",
+    projectId: "project-1",
+    dispatchPaused: false,
+    revision,
+    fileLink: stubFileLink,
+    feedback: null,
+    pendingTarget: null,
+    onOpenSection: vi.fn(),
+    onOpenRepository: vi.fn(),
+    onOpenRun: vi.fn(),
+    onOpenThread: vi.fn(),
+    onOpenProject: vi.fn(),
+    onAction: vi.fn(),
+    updateSettings: vi.fn(async () => ({ ok: true as const, message: "saved" })),
+    updateRepository: vi.fn(async () => ({ ok: true as const, message: "saved" })),
+    addRepository: vi.fn(async () => ({ ok: true as const, message: "saved" })),
+    loadRegistryOptions: vi.fn(async () => ({ hosts: [], projects: [] })),
+    ...overrides,
+  };
+}
+
+function renderWork(queue: QueueEntry[], ctx: ViewContext = makeCtx(), focusItemId?: string | null) {
+  return render(h(WorkView, { snapshot: snapshotWith(queue), ctx, focusItemId }));
+}
+
+function sectionOf(title: string): HTMLElement {
+  const heading = screen.getByRole("heading", { name: title });
+  const section = heading.closest("details") ?? heading.closest("section");
+  if (!section) throw new Error(`no section element for ${title}`);
+  return section as HTMLElement;
+}
+
+function rowOf(id: string): HTMLElement {
+  const row = document.getElementById(`work-${id}`);
+  if (!row) throw new Error(`no row anchored at work-${id}`);
+  return row;
+}
+
+/** The row's clickable summary line is the first role=button inside the row. */
+function expandRow(id: string): void {
+  fireEvent.click(within(rowOf(id)).getAllByRole("button")[0]!);
+}
+
+afterEach(() => cleanup());
+
+describe("WorkView grouping", () => {
+  const queue = [
+    makeEntry({ id: "NEEDS-APPROVAL", eligibilityReasons: ["missing-authorization"] }),
+    makeEntry({
+      id: "GATED-1",
+      status: { kind: "blocked-by", questionId: "Q13" },
+      blockingQuestionIds: ["Q13"],
+      blockedBy: ["Q13"],
+      eligibilityReasons: ["blocking-question"],
+    }),
+    makeEntry({ id: "READY-1", eligible: true }),
+    makeEntry({ id: "BLOCKED-1", dependsOn: ["READY-1"], eligibilityReasons: ["unmet-dependency"] }),
+    makeEntry({ id: "UNKNOWN-1", status: { kind: "unknown", raw: "mystery-state" }, eligibilityReasons: ["not-ready"] }),
+    makeEntry({ id: "RUN-1", status: { kind: "in-progress", detail: "foreman running" } }),
+    makeEntry({ id: "DONE-1", status: { kind: "done", detail: "shipped" }, eligibilityReasons: ["not-ready"] }),
+  ];
+
+  it("renders Needs you, Ready, Blocked, Running, Done in order with counts", () => {
+    renderWork(queue);
+    const headings = screen.getAllByRole("heading").map((heading) => heading.textContent);
+    expect(headings).toEqual(["Needs you", "Ready", "Blocked", "Running", "Done"]);
+    expect(within(sectionOf("Needs you")).getByText("2")).toBeTruthy();
+    expect(within(sectionOf("Done")).getByText("1")).toBeTruthy();
+  });
+
+  it("partitions every entry into exactly one expected group", () => {
+    renderWork(queue);
+    // Done renders collapsed by default; expand it so its rows mount.
+    fireEvent.click(sectionOf("Done").querySelector("summary")!);
+    const expectations: Array<[string, string[]]> = [
+      ["Needs you", ["NEEDS-APPROVAL", "GATED-1"]],
+      ["Ready", ["READY-1"]],
+      ["Blocked", ["BLOCKED-1", "UNKNOWN-1"]],
+      ["Running", ["RUN-1"]],
+      ["Done", ["DONE-1"]],
+    ];
+    for (const [title, ids] of expectations) {
+      const section = sectionOf(title);
+      for (const id of ids) {
+        expect(within(section).getByText(id)).toBeTruthy();
+      }
+    }
+    for (const entry of queue) {
+      expect(screen.getAllByText(entry.id)).toHaveLength(1);
+    }
+  });
+
+  it("keeps Done collapsed by default and never renders eligibility reasons for done items", () => {
+    renderWork(queue);
+    const done = sectionOf("Done");
+    expect(done.tagName).toBe("DETAILS");
+    expect(done.hasAttribute("open")).toBe(false);
+    expect(document.getElementById("work-DONE-1")).toBeNull();
+
+    fireEvent.click(done.querySelector("summary")!);
+    expandRow("DONE-1");
+    expect(within(rowOf("DONE-1")).getByText(/Plan:/)).toBeTruthy();
+    expect(screen.queryByText(/Status is not ready/)).toBeNull();
+  });
+
+  it("shows eligibility reasons prominently for blocked items", () => {
+    renderWork(queue);
+    expandRow("BLOCKED-1");
+    expect(within(rowOf("BLOCKED-1")).getByText("Waiting on dependencies")).toBeTruthy();
+  });
+});
+
+describe("WorkView rows", () => {
+  it("renders raw status, warning copy, and a queue.md link for unknown status", () => {
+    renderWork([makeEntry({ id: "UNKNOWN-1", status: { kind: "unknown", raw: "mystery-state" }, eligibilityReasons: ["not-ready"] })]);
+    expect(within(rowOf("UNKNOWN-1")).getByText("Unrecognized status")).toBeTruthy();
+    expandRow("UNKNOWN-1");
+    const row = rowOf("UNKNOWN-1");
+    expect(within(row).getByText("Raw status: mystery-state")).toBeTruthy();
+    expect(within(row).getByText(/did not recognize this status/)).toBeTruthy();
+    expect(within(row).getByRole("link", { name: "plans/factory/queue.md" })).toBeTruthy();
+  });
+
+  it("shows an Answer CTA for question-gated items that opens the questions anchor", () => {
+    const ctx = makeCtx();
+    renderWork([makeEntry({
+      id: "GATED-1",
+      status: { kind: "blocked-by", questionId: "Q13" },
+      blockingQuestionIds: ["Q13"],
+      blockedBy: ["Q13"],
+      eligibilityReasons: ["blocking-question"],
+    })], ctx);
+    fireEvent.click(screen.getByRole("button", { name: "Answer Q13" }));
+    expect(ctx.onOpenSection).toHaveBeenCalledWith("questions", "question-Q13");
+  });
+
+  it("links each .md token in the plan field while keeping commentary as plain text", () => {
+    renderWork([makeEntry({
+      id: "PLAN-1",
+      eligible: true,
+      planPath: "plans/alpha.md (Needs review questions) and plans/beta.md (Known gaps)",
+    })]);
+    expandRow("PLAN-1");
+    const row = rowOf("PLAN-1");
+    const links = within(row).getAllByRole("link");
+    expect(links.map((link) => link.textContent)).toEqual(["plans/alpha.md", "plans/beta.md"]);
+    expect(JSON.parse(links[0]!.getAttribute("data-target") ?? "{}")).toEqual({
+      kind: "workspace",
+      environmentId: "environment-1",
+      path: "plans/alpha.md",
+    });
+    expect(row.textContent).toContain("(Needs review questions)");
+    expect(row.textContent).toContain("(Known gaps)");
+  });
+
+  it("routes dependency buttons to in-repo and cross-repo work anchors", () => {
+    const ctx = makeCtx();
+    renderWork([
+      makeEntry({ id: "DEP-1", eligible: true, dependsOn: ["READY-1", "other-repo:EXT-2.01"] }),
+      makeEntry({ id: "READY-1", eligible: true }),
+    ], ctx);
+    expandRow("DEP-1");
+    const row = rowOf("DEP-1");
+    fireEvent.click(within(row).getByRole("button", { name: "READY-1" }));
+    expect(ctx.onOpenSection).toHaveBeenCalledWith("work", "work-READY-1");
+    fireEvent.click(within(row).getByRole("button", { name: "other-repo:EXT-2.01" }));
+    expect(ctx.onOpenRepository).toHaveBeenCalledWith("other-repo", "work", "work-EXT-2.01");
+  });
+
+  it("routes expanded question-gate buttons to the questions anchor", () => {
+    const ctx = makeCtx();
+    renderWork([makeEntry({ id: "GATED-1", blockingQuestionIds: ["Q7", "Q8"], eligibilityReasons: ["blocking-question"] })], ctx);
+    expandRow("GATED-1");
+    fireEvent.click(within(rowOf("GATED-1")).getByRole("button", { name: "Q8" }));
+    expect(ctx.onOpenSection).toHaveBeenCalledWith("questions", "question-Q8");
+  });
+});
+
+describe("WorkView approve flow", () => {
+  const pendingEntry = () => makeEntry({ id: "NEEDS-1", eligibilityReasons: ["missing-authorization"], risk: "high" });
+
+  it("expands on the Approve CTA, confirms, and emits the exact approve-queue payload", () => {
+    const ctx = makeCtx();
+    renderWork([pendingEntry()], ctx);
+
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    const row = rowOf("NEEDS-1");
+    const textarea = within(row).getByRole("textbox");
+    fireEvent.change(textarea, { target: { value: "  no gated actions  " } });
+
+    const approveButtons = within(row).getAllByRole("button", { name: "Approve" });
+    fireEvent.click(approveButtons[approveButtons.length - 1]!);
+
+    const dialog = screen.getByRole("alertdialog");
+    expect(within(dialog).getByText(
+      "Writes queue.approved: 'no gated actions' to plans/factory/queue.md for NEEDS-1.",
+    )).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Approve" }));
+    expect(ctx.onAction).toHaveBeenCalledWith({
+      kind: "approve-queue",
+      queueItemId: "NEEDS-1",
+      approvedText: "no gated actions",
+    });
+  });
+
+  it("shows the recorded approval text instead of the composer when already approved", () => {
+    renderWork([makeEntry({
+      id: "APPROVED-1",
+      eligible: true,
+      approved: { kind: "explicit", source: "queue.approved", text: "approved by Adam" },
+    })]);
+    expandRow("APPROVED-1");
+    const row = rowOf("APPROVED-1");
+    expect(within(row).getByText("approved by Adam")).toBeTruthy();
+    expect(within(row).queryByRole("textbox")).toBeNull();
+    expect(within(row).queryByRole("button", { name: "Approve" })).toBeNull();
+  });
+});
+
+describe("WorkView focus and empty state", () => {
+  it("auto-expands the focused item, exposes work-<id> anchors, and scrolls into view", () => {
+    const scrollSpy = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollSpy;
+    try {
+      renderWork([
+        makeEntry({ id: "READY-1", eligible: true }),
+        makeEntry({ id: "READY-2", eligible: true }),
+      ], makeCtx(), "READY-1");
+      expect(document.getElementById("work-READY-1")).not.toBeNull();
+      expect(document.getElementById("work-READY-2")).not.toBeNull();
+      expect(scrollSpy).toHaveBeenCalled();
+      expect(within(rowOf("READY-1")).getByRole("link", { name: "plans/READY-1.md" })).toBeTruthy();
+      expect(within(rowOf("READY-2")).queryByRole("link")).toBeNull();
+    } finally {
+      if (original) {
+        Element.prototype.scrollIntoView = original;
+      } else {
+        Reflect.deleteProperty(Element.prototype, "scrollIntoView");
+      }
+    }
+  });
+
+  it("renders the empty notice with a queue.md link when the queue is empty", () => {
+    renderWork([]);
+    expect(screen.getByText("The queue is empty")).toBeTruthy();
+    expect(screen.getByText("Items appear here when plans/factory/queue.md defines them.")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "plans/factory/queue.md" })).toBeTruthy();
+  });
+});

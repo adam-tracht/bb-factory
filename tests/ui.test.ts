@@ -1,24 +1,11 @@
 // @vitest-environment jsdom
-import { act, fireEvent } from "@testing-library/react";
+import { act, fireEvent, within } from "@testing-library/react";
 import { installTestPluginRuntime, renderSlot, type PluginRpcTestHandlers } from "@get-bb/plugin-sdk/testing/app";
-import { createElement, useEffect, useState } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
+import { useEffect, useState } from "react";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { FactoryViewProps } from "../src/ui/FactoryView.js";
 import type { FactoryRpcContract } from "../src/rpc.js";
-import {
-  Badge,
-  ConnectionBanner,
-  ErrorNotice,
-  QueueView,
-  RepositorySelectionView,
-  RunsView,
-  formatEligibilityReason,
-  parseFactoryRoute,
-  runStatusLabel,
-} from "../src/ui/views.js";
-
-const h = createElement;
+import { parseFactoryRoute } from "../src/ui/routes.js";
 
 type ControlledSettingsState = { values: Record<string, string | number | boolean> | undefined; isLoading: boolean };
 let controlledSettingsState: ControlledSettingsState = { values: { repositoryKey: "demo" }, isLoading: false };
@@ -63,11 +50,23 @@ const snapshot = {
       validate: ["pnpm test"],
       notes: null,
       blockingQuestionIds: [],
+      blockedBy: [],
       eligible: true,
       eligibilityReasons: [],
     },
   ],
-  questions: [],
+  questions: [
+    {
+      id: "Q1",
+      date: "2026-09-10",
+      classification: "blocking" as const,
+      dashboardId: "blocked-item",
+      question: "Which source is authoritative?",
+      context: "Two candidates exist.",
+      assumed: null,
+      answer: null,
+    },
+  ],
   dashboard: {
     canonicalPath: "plans/README.md" as const,
     factoryBranch: "factory" as const,
@@ -87,7 +86,7 @@ const snapshot = {
 };
 
 const repositorySelection = {
-  repositories: [{ configuration: repository, selected: true, available: true, reasons: [] }],
+  repositories: [{ configuration: repository, projectId: "project-1", environmentId: "environment-1", dispatchPaused: false, selected: true, available: true, reasons: [] }],
   selectedRepositoryKey: "demo",
 };
 
@@ -107,7 +106,13 @@ const settingsProjection = {
     dispatchMode: "paused" as const,
   },
   validation: { valid: true, fieldErrors: {} },
-  dispatch: { mode: "paused" as const, acceptingNewRuns: false, activeRunCount: 0, reason: null },
+  dispatch: { mode: "paused" as const, repositoryPaused: false, acceptingNewRuns: false, activeRunCount: 0, reason: null },
+};
+
+const enabledSettings = {
+  ...settingsProjection,
+  settings: { ...settingsProjection.settings, dispatchMode: "enabled" as const },
+  dispatch: { mode: "enabled" as const, repositoryPaused: false, acceptingNewRuns: true, activeRunCount: 0, reason: null },
 };
 
 const healthProjection = {
@@ -170,6 +175,9 @@ const repositorySelectionForSwitch = (requestedRepositoryKey: string | null | un
   return {
     repositories: [monorepoRepository, dataRepository].map((configuration) => ({
       configuration,
+      projectId: `project-${configuration.repositoryKey}`,
+      environmentId: `environment-${configuration.repositoryKey}`,
+      dispatchPaused: false,
       selected: configuration.repositoryKey === selectedRepositoryKey,
       available: true,
       reasons: [],
@@ -182,84 +190,54 @@ const settingsForSwitch = (repositoryKey: string) => ({ ...settingsProjection, s
 const healthForSwitch = (repositoryKey: string) => ({ ...healthProjection, repositoryKey, host: { ...healthProjection.host, hostId: repositoryForSwitch(repositoryKey).connectedHostId } });
 const runsForSwitch = (repositoryKey: string) => ({ runs: [{ ...runSummary, repositoryKey }], nextCursor: null });
 
+function baseRpc(overrides: Record<string, unknown> = {}) {
+  return {
+    factory_repositories: () => overrides.repositories ?? repositorySelection,
+    factory_snapshot: () => {
+      if (overrides.snapshotError) throw new Error(overrides.snapshotError as string);
+      return overrides.snapshot ?? snapshot;
+    },
+    factory_settings: () => overrides.settings ?? settingsProjection,
+    factory_health: () => overrides.health ?? healthProjection,
+    factory_interactions: () => overrides.interactions ?? { repositoryKey: "demo", interactions: [] },
+    factory_runs: () => overrides.runs ?? { runs: [runSummary], nextCursor: null },
+    factory_run_detail: () => runDetail,
+    factory_action: vi.fn((input: { action: { kind: string } }) => ({
+      ok: true as const,
+      revision,
+      result: {
+        status: "accepted" as const,
+        message: `${input.action.kind} applied.`,
+        revision,
+        runId: input.action.kind === "run-now" ? "run-2" : null,
+        leaseId: null,
+        queueItemId: input.action.kind === "approve-queue" ? "blocked-item" : null,
+        action: input.action.kind,
+        questionId: null,
+        interactionId: null,
+      },
+    })),
+  } as unknown as PluginRpcTestHandlers<FactoryRpcContract> & { factory_action: ReturnType<typeof vi.fn> };
+}
+
 beforeAll(() => {
   installTestPluginRuntime();
 });
 
-describe("Factory read-only UI helpers", () => {
-  it("parses semantic panel routes and safely decodes run ids", () => {
-    expect(parseFactoryRoute("")).toEqual({ section: "overview", runId: null });
-    expect(parseFactoryRoute("runs/run%2F2026")).toEqual({ section: "runs", runId: "run/2026" });
-    expect(parseFactoryRoute("unexpected/path")).toEqual({ section: "not-found", raw: "unexpected/path" });
+describe("Factory routes", () => {
+  it("parses sections, anchors, run ids, and repository routes", () => {
+    expect(parseFactoryRoute("")).toMatchObject({ section: "overview" });
+    expect(parseFactoryRoute("queue")).toMatchObject({ section: "work" });
+    expect(parseFactoryRoute("work#work-A-1")).toMatchObject({ section: "work", anchor: "work-A-1" });
+    expect(parseFactoryRoute("questions#question-Q9")).toMatchObject({ section: "questions", anchor: "question-Q9" });
+    expect(parseFactoryRoute("runs/run%2F2026")).toMatchObject({ section: "runs", runId: "run/2026" });
+    expect(parseFactoryRoute("repositories")).toMatchObject({ section: "repositories" });
+    expect(parseFactoryRoute("repositories/new")).toMatchObject({ section: "add-repository" });
+    expect(parseFactoryRoute("unexpected/path")).toMatchObject({ section: "not-found", raw: "unexpected/path" });
   });
+});
 
-  it("explains frozen queue eligibility reasons and run statuses", () => {
-    expect(formatEligibilityReason("missing-authorization")).toContain("approval");
-    expect(runStatusLabel("failed-safe")).toBe("Failed safe");
-  });
-
-  it("renders repository-backed queue detail and read-only run links", () => {
-    const queueMarkup = renderToStaticMarkup(h(QueueView, { snapshot }));
-    expect(queueMarkup).toContain("Repository-backed queue");
-    expect(queueMarkup).toContain("All recorded eligibility checks pass.");
-    expect(queueMarkup).toContain("plans/ready.md");
-    expect(queueMarkup).toContain("queue.approved");
-    expect(queueMarkup).toContain("approved by Adam");
-
-    const runsMarkup = renderToStaticMarkup(h(RunsView, {
-      runs: [{
-        runId: "run-1",
-        repositoryKey: "demo",
-        requestedAt: "2026-09-10T12:00:00Z",
-        startedAt: null,
-        finishedAt: null,
-        providerId: null,
-        workerThreadId: null,
-        projectId: null,
-        environmentId: null,
-        status: "pending" as const,
-        queueItemIds: ["ready-item"],
-        repositoryRevision: revision,
-        canonicalRecords: [],
-      }],
-      nextCursor: null,
-      onOpenRun: () => undefined,
-      onOpenThread: () => undefined,
-      onOpenProject: () => undefined,
-    }));
-    expect(runsMarkup).toContain("Thread pending");
-    expect(runsMarkup).toContain("Environment pending");
-    expect(runsMarkup).toContain("Canonical records: 0");
-  });
-
-  it("shows terminal queue items as done instead of blocked", () => {
-    const completedSnapshot = {
-      ...snapshot,
-      queue: [{ ...snapshot.queue[0]!, status: { kind: "done" as const, detail: "Completed" }, eligible: false, eligibilityReasons: ["not-ready" as const] }],
-    };
-    const markup = renderToStaticMarkup(h(QueueView, { snapshot: completedSnapshot }));
-    expect(markup).toContain(">Done: Completed</span>");
-    expect(markup).not.toContain(">Blocked</span>");
-  });
-
-  it("uses host token classes for semantic status badges", () => {
-    const markup = renderToStaticMarkup(h(Badge, { label: "Healthy", tone: "success" }));
-    expect(markup).toContain("bg-success/10");
-    expect(markup).toContain("text-success");
-  });
-
-  it("keeps disconnected and malformed-read states actionable", () => {
-    const disconnected = renderToStaticMarkup(h(ConnectionBanner, { state: "reconnecting", malformedSignal: false }));
-    expect(disconnected).toContain("Durable state will reload when it reconnects.");
-
-    const malformed = renderToStaticMarkup(h(ErrorNotice, { message: "snapshot returned malformed data", onRetry: () => undefined }));
-    expect(malformed).toContain("snapshot returned malformed data");
-    expect(malformed).toContain(">Retry</button>");
-
-    const noRepository = renderToStaticMarkup(h(RepositorySelectionView, { projection: { repositories: [], selectedRepositoryKey: null } }));
-    expect(noRepository).toContain("Configure a repository in the host settings");
-  });
-
+describe("Factory view shell", () => {
   it("waits for settings before reading and loads the configured repository once", async () => {
     const runtime = globalThis as typeof globalThis & {
       __bbPluginRuntime?: {
@@ -285,18 +263,10 @@ describe("Factory read-only UI helpers", () => {
     };
 
     const { FactoryView } = await import("../src/ui/FactoryView.js");
-    const rpc = {
-      factory_repositories: () => repositorySelection,
-      factory_snapshot: () => snapshot,
-      factory_settings: () => settingsProjection,
-      factory_health: () => healthProjection,
-      factory_interactions: () => ({ repositoryKey: "demo", interactions: [] }),
-      factory_runs: () => ({ runs: [runSummary], nextCursor: null }),
-    } as unknown as PluginRpcTestHandlers<FactoryRpcContract>;
     const slot = renderSlot<FactoryViewProps, FactoryRpcContract>(
       { component: FactoryView },
       { subPath: "", panelPath: "factory" },
-      { rpc, settings: { repositoryKey: "demo" } },
+      { rpc: baseRpc(), settings: { repositoryKey: "demo" } },
     );
     try {
       await act(async () => undefined);
@@ -306,7 +276,7 @@ describe("Factory read-only UI helpers", () => {
         controlledSettingsState = { values: { repositoryKey: "demo" }, isLoading: false };
         for (const subscriber of controlledSettingsSubscribers) subscriber();
       });
-      await slot.findByRole("heading", { name: "Repository health" });
+      await slot.findByText("Factory");
 
       expect(slot.inspection.rpcCalls).toEqual([
         { method: "factory_repositories", input: { selectedRepositoryKey: "demo" } },
@@ -323,16 +293,34 @@ describe("Factory read-only UI helpers", () => {
     }
   });
 
-  it("switches multiple configured repositories through the accessible local selector", async () => {
+  it("owns a scrollable content region under a fixed header", async () => {
+    const { FactoryView } = await import("../src/ui/FactoryView.js");
+    const slot = renderSlot<FactoryViewProps, FactoryRpcContract>(
+      { component: FactoryView },
+      { subPath: "", panelPath: "factory" },
+      { rpc: baseRpc(), settings: { repositoryKey: "demo" } },
+    );
+    try {
+      const scroll = await slot.findByTestId("factory-scroll");
+      expect(scroll.className).toMatch(/min-h-0/);
+      expect(scroll.className).toMatch(/overflow-y-auto/);
+      expect(scroll.parentElement?.querySelector("header")).not.toBeNull();
+    } finally {
+      slot.lifecycle.unmount();
+    }
+  });
+
+  it("switches repositories through the segmented switcher while keeping the tab", async () => {
     const { FactoryView } = await import("../src/ui/FactoryView.js");
     const rpc = {
+      ...baseRpc(),
       factory_repositories: vi.fn((input: { selectedRepositoryKey?: string | null }) => repositorySelectionForSwitch(input.selectedRepositoryKey)),
       factory_snapshot: vi.fn(({ repositoryKey }: { repositoryKey: string }) => snapshotForSwitch(repositoryKey)),
       factory_settings: vi.fn(({ repositoryKey }: { repositoryKey: string }) => settingsForSwitch(repositoryKey)),
       factory_health: vi.fn(({ repositoryKey }: { repositoryKey: string }) => healthForSwitch(repositoryKey)),
       factory_interactions: vi.fn(({ repositoryKey }: { repositoryKey: string }) => ({ repositoryKey, interactions: [] })),
       factory_runs: vi.fn(({ repositoryKey }: { repositoryKey: string }) => runsForSwitch(repositoryKey)),
-    } as unknown as PluginRpcTestHandlers<FactoryRpcContract>;
+    } as unknown as PluginRpcTestHandlers<FactoryRpcContract> & { factory_repositories: ReturnType<typeof vi.fn> };
     const registry = JSON.stringify({
       repositories: [
         { configuration: monorepoRepository, projectId: "project-monorepo", environmentId: "environment-monorepo" },
@@ -343,27 +331,29 @@ describe("Factory read-only UI helpers", () => {
     controlledSettingsState = { values: { repositoryRegistry: registry }, isLoading: false };
     const slot = renderSlot<FactoryViewProps, FactoryRpcContract>(
       { component: FactoryView },
-      { subPath: "", panelPath: "factory" },
+      { subPath: "work", panelPath: "factory" },
       { rpc, settings: { repositoryRegistry: registry } },
     );
     try {
-      await slot.findByRole("heading", { name: "monorepo" });
-      const selector = await slot.findByRole("combobox", { name: "Configured repository" });
-      expect((selector as HTMLSelectElement).value).toBe("monorepo");
+      await slot.findByText("Ready work");
+      const switcher = await slot.findByRole("group", { name: "Configured repository" });
+      const monorepoButton = within(switcher as HTMLElement).getByRole("button", { name: "monorepo" });
+      expect(monorepoButton.getAttribute("aria-pressed")).toBe("true");
 
-      fireEvent.change(selector, { target: { value: "data" } });
-      await slot.findByRole("heading", { name: "data" });
-      expect((await slot.findByRole("combobox", { name: "Configured repository" }) as HTMLSelectElement).value).toBe("data");
-
-      expect(rpc.factory_repositories).toHaveBeenCalledTimes(2);
-      expect(rpc.factory_repositories).toHaveBeenNthCalledWith(1, { selectedRepositoryKey: null });
+      fireEvent.click(within(switcher as HTMLElement).getByRole("button", { name: "data" }));
+      await vi.waitFor(() => {
+        expect(rpc.factory_repositories).toHaveBeenCalledTimes(2);
+      });
       expect(rpc.factory_repositories).toHaveBeenNthCalledWith(2, { selectedRepositoryKey: "data" });
-      for (const method of ["factory_snapshot", "factory_settings", "factory_health", "factory_interactions", "factory_runs"]) {
-        const calls = slot.inspection.rpcCalls.filter((call) => call.method === method);
-        expect(calls).toHaveLength(2);
-        expect(calls[1]).toEqual(expect.objectContaining({ input: expect.objectContaining({ repositoryKey: "data" }) }));
-      }
-      expect(slot.inspection.rpcCalls).not.toContainEqual(expect.objectContaining({ method: "factory_action" }));
+      await vi.waitFor(() => {
+        for (const method of ["factory_snapshot", "factory_settings", "factory_health", "factory_interactions", "factory_runs"]) {
+          const calls = slot.inspection.rpcCalls.filter((call) => call.method === method);
+          expect(calls).toHaveLength(2);
+          expect(calls[1]).toEqual(expect.objectContaining({ input: expect.objectContaining({ repositoryKey: "data" }) }));
+        }
+      });
+      // The tab stays on Work for the newly selected repository.
+      expect(slot.inspection.navigateCalls).not.toContainEqual(expect.objectContaining({ method: "toPluginPanel" }));
     } finally {
       slot.lifecycle.unmount();
       controlledSettingsState = { values: { repositoryKey: "demo" }, isLoading: false };
@@ -372,23 +362,17 @@ describe("Factory read-only UI helpers", () => {
 
   it("reloads every durable projection after recovery and invalidation", async () => {
     const { FactoryView } = await import("../src/ui/FactoryView.js");
-    const rpc = {
-      factory_repositories: () => repositorySelection,
-      factory_snapshot: () => snapshot,
-      factory_settings: () => settingsProjection,
-      factory_health: () => healthProjection,
-      factory_interactions: () => ({ repositoryKey: "demo", interactions: [] }),
-      factory_runs: () => ({ runs: [runSummary], nextCursor: null }),
-    } as unknown as PluginRpcTestHandlers<FactoryRpcContract>;
     const slot = renderSlot<FactoryViewProps, FactoryRpcContract>(
       { component: FactoryView },
       { subPath: "", panelPath: "factory" },
-      { rpc, settings: { repositoryKey: "demo" }, realtimeConnectionState: "reconnecting" },
+      { rpc: baseRpc(), settings: { repositoryKey: "demo" }, realtimeConnectionState: "reconnecting" },
     );
     try {
-      await slot.findByRole("heading", { name: "Repository health" });
+      await slot.findByText("Factory");
       const readMethods = ["factory_repositories", "factory_snapshot", "factory_settings", "factory_health", "factory_interactions", "factory_runs"];
-      for (const method of readMethods) expect(slot.inspection.rpcCalls.filter((call) => call.method === method)).toHaveLength(1);
+      await vi.waitFor(() => {
+        for (const method of readMethods) expect(slot.inspection.rpcCalls.filter((call) => call.method === method)).toHaveLength(1);
+      });
 
       await slot.behavior.setRealtimeConnectionState("connected");
       await vi.waitFor(() => {
@@ -404,33 +388,25 @@ describe("Factory read-only UI helpers", () => {
     }
   });
 
-  it("uses explicit host and workspace file targets for canonical paths", async () => {
+  it("shows tab badges for attention and resolves file links through the environment", async () => {
     const { FactoryView } = await import("../src/ui/FactoryView.js");
-    const rpc = {
-      factory_repositories: () => repositorySelection,
-      factory_snapshot: () => snapshot,
-      factory_settings: () => settingsProjection,
-      factory_health: () => healthProjection,
-      factory_interactions: () => ({ repositoryKey: "demo", interactions: [] }),
-      factory_runs: () => ({ runs: [runSummary], nextCursor: null }),
-      factory_run_detail: () => runDetail,
-    } as unknown as PluginRpcTestHandlers<FactoryRpcContract>;
     const slot = renderSlot<FactoryViewProps, FactoryRpcContract>(
       { component: FactoryView },
       { subPath: "", panelPath: "factory" },
-      { rpc, settings: { repositoryKey: "demo" }, openFilePreview: () => true },
+      { rpc: baseRpc(), settings: { repositoryKey: "demo" }, openFilePreview: () => true },
     );
     try {
-      const dashboardLink = await slot.findByRole("link", { name: "Open plans/README.md" });
-      expect(dashboardLink.getAttribute("href")).toContain(encodeURIComponent("/work/demo/plans/README.md"));
-      fireEvent.click(dashboardLink);
-      expect(slot.inspection.navigateCalls).toContainEqual({ method: "experimental_openFilePreview", options: { target: { kind: "host", hostId: "host-1", path: "/work/demo/plans/README.md" }, location: null } });
+      const questionsTab = await slot.findByRole("tab", { name: /Questions/ });
+      await vi.waitFor(() => {
+        expect(questionsTab.textContent).toContain("1");
+      });
 
-      slot.lifecycle.rerender(h(FactoryView, { subPath: "runs/run-1", panelPath: "factory" }));
-      const runLink = await slot.findByRole("link", { name: "plans/factory/runs/run-1.md" });
-      expect(runLink.getAttribute("href")).toContain(encodeURIComponent("plans/factory/runs/run-1.md"));
-      fireEvent.click(runLink);
-      expect(slot.inspection.navigateCalls).toContainEqual({ method: "experimental_openFilePreview", options: { target: { kind: "workspace", environmentId: "environment-1", path: "plans/factory/runs/run-1.md" }, location: null } });
+      const dashboardLink = await slot.findByRole("link", { name: "plans/README.md" });
+      fireEvent.click(dashboardLink);
+      expect(slot.inspection.navigateCalls).toContainEqual({
+        method: "experimental_openFilePreview",
+        options: { target: { kind: "workspace", environmentId: "environment-1", path: "plans/README.md" }, location: null },
+      });
     } finally {
       slot.lifecycle.unmount();
     }
@@ -443,54 +419,33 @@ describe("Factory guarded actions", () => {
     queue: [{
       ...snapshot.queue[0]!,
       id: "blocked-item",
+      title: "Blocked work",
       status: { kind: "blocked-by" as const, questionId: "Q1", detail: "Waiting on Q1" },
       approved: { kind: "none" as const, source: "none" as const },
+      blockedBy: ["Q1"],
+      blockingQuestionIds: ["Q1"],
       eligible: false,
-      eligibilityReasons: ["not-ready" as const],
+      eligibilityReasons: ["blocking-question" as const, "missing-authorization" as const],
     }],
   };
 
-  const actionResult = (action: string) => ({
-    ok: true as const,
-    revision,
-    result: {
-      status: "accepted" as const,
-      message: `${action} applied.`,
-      revision,
-      runId: action === "run-now" ? "run-2" : null,
-      leaseId: null,
-      queueItemId: action === "approve-queue" ? "blocked-item" : null,
-      action,
-      questionId: null,
-      interactionId: null,
-    },
-  });
-
-  function actionRpc(overrides: Record<string, unknown> = {}) {
-    return {
-      factory_repositories: () => repositorySelection,
-      factory_snapshot: () => overrides.snapshot ?? snapshot,
-      factory_settings: () => overrides.settings ?? settingsProjection,
-      factory_health: () => healthProjection,
-      factory_interactions: () => ({ repositoryKey: "demo", interactions: [] }),
-      factory_runs: () => ({ runs: [runSummary], nextCursor: null }),
-      factory_run_detail: () => runDetail,
-      factory_action: vi.fn((input: { action: { kind: string } }) => actionResult(input.action.kind)),
-    } as unknown as PluginRpcTestHandlers<FactoryRpcContract> & { factory_action: ReturnType<typeof vi.fn> };
-  }
-
-  it("submits a guarded queue approval with the recorded authorization text", async () => {
+  it("submits a guarded queue approval through the confirm dialog", async () => {
     const { FactoryView } = await import("../src/ui/FactoryView.js");
-    const rpc = actionRpc({ snapshot: blockedSnapshot });
+    const rpc = baseRpc({ snapshot: blockedSnapshot });
     const slot = renderSlot<FactoryViewProps, FactoryRpcContract>(
       { component: FactoryView },
-      { subPath: "queue", panelPath: "factory" },
+      { subPath: "work", panelPath: "factory" },
       { rpc, settings: { repositoryKey: "demo" } },
     );
     try {
+      const approveCta = await slot.findByRole("button", { name: "Approve" });
+      fireEvent.click(approveCta);
       const input = await slot.findByRole("textbox");
       fireEvent.change(input, { target: { value: "no gated actions" } });
-      fireEvent.click(await slot.findByRole("button", { name: "Approve as ready" }));
+      const approveButtons = await slot.findAllByRole("button", { name: "Approve" });
+      fireEvent.click(approveButtons[approveButtons.length - 1]!);
+      const dialog = await slot.findByRole("alertdialog");
+      fireEvent.click(within(dialog as HTMLElement).getByRole("button", { name: "Approve" }));
       await vi.waitFor(() => {
         expect(rpc.factory_action).toHaveBeenCalledWith(expect.objectContaining({
           repositoryKey: "demo",
@@ -505,30 +460,23 @@ describe("Factory guarded actions", () => {
 
   it("keeps ready queue entries free of approval controls", async () => {
     const { FactoryView } = await import("../src/ui/FactoryView.js");
-    const rpc = actionRpc();
     const slot = renderSlot<FactoryViewProps, FactoryRpcContract>(
       { component: FactoryView },
-      { subPath: "queue", panelPath: "factory" },
-      { rpc, settings: { repositoryKey: "demo" } },
+      { subPath: "work", panelPath: "factory" },
+      { rpc: baseRpc(), settings: { repositoryKey: "demo" } },
     );
     try {
-      await slot.findByRole("heading", { name: "Ready work" });
+      await slot.findByText("Ready work");
       const buttons = Array.from(slot.container.querySelectorAll("button"));
-      expect(buttons.some((button) => button.textContent === "Approve as ready")).toBe(false);
-      expect(slot.container.querySelector("input[type='text']")).toBeNull();
+      expect(buttons.some((button) => button.textContent === "Approve")).toBe(false);
     } finally {
       slot.lifecycle.unmount();
     }
   });
 
-  it("dispatches run-now from the overview when dispatch is enabled", async () => {
+  it("dispatches run-now from the shell header after confirming", async () => {
     const { FactoryView } = await import("../src/ui/FactoryView.js");
-    const enabledSettings = {
-      ...settingsProjection,
-      settings: { ...settingsProjection.settings, dispatchMode: "enabled" as const },
-      dispatch: { mode: "enabled" as const, acceptingNewRuns: true, activeRunCount: 0, reason: null },
-    };
-    const rpc = actionRpc({ settings: enabledSettings });
+    const rpc = baseRpc({ settings: enabledSettings });
     const slot = renderSlot<FactoryViewProps, FactoryRpcContract>(
       { component: FactoryView },
       { subPath: "", panelPath: "factory" },
@@ -536,6 +484,10 @@ describe("Factory guarded actions", () => {
     );
     try {
       fireEvent.click(await slot.findByRole("button", { name: "Run now" }));
+      const dialog = await slot.findByRole("alertdialog");
+      expect(dialog.textContent).toContain("ignoring the night window");
+      expect(dialog.textContent).toContain("codex");
+      fireEvent.click(within(dialog as HTMLElement).getByRole("button", { name: "Run now" }));
       await vi.waitFor(() => {
         expect(rpc.factory_action).toHaveBeenCalledWith(expect.objectContaining({
           repositoryKey: "demo",
@@ -550,7 +502,7 @@ describe("Factory guarded actions", () => {
 
   it("disables run-now and offers resume while dispatch is paused", async () => {
     const { FactoryView } = await import("../src/ui/FactoryView.js");
-    const rpc = actionRpc();
+    const rpc = baseRpc();
     const slot = renderSlot<FactoryViewProps, FactoryRpcContract>(
       { component: FactoryView },
       { subPath: "", panelPath: "factory" },
@@ -559,10 +511,37 @@ describe("Factory guarded actions", () => {
     try {
       const runNow = await slot.findByRole("button", { name: "Run now" });
       expect((runNow as HTMLButtonElement).disabled).toBe(true);
-      fireEvent.click(await slot.findByRole("button", { name: "Resume dispatch" }));
+      expect(runNow.getAttribute("title")).toContain("paused");
+      const header = slot.container.querySelector("header")!;
+      fireEvent.click(within(header as HTMLElement).getByRole("button", { name: "Resume" }));
       await vi.waitFor(() => {
         expect(rpc.factory_action).toHaveBeenCalledWith(expect.objectContaining({ action: { kind: "resume" } }));
       });
+    } finally {
+      slot.lifecycle.unmount();
+    }
+  });
+
+  it("keeps run-now usable when the repository snapshot fails to parse", async () => {
+    const { FactoryView } = await import("../src/ui/FactoryView.js");
+    const rpc = baseRpc({ settings: enabledSettings, snapshotError: "malformed queue" });
+    const slot = renderSlot<FactoryViewProps, FactoryRpcContract>(
+      { component: FactoryView },
+      { subPath: "", panelPath: "factory" },
+      { rpc, settings: { repositoryKey: "demo" } },
+    );
+    try {
+      fireEvent.click(await slot.findByRole("button", { name: "Run now" }));
+      const dialog = await slot.findByRole("alertdialog");
+      fireEvent.click(within(dialog as HTMLElement).getByRole("button", { name: "Run now" }));
+      await vi.waitFor(() => {
+        expect(rpc.factory_action).toHaveBeenCalledWith(expect.objectContaining({
+          repositoryKey: "demo",
+          action: { kind: "run-now" },
+        }));
+      });
+      const call = rpc.factory_action.mock.calls[0]?.[0] as { expectedRevision?: unknown };
+      expect(call.expectedRevision).toBeUndefined();
     } finally {
       slot.lifecycle.unmount();
     }

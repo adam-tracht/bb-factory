@@ -218,7 +218,7 @@ export function createBbInteractionActionExecutor(options: BbInteractionActionEx
       const accept = (message: string) => actionSuccess({
         status: "accepted",
         message,
-        revision: request.expectedRevision,
+        revision: request.expectedRevision ?? null,
         runId: null,
         leaseId: null,
         queueItemId: null,
@@ -226,7 +226,7 @@ export function createBbInteractionActionExecutor(options: BbInteractionActionEx
         source: "bb-interaction" as const,
         questionId: null,
         interactionId: action.interactionId,
-      }, request.expectedRevision);
+      }, request.expectedRevision ?? null);
 
       const finishIfResolved = (interaction: SdkPendingInteraction): FactoryActionResult | null => {
         if (interaction.status === "resolved") {
@@ -359,14 +359,14 @@ export function createBbInteractionActionExecutor(options: BbInteractionActionEx
               message: action.kind === "pause"
                 ? "Dispatch paused. Active runs keep running; no new runs start until resumed."
                 : "Dispatch enabled.",
-              revision: valid.expectedRevision,
+              revision: valid.expectedRevision ?? null,
               runId: null,
               leaseId: null,
               queueItemId: null,
               action: action.kind,
               questionId: null,
               interactionId: null,
-            }, valid.expectedRevision);
+            }, valid.expectedRevision ?? null);
           } catch (error) {
             result = actionError("internal", `Could not update dispatch mode: ${errorMessage(error)}`, valid.idempotencyKey);
           }

@@ -205,7 +205,7 @@ describe("Phase 0 wire contracts", () => {
     });
   });
 
-  it("requires revisions for guarded actions and scopes revision-free actions", () => {
+  it("requires revisions for repository file actions, tolerates omitted revisions for BB-side actions, and scopes revision-free actions", () => {
     const request = {
       repositoryKey: "monorepo",
       action: { kind: "run-now" },
@@ -214,8 +214,19 @@ describe("Phase 0 wire contracts", () => {
     };
 
     expect(factoryActionRequestSchema.parse(request)).toEqual(request);
-    expect(() => factoryActionRequestSchema.parse({ ...request, expectedRevision: undefined })).toThrow();
+    // BB-side actions stay usable when the protocol snapshot cannot load.
+    expect(factoryActionRequestSchema.parse({ repositoryKey: request.repositoryKey, action: request.action, idempotencyKey: request.idempotencyKey }))
+      .toMatchObject({ action: { kind: "run-now" } });
     expect(() => factoryActionRequestSchema.parse({ ...request, expectedRevision: null })).toThrow();
+
+    const approval = {
+      repositoryKey: "monorepo",
+      action: { kind: "approve-queue", queueItemId: "A-1", approvedText: "ok" },
+      idempotencyKey: "bbf:v1:monorepo:approve-queue:123e4567-e89b-12d3-a456-426614174000",
+      expectedRevision: repositoryRevision,
+    };
+    expect(factoryActionRequestSchema.parse(approval)).toEqual(approval);
+    expect(() => factoryActionRequestSchema.parse({ repositoryKey: approval.repositoryKey, action: approval.action, idempotencyKey: approval.idempotencyKey })).toThrow();
 
     const preview = {
       repositoryKey: "monorepo",
@@ -298,7 +309,7 @@ describe("Phase 0 wire contracts", () => {
     expect(repositorySelectionInputSchema.parse({})).toEqual({});
     expect(
       repositorySelectionProjectionSchema.parse({
-        repositories: [{ configuration, selected: true, available: true, reasons: [] }],
+        repositories: [{ configuration, projectId: "project-1", environmentId: "environment-1", dispatchPaused: false, selected: true, available: true, reasons: [] }],
         selectedRepositoryKey: "monorepo",
       }).selectedRepositoryKey,
     ).toBe("monorepo");
@@ -307,7 +318,7 @@ describe("Phase 0 wire contracts", () => {
       settingsProjectionSchema.parse({
         settings: { dispatchMode: "paused", minimumStartGapSeconds: 3600 },
         validation: { valid: true, fieldErrors: {} },
-        dispatch: { mode: "paused", acceptingNewRuns: false, activeRunCount: 0, reason: "paused by configuration" },
+        dispatch: { mode: "paused", repositoryPaused: false, acceptingNewRuns: false, activeRunCount: 0, reason: "paused by configuration" },
       }).validation.valid,
     ).toBe(true);
 

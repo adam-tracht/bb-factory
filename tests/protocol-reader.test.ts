@@ -209,7 +209,7 @@ answer: yes
     expect(() => confinedPath("/workspace/repo", "../outside.md")).toThrowError(
       expect.objectContaining({ code: "path-traversal" }),
     );
-    expect(() => parseQueue("## TASK bad\nstatus: maybe\n", "plans/factory/queue.md")).toThrowError(
+    expect(() => parseQueue("## TASK-1 bad\nstatus: ready\n", "plans/factory/queue.md")).toThrowError(
       expect.objectContaining({ code: "malformed-protocol" }),
     );
     expect(() => parseQuestions("## Q1 2026-09-10 blocking TASK-1\nquestion: missing context\n", "plans/factory/questions.md"))
@@ -259,6 +259,99 @@ answer: yes
       code: "invalid-file-response",
       path: "plans/factory/lock",
     });
+  });
+
+  it("tolerates a blocked-by field and unknown statuses instead of failing the queue", async () => {
+    const parsed = parseQueue(`# Queue
+
+## DATA-0009.01 July close-roll plug
+status: ready
+blocked-by: Q13
+priority: 1
+depends_on: none
+risk: high
+plan: docs/close/inventory-close-findings.md (the 2026-09-06 plug entry); artifacts/july-freight-gap-ask.md
+approved: none
+acceptance:
+- done
+validate:
+- bq query
+notes: Do not start until Finance answers Q3.
+
+## DATA-0064 Drifted row
+status: frobnicate
+priority: 2
+depends_on: none
+risk: low
+plan: plans/x.md
+approved: none
+acceptance:
+- done
+validate:
+- pnpm test
+`, "plans/factory/queue.md");
+    expect(parsed[0]?.status).toEqual({ kind: "ready" });
+    expect(parsed[0]?.blockedBy).toEqual(["Q13"]);
+    expect(parsed[1]?.status).toEqual({ kind: "unknown", raw: "frobnicate" });
+
+    const files = makeFiles({
+      "plans/factory/foreman.md": "# Foreman\n",
+      "plans/factory/repo.md": "# Repo\n",
+      "plans/factory/queue.md": `# Queue
+
+## DATA-0009.01 July close-roll plug
+status: ready
+blocked-by: Q13
+priority: 1
+depends_on: none
+risk: high
+plan: docs/close/inventory-close-findings.md (the 2026-09-06 plug entry); artifacts/july-freight-gap-ask.md
+approved: none
+acceptance:
+- done
+validate:
+- bq query
+
+## DATA-0064 Drifted row
+status: frobnicate
+priority: 2
+depends_on: none
+risk: low
+plan: plans/x.md
+approved: none
+acceptance:
+- done
+validate:
+- pnpm test
+`,
+      "plans/factory/questions.md": `# Questions
+
+## Q13 2026-09-10 blocking DATA-0009.01
+question: Which plug approach is accepted?
+context: Two options are on the table.
+answer:
+`,
+      "plans/factory/current.md": "# Latest\nstate: no-op\n",
+      "plans/README.md": "| id | work item | status | next action | evidence |\n|---|---|---|---|---|\n| DATA-0009.01 | plug | ready | run | queue |\n",
+    });
+    const snapshot = await new RepositoryProtocolReader(files, {
+      mergeReader: staticMergeReader(mergeProjection),
+    }).loadSnapshot(configuration);
+    const gated = snapshot.queue.find((entry) => entry.id === "DATA-0009.01");
+    const drifted = snapshot.queue.find((entry) => entry.id === "DATA-0064");
+    expect(gated).toMatchObject({
+      status: { kind: "ready" },
+      blockedBy: ["Q13"],
+      blockingQuestionIds: ["Q13"],
+      eligible: false,
+    });
+    expect(gated?.eligibilityReasons).toContain("blocking-question");
+    expect(gated?.eligibilityReasons).toContain("high-risk-approval-missing");
+    expect(drifted).toMatchObject({
+      status: { kind: "unknown", raw: "frobnicate" },
+      eligible: false,
+    });
+    expect(drifted?.eligibilityReasons).toContain("not-ready");
   });
 
   it("supports base64 file responses and compact or colonized run timestamps", async () => {

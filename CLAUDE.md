@@ -25,7 +25,7 @@ Preserve each repository's custom checks, dashboards, queue authorization, and i
 
 ## Plugin scope
 
-The reviewed Phase 1 plugin provides purpose-built read-only overview, queue, questions, runs, and settings views over the existing factory protocol. It is a presentation and control surface, not a replacement task tracker. The current shell sources under `~/.bb/factory/` remain active until an implemented migration supersedes them.
+The plugin provides purpose-built overview, work, questions, runs, and settings tabs over the existing factory protocol, plus a repositories landing view and an add-repository wizard. The shell header owns the segmented repository switcher, dispatch chip, pause/resume, and the confirmed run-now control; tab badges come from the pure attention model; views dispatch guarded actions through `ViewContext.onAction`; settings is an editable form backed by the settings-mutation RPCs; file links are environment-scoped; unknown queue statuses render tolerantly. It is a presentation and control surface, not a replacement task tracker. The current shell sources under `~/.bb/factory/` remain active until an implemented migration supersedes them.
 
 ## Delegation and models
 

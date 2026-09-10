@@ -58,7 +58,7 @@ function parseFields(lines: readonly string[], path: string): Map<string, string
   let activeScalar: string | undefined;
 
   for (const line of lines) {
-    const fieldMatch = line.match(/^([a-z][a-z_]*)\s*:\s*(.*)$/u);
+    const fieldMatch = line.match(/^([a-z][a-z_-]*)\s*:\s*(.*)$/u);
     if (fieldMatch) {
       const [, field, value] = fieldMatch;
       activeList = undefined;
@@ -135,11 +135,12 @@ function parseHeader(header: string, path: string, lineNumber: number): { id: st
   return { id: match[1], title: match[2].trim() };
 }
 
-function parseStatus(value: string, path: string):
+function parseStatus(value: string):
   | { readonly kind: "ready" }
   | { readonly kind: "in-progress"; readonly detail: string }
   | { readonly kind: "done"; readonly detail?: string }
-  | { readonly kind: "blocked-by"; readonly questionId: string; readonly detail?: string } {
+  | { readonly kind: "blocked-by"; readonly questionId: string; readonly detail?: string }
+  | { readonly kind: "unknown"; readonly raw: string } {
   const trimmed = value.trim();
   if (trimmed === "ready") {
     return { kind: "ready" };
@@ -147,7 +148,7 @@ function parseStatus(value: string, path: string):
   const inProgress = trimmed.match(/^in-progress(?:\s+(.+))?$/u);
   if (inProgress) {
     if (!inProgress[1]?.trim()) {
-      throw new ProtocolError("malformed-protocol", `in-progress status in '${path}' needs a detail`, { path });
+      return { kind: "unknown", raw: trimmed };
     }
     return { kind: "in-progress", detail: inProgress[1].trim() };
   }
@@ -161,9 +162,17 @@ function parseStatus(value: string, path: string):
       ? { kind: "blocked-by", questionId: blocked[1], detail: blocked[2].trim() }
       : { kind: "blocked-by", questionId: blocked[1] };
   }
-  throw new ProtocolError("malformed-protocol", `Unsupported queue status '${value}' in '${path}'`, {
-    path,
-  });
+  return { kind: "unknown", raw: trimmed };
+}
+
+/** `blocked-by: Q13` (comma-separated ids allowed) gates an item on questions. */
+function parseBlockedBy(value: string | string[] | undefined): string[] {
+  if (value === undefined) return [];
+  const raw = Array.isArray(value) ? value.join(",") : value;
+  return raw
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function parseRisk(value: string, path: string): "low" | "medium" | "high" {
@@ -236,7 +245,9 @@ export interface ParsedQueueEntry {
     | { readonly kind: "ready" }
     | { readonly kind: "in-progress"; readonly detail: string }
     | { readonly kind: "done"; readonly detail?: string }
-    | { readonly kind: "blocked-by"; readonly questionId: string; readonly detail?: string };
+    | { readonly kind: "blocked-by"; readonly questionId: string; readonly detail?: string }
+    | { readonly kind: "unknown"; readonly raw: string };
+  readonly blockedBy: readonly string[];
   readonly priority: number;
   readonly dependsOn: readonly string[];
   readonly risk: "low" | "medium" | "high";
@@ -277,7 +288,7 @@ export function parseQueue(content: string, path: string): readonly ParsedQueueE
     if (section.heading.startsWith("<DASHBOARD-ID>")) {
       continue;
     }
-    const hasProtocolField = section.lines.some((line) => /^[a-z][a-z_]*\s*:/u.test(line));
+    const hasProtocolField = section.lines.some((line) => /^[a-z][a-z_-]*\s*:/u.test(line));
     const looksLikeDashboardId = /^[A-Za-z0-9]+(?:[-.][A-Za-z0-9]+)+(?:\s|$)/u.test(section.heading);
     if (!hasProtocolField && !looksLikeDashboardId) {
       continue;
@@ -288,12 +299,13 @@ export function parseQueue(content: string, path: string): readonly ParsedQueueE
     }
     seen.add(id);
     const fields = parseFields(section.lines, path);
-    const status = parseStatus(requiredString(fields, "status", path), path);
+    const status = parseStatus(requiredString(fields, "status", path));
     const approved = requiredString(fields, "approved", path);
     output.push({
       id,
       title,
       status,
+      blockedBy: parseBlockedBy(fields.get("blocked-by") ?? fields.get("blocked_by")),
       priority: parsePriority(requiredString(fields, "priority", path), path),
       dependsOn: parseDependencies(requiredString(fields, "depends_on", path), path),
       risk: parseRisk(requiredString(fields, "risk", path), path),

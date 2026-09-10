@@ -48,11 +48,11 @@ The first implementation checkpoint freezes these boundaries before parallel wor
 - **KV:** only small cursors and links, never durable queue or run state.
 - **Secrets:** server-side settings only. Frontend settings expose no credentials or secret values.
 
-Queue and Questions views read repository-backed `plans/factory/queue.md` and `questions.md`, plus BB pending interactions where applicable. They do not create independent plugin queue or question records. The plugin may keep an idempotency result for an answer or write operation, but the question itself remains in its authoritative source.
+The Work and Questions views read repository-backed `plans/factory/queue.md` and `questions.md`, plus BB pending interactions where applicable. They do not create independent plugin queue or question records. The plugin may keep an idempotency result for an answer or write operation, but the question itself remains in its authoritative source.
 
 Repository writes are narrow, root-confined to the configured checkout, serialized, and compare-and-swap guarded. A stale or changed file is rejected with a conflict; the plugin must not overwrite unrelated text or attempt an implicit merge. Existing claim commits, completion commits, dashboard rows, and repository-specific integration rules remain intact.
 
-The plugin provides Overview, Queue, Questions, Runs, and Settings surfaces. Overview may also be exposed as a small homepage section, but it must not replace BB's native homepage, header, side-panel chrome, thread behavior, navigation, or deletion confirmations.
+The plugin provides Overview, Work, Questions, Runs, and Settings tab surfaces, plus a repositories landing view and an add-repository wizard. Overview may also be exposed as a small homepage section, but it must not replace BB's native homepage, header, side-panel chrome, thread behavior, navigation, or deletion confirmations.
 
 ## 3. Target module and ownership layout
 
@@ -65,7 +65,7 @@ The following ownership boundaries prevent parallel edits from colliding:
 - `src/dispatch/ownership.ts`, `preflight.ts`, and `start.ts`: ownership lease, host checks, provider selection, durable intent, and BB thread creation. Owned by the ownership and dispatch task.
 - `src/dispatch/lifecycle.ts`, `recovery.ts`, `cancel.ts`, and `retry.ts`: worker lifecycle, reconciliation, cancellation, and bounded retry. Owned by the lifecycle and recovery task.
 - `src/schedule/`: one plugin-owned scheduler, configured spacing and night-window behavior, duplicate wakeup handling, and pause behavior. Owned by the scheduling task, then integrated with dispatch only after the three contracts pass review.
-- `src/ui/`: native plugin panels and action forms for the five surfaces. Owned by the UI task; it consumes typed projections and calls validated RPCs rather than reading files directly.
+- `src/ui/`: native plugin panels and action forms for the five tab surfaces plus the repositories landing and add-repository views. Owned by the UI task; it consumes typed projections and calls validated RPCs rather than reading files directly.
 - `src/settings/`: declarative operational settings and server-side validation. Owned by the settings task.
 - `src/lifecycle/`: startup reconciliation, reload disposal, and shutdown behavior. Owned by the dispatch/state integration task.
 - `tests/`: focused parser, policy, idempotency, stale-write, scheduler, and recovery tests. Each task adds only tests that protect a stated behavior.

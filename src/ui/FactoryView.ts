@@ -1,16 +1,14 @@
-import { useCallback, useEffect, useRef, useState, type ComponentType } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { createElement } from "react";
 import {
-  Markdown,
-  UrlLink,
-  experimental_FileLink,
   useBbNavigate,
   useRealtime,
   useRealtimeConnectionState,
   useRpc,
   useSettings,
-  type MarkdownProps,
 } from "@get-bb/plugin-sdk/app";
 import {
+  dispatchStatusSchema,
   factoryActionResultSchema,
   healthProjectionSchema,
   invalidationEventSchema,
@@ -18,44 +16,43 @@ import {
   operationalRunListProjectionSchema,
   pendingInteractionsProjectionSchema,
   protocolSnapshotSchema,
+  registryOptionsProjectionSchema,
   repositorySelectionProjectionSchema,
+  settingsMutationResultSchema,
   settingsProjectionSchema,
-  type FactoryAction,
+  type DispatchStatus,
   type FactoryActionRequest,
   type HealthProjection,
   type OperationalRunDetailProjection,
   type OperationalRunListProjection,
+  type OperationalRunSummary,
   type PendingInteractionsProjection,
   type ProtocolSnapshot,
+  type RepositorySelection,
   type RepositorySelectionProjection,
+  type SettingsMutationResult,
   type SettingsProjection,
 } from "../contracts.js";
 import type { FactoryRpcContract } from "../rpc.js";
+import { computeAttention, attentionCounts, type AttentionItem } from "./attention.js";
+import type { FactoryAction, FactorySection, ViewContext } from "./context.js";
 import {
+  EmptyNotice,
   ErrorNotice,
-  FactoryShell,
+  HostFileLink,
   LoadingNotice,
-  OverviewView,
-  QueueView,
-  QuestionsView,
-  RepositorySelectionView,
-  RouteNotFound,
-  RunDetailView,
-  RunsView,
-  SettingsView,
-  buttonClass,
-  parseFactoryRoute,
-  type FileLinkProps,
-  type FileLinkRenderer,
-  sectionPath,
-  type FactorySection,
-} from "./views.js";
-import {
-  DispatchControls,
-  idleActionFeedback,
+  isActiveRunStatus,
+  revisionEqual,
   type ActionFeedback,
-} from "./action-entry.js";
-import { createElement } from "react";
+} from "./primitives.js";
+import { parseFactoryRoute, runDetailPath, sectionPath } from "./routes.js";
+import { FactoryShell } from "./shell.js";
+import { OverviewView } from "./views/overview.js";
+import { QuestionsView } from "./views/questions.js";
+import { AddRepositoryView, RepositoryLandingView } from "./views/repositories.js";
+import { RunDetailView, RunsView } from "./views/runs.js";
+import { SettingsView } from "./views/settings.js";
+import { WorkView } from "./views/work.js";
 
 const h = createElement;
 
@@ -124,7 +121,7 @@ function readSettingsIdentity(values: Record<string, string | number | boolean> 
   return `${repositoryKey}\u0000${typeof registry === "string" ? registry : ""}`;
 }
 
-function selectedRepository(projection: RepositorySelectionProjection) {
+function selectedRepository(projection: RepositorySelectionProjection): RepositorySelection | null {
   return projection.repositories.find((repository) => repository.configuration.repositoryKey === projection.selectedRepositoryKey)
     ?? projection.repositories.find((repository) => repository.selected)
     ?? null;
@@ -138,8 +135,32 @@ function ready<T>(resource: Loadable<T>): T | null {
   return resource.status === "ready" ? resource.data : null;
 }
 
-function resourceMessage(resource: Loadable<unknown>, label: string): string | null {
-  return resource.status === "error" ? `${label}: ${resource.error}` : null;
+function resourceError(resource: Loadable<unknown>): string | null {
+  return resource.status === "error" ? resource.error : null;
+}
+
+const idleFeedback: ActionFeedback = {
+  pending: false,
+  target: null,
+  message: null,
+  error: null,
+  scope: { repositoryKey: "", section: "" },
+};
+
+function actionTarget(action: FactoryAction, routeRunId: string | null): string {
+  switch (action.kind) {
+    case "approve-queue":
+      return `queued:${action.queueItemId}`;
+    case "answer-question":
+      return action.source === "bb-interaction"
+        ? `interaction:${action.interactionId}`
+        : `question:${action.questionId}`;
+    case "retry":
+    case "stop":
+      return `run:${routeRunId ?? "?"}`;
+    default:
+      return "dispatch";
+  }
 }
 
 export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryViewProps) {
@@ -154,10 +175,11 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
   const navigate = useBbNavigate();
   const connectionState = useRealtimeConnectionState();
   const [refreshSequence, setRefreshSequence] = useState(0);
+  const [refreshedAt, setRefreshedAt] = useState<number | null>(null);
   const [malformedSignal, setMalformedSignal] = useState(false);
   const [repositoryOverride, setRepositoryOverride] = useState<{ settingsIdentity: string; repositoryKey: string } | null>(null);
   const [data, setData] = useState<FactoryData>(() => initialData(Boolean(routeRunId)));
-  const [actionState, setActionState] = useState<{ pendingTarget: string | null; feedback: ActionFeedback }>({ pendingTarget: null, feedback: idleActionFeedback });
+  const [actionState, setActionState] = useState<{ pendingTarget: string | null; feedback: ActionFeedback }>({ pendingTarget: null, feedback: idleFeedback });
   const loadToken = useRef(0);
   const requestedRepositoryKey = repositoryOverride?.settingsIdentity === settingsIdentity ? repositoryOverride.repositoryKey : configuredRepositoryKey;
 
@@ -202,6 +224,7 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
       const repositoryKey = selectedRepositoryKey(repositories);
       if (!repositoryKey) {
         setData((current) => ({ ...current, snapshot: { status: "idle" }, settings: { status: "idle" }, health: { status: "idle" }, interactions: { status: "idle" }, runs: { status: "idle" }, detail: null }));
+        setRefreshedAt(Date.now());
         return;
       }
 
@@ -234,6 +257,7 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
         runs: resource(runsResult),
         detail: routeRunId ? resource(detailResult as PromiseSettledResult<OperationalRunDetailProjection>) : null,
       }));
+      setRefreshedAt(Date.now());
     } catch (error) {
       if (token === loadToken.current) setData((current) => ({ ...current, repositories: { status: "error", error: errorText(error) } }));
     }
@@ -253,127 +277,343 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
   }, [load, routeRunId, sdkSettings.isLoading]);
 
   const onRetry = reload;
-  const onNavigate = useCallback((section: FactorySection) => {
-    navigate.toPluginPanel(panelPath, { subPath: sectionPath(section) });
+  const onNavigate = useCallback((section: FactorySection, anchor?: string) => {
+    navigate.toPluginPanel(panelPath, { subPath: sectionPath(section, anchor) });
   }, [navigate, panelPath]);
   const onOpenRun = useCallback((runId: string) => {
-    navigate.toPluginPanel(panelPath, { subPath: `runs/${encodeURIComponent(runId)}` });
+    navigate.toPluginPanel(panelPath, { subPath: runDetailPath(runId) });
   }, [navigate, panelPath]);
-  const onBackToRuns = useCallback(() => onNavigate("runs"), [onNavigate]);
+  const onShowRepositories = useCallback(() => {
+    navigate.toPluginPanel(panelPath, { subPath: "repositories" });
+  }, [navigate, panelPath]);
+  const onAddRepository = useCallback(() => {
+    navigate.toPluginPanel(panelPath, { subPath: "repositories/new" });
+  }, [navigate, panelPath]);
   const onOpenThread = useCallback((threadId: string) => navigate.toThread(threadId), [navigate]);
   const onOpenProject = useCallback((projectId: string) => navigate.toProject(projectId), [navigate]);
 
   const repositoryProjection = ready(data.repositories);
-  const selectedRepositoryConfiguration = repositoryProjection ? selectedRepository(repositoryProjection)?.configuration ?? null : null;
-  const fileLink = experimental_FileLink as ComponentType<FileLinkProps> as FileLinkRenderer;
+  const selectedEntry = repositoryProjection ? selectedRepository(repositoryProjection) : null;
+  const selectedConfiguration = selectedEntry?.configuration ?? null;
+  const snapshot = ready(data.snapshot);
+  const settings = ready(data.settings);
+  const health = ready(data.health);
+  const interactions = ready(data.interactions);
+  const runs = ready(data.runs);
+  const detail = routeRunId && data.detail ? ready(data.detail)?.run ?? null : null;
+  const detailError = routeRunId && data.detail ? resourceError(data.detail) : null;
+  const detailLoading = routeRunId ? (data.detail === null || data.detail.status !== "ready") && !detailError : false;
+
+  const scopeSection = route.section === "not-found" || route.section === "repositories" || route.section === "add-repository"
+    ? "overview"
+    : route.section;
+  const actionScope = { repositoryKey: selectedConfiguration?.repositoryKey ?? "", section: scopeSection };
+  const scopedFeedback = actionState.feedback.scope.repositoryKey === actionScope.repositoryKey
+    && actionState.feedback.scope.section === actionScope.section
+    ? actionState.feedback
+    : null;
+
+  const attention = computeAttention({
+    snapshot,
+    snapshotError: data.snapshot.status === "error",
+    settings,
+    health,
+    runs,
+    interactions,
+  });
+  const counts = attentionCounts(attention);
+  // Badges count the underlying items so they match what the views show.
+  const needsYouCount = snapshot?.queue.filter((entry) =>
+    entry.status.kind !== "done"
+    && entry.status.kind !== "in-progress"
+    && (entry.eligibilityReasons.includes("missing-authorization")
+      || entry.blockingQuestionIds.length > 0
+      || entry.blockedBy.length > 0
+      || (entry.status.kind === "blocked-by" && entry.status.questionId !== null)),
+  ).length ?? counts.work;
+  const openQuestionCount = (snapshot?.questions.filter((question) => question.answer === null).length ?? 0)
+    + (interactions?.interactions.length ?? 0) || counts.questions;
+  const activeRun: OperationalRunSummary | null = runs?.runs.find((run) => isActiveRunStatus(run.status))
+    ?? (detail && isActiveRunStatus(detail.summary.status) ? detail.summary : null);
 
   const submitAction = useCallback(async (action: FactoryAction, target: string) => {
     const repositoryKey = repositoryProjection ? selectedRepositoryKey(repositoryProjection) : null;
-    const snapshot = data.snapshot.status === "ready" ? data.snapshot.data : null;
+    const currentSnapshot = data.snapshot.status === "ready" ? data.snapshot.data : null;
     if (!repositoryKey) {
-      setActionState({ pendingTarget: null, feedback: { pending: false, message: null, error: "No repository is selected." } });
+      setActionState({ pendingTarget: null, feedback: { pending: false, target, message: null, error: "No repository is selected.", scope: actionScope } });
       return;
     }
-    const revisionFree = action.kind === "preview" || action.kind === "integration-report";
-    if (!revisionFree && !snapshot) {
-      setActionState({ pendingTarget: null, feedback: { pending: false, message: null, error: "The repository snapshot must load before guarded actions can run." } });
+    const fileGuarded = action.kind === "approve-queue" || (action.kind === "answer-question" && action.source === "repository-question");
+    if (fileGuarded && !currentSnapshot) {
+      setActionState({ pendingTarget: null, feedback: { pending: false, target, message: null, error: "The repository snapshot must load before repository file actions can run.", scope: actionScope } });
       return;
     }
     const idempotencyKey = `bbf:v1:${repositoryKey}:${action.kind}:${crypto.randomUUID()}`;
     let request: FactoryActionRequest;
-    if (action.kind === "preview" || action.kind === "integration-report") {
-      request = { repositoryKey, action, idempotencyKey };
-    } else if (action.kind === "approve-queue" || (action.kind === "answer-question" && action.source === "repository-question")) {
-      request = { repositoryKey, action, idempotencyKey, expectedRevision: snapshot!.revision };
+    if (action.kind === "approve-queue" || (action.kind === "answer-question" && action.source === "repository-question")) {
+      request = { repositoryKey, action, idempotencyKey, expectedRevision: currentSnapshot!.revision };
     } else {
-      request = { repositoryKey, action, idempotencyKey, expectedRevision: snapshot!.revision };
+      request = { repositoryKey, action, idempotencyKey, ...(currentSnapshot ? { expectedRevision: currentSnapshot.revision } : {}) };
     }
-    setActionState({ pendingTarget: target, feedback: idleActionFeedback });
+    setActionState({ pendingTarget: target, feedback: { pending: true, target, message: null, error: null, scope: actionScope } });
     try {
       const raw = await rpcRef.current.call("factory_action", request);
       const parsed = factoryActionResultSchema.safeParse(raw);
       if (!parsed.success) {
-        setActionState({ pendingTarget: null, feedback: { pending: false, message: null, error: "The action result was malformed." } });
+        setActionState({ pendingTarget: null, feedback: { pending: false, target, message: null, error: "The action result was malformed.", scope: actionScope } });
       } else if (parsed.data.ok) {
-        setActionState({ pendingTarget: null, feedback: { pending: false, message: parsed.data.result.message, error: null } });
+        setActionState({ pendingTarget: null, feedback: { pending: false, target, message: parsed.data.result.message, error: null, scope: actionScope } });
       } else {
-        setActionState({ pendingTarget: null, feedback: { pending: false, message: null, error: parsed.data.error.message } });
+        setActionState({ pendingTarget: null, feedback: { pending: false, target, message: null, error: parsed.data.error.message, scope: actionScope } });
       }
     } catch (error) {
-      setActionState({ pendingTarget: null, feedback: { pending: false, message: null, error: errorText(error) } });
+      setActionState({ pendingTarget: null, feedback: { pending: false, target, message: null, error: errorText(error), scope: actionScope } });
     }
     reload();
-  }, [repositoryProjection, data.snapshot, reload]);
+  }, [repositoryProjection, data.snapshot, reload, actionScope.repositoryKey, actionScope.section]);
 
-  const onApprove = useCallback((queueItemId: string, approvedText: string) => {
-    void submitAction({ kind: "approve-queue", queueItemId, approvedText }, `approve:${queueItemId}`);
-  }, [submitAction]);
-  const onAnswerQuestion = useCallback((questionId: string, answer: string) => {
-    void submitAction({ kind: "answer-question", source: "repository-question", questionId, answer }, `question:${questionId}`);
-  }, [submitAction]);
-  const onResolveInteraction = useCallback((interactionId: string, resolution: { kind: "approval"; decision: "allow_once" | "allow_for_session" | "deny" } | { kind: "user_answer"; answers: Record<string, { selected: string[]; freeText?: string }> }) => {
-    void submitAction({ kind: "answer-question", source: "bb-interaction", interactionId, resolution }, `interaction:${interactionId}`);
-  }, [submitAction]);
-  const onRunNow = useCallback(() => void submitAction({ kind: "run-now" }, "run-now"), [submitAction]);
-  const onPause = useCallback(() => void submitAction({ kind: "pause" }, "pause"), [submitAction]);
-  const onResume = useCallback(() => void submitAction({ kind: "resume" }, "resume"), [submitAction]);
-  const onStopRun = useCallback(() => void submitAction({ kind: "stop" }, "stop"), [submitAction]);
-  const onRetryAttempt = useCallback((attemptId: string) => void submitAction({ kind: "retry", attemptId }, `retry:${attemptId}`), [submitAction]);
+  const callMutation = useCallback(async (
+    method: "factory_update_settings" | "factory_update_repository" | "factory_add_repository",
+    input: unknown,
+  ): Promise<SettingsMutationResult> => {
+    try {
+      const raw = await rpcRef.current.call(method, input as never);
+      const parsed = settingsMutationResultSchema.safeParse(raw);
+      if (!parsed.success) {
+        return { ok: false, error: { category: "internal", message: "The mutation result was malformed." } };
+      }
+      if (parsed.data.ok) reload();
+      return parsed.data;
+    } catch (error) {
+      return { ok: false, error: { category: "internal", message: errorText(error) } };
+    }
+  }, [reload]);
+
+  const loadRegistryOptions = useCallback(async () => {
+    const raw = await rpcRef.current.call("factory_registry_options", {});
+    return parseProjection(registryOptionsProjectionSchema, raw, "Registry options");
+  }, []);
+
+  const loadRepositorySummary = useCallback(async (repositoryKey: string) => {
+    try {
+      const [snapshotResult, settingsResult, interactionsResult, runsResult] = await Promise.allSettled([
+        rpcRef.current.call("factory_snapshot", { repositoryKey }).then((value) => parseProjection(protocolSnapshotSchema, value, "Repository snapshot")),
+        rpcRef.current.call("factory_settings", { repositoryKey }).then((value) => parseProjection(settingsProjectionSchema, value, "Settings projection")),
+        rpcRef.current.call("factory_interactions", { repositoryKey }).then((value) => parseProjection(pendingInteractionsProjectionSchema, value, "BB interactions projection")),
+        rpcRef.current.call("factory_runs", { repositoryKey, limit: 50 }).then((value) => parseProjection(operationalRunListProjectionSchema, value, "Runs projection")),
+      ]);
+      const items = computeAttention({
+        snapshot: snapshotResult.status === "fulfilled" ? snapshotResult.value : null,
+        snapshotError: snapshotResult.status === "rejected",
+        settings: settingsResult.status === "fulfilled" ? settingsResult.value : null,
+        health: null,
+        interactions: interactionsResult.status === "fulfilled" ? interactionsResult.value : null,
+        runs: runsResult.status === "fulfilled" ? runsResult.value : null,
+      });
+      const actionable = items.filter((item) => item.severity !== "info").length;
+      const dispatch: DispatchStatus | null = settingsResult.status === "fulfilled"
+        ? settingsResult.value.dispatch
+        : null;
+      if (dispatch) dispatchStatusSchema.parse(dispatch);
+      return { attention: actionable, dispatch, error: null };
+    } catch (error) {
+      return { attention: 0, dispatch: null, error: errorText(error) };
+    }
+  }, []);
+
+  const ctx: ViewContext | null = selectedConfiguration
+    ? {
+        repository: selectedConfiguration,
+        environmentId: selectedEntry?.environmentId ?? null,
+        projectId: selectedEntry?.projectId ?? null,
+        dispatchPaused: selectedEntry?.dispatchPaused ?? false,
+        revision: snapshot?.revision ?? null,
+        fileLink: HostFileLink,
+        feedback: scopedFeedback,
+        pendingTarget: actionState.pendingTarget,
+        onOpenSection: onNavigate,
+        onOpenRepository: (repositoryKey, section = "overview", anchor) => {
+          onRepositorySelect(repositoryKey);
+          onNavigate(section, anchor);
+        },
+        onOpenRun,
+        onOpenThread,
+        onOpenProject,
+        onAction: (action) => void submitAction(action, actionTarget(action, routeRunId)),
+        updateSettings: (patch) => {
+          const repositoryKey = selectedRepositoryKey(repositoryProjection!);
+          return repositoryKey
+            ? callMutation("factory_update_settings", { repositoryKey, patch })
+            : Promise.resolve<SettingsMutationResult>({ ok: false, error: { category: "not-found", message: "No repository is selected." } });
+        },
+        updateRepository: (input) => callMutation("factory_update_repository", input),
+        addRepository: (input) => callMutation("factory_add_repository", input),
+        loadRegistryOptions,
+      }
+    : null;
+
+  // Run-now confirmation copy includes provider context from health.
+  const preferredProvider = settings?.settings.providerPreference && settings.settings.providerPreference !== "alternate"
+    ? settings.settings.providerPreference
+    : null;
+  const preferredStatus = preferredProvider
+    ? health?.providers.find((provider) => provider.providerId === preferredProvider) ?? null
+    : null;
+  const providerLine = preferredProvider
+    ? `Provider: ${preferredProvider}${preferredStatus ? ` (${preferredStatus.availability})` : ""}.`
+    : "Provider: alternates between codex and claude-code.";
+  const runNowDisabledReason = !settings
+    ? null
+    : settings.dispatch.mode !== "enabled"
+      ? "Dispatch is paused. Resume first."
+      : settings.dispatch.repositoryPaused
+        ? "Dispatch is paused for this repository. Turn it on in Settings."
+        : null;
+
   let content: ReturnType<typeof h>;
   if (data.repositories.status === "loading" || data.repositories.status === "idle") {
-    content = h(LoadingNotice, { label: "Loading repository selection" });
+    content = h(LoadingNotice, { label: "Loading repositories" });
   } else if (data.repositories.status === "error") {
     content = h(ErrorNotice, { message: data.repositories.error, onRetry });
-  } else if (!repositoryProjection || !selectedRepositoryKey(repositoryProjection)) {
-    content = h(RepositorySelectionView, { projection: repositoryProjection! });
+  } else if (route.section === "add-repository") {
+    const wizardCtx: ViewContext | null = ctx ?? {
+      repository: {
+        repositoryKey: "",
+        repositoryRoot: "",
+        connectedHostId: "",
+        checkoutPath: "",
+        factoryBranch: "factory",
+        mainRef: "origin/main",
+      },
+      environmentId: null,
+      projectId: null,
+      dispatchPaused: true,
+      revision: null,
+      feedback: null,
+      pendingTarget: actionState.pendingTarget,
+      onOpenSection: onNavigate,
+      onOpenRepository: (repositoryKey, section = "overview", anchor) => {
+        onRepositorySelect(repositoryKey);
+        onNavigate(section, anchor);
+      },
+      onOpenRun,
+      onOpenThread,
+      onOpenProject,
+      onAction: (action) => void submitAction(action, actionTarget(action, routeRunId)),
+      updateSettings: () => Promise.resolve<SettingsMutationResult>({ ok: false, error: { category: "not-found", message: "No repository is selected." } }),
+      updateRepository: (input) => callMutation("factory_update_repository", input),
+      addRepository: (input) => callMutation("factory_add_repository", input),
+      loadRegistryOptions,
+    };
+    content = h(AddRepositoryView, {
+      ctx: wizardCtx,
+      onDone: (repositoryKey) => {
+        onRepositorySelect(repositoryKey);
+        onNavigate("settings");
+      },
+      onCancel: onShowRepositories,
+    });
+  } else if (route.section === "repositories" || !repositoryProjection || repositoryProjection.repositories.length === 0 || !selectedEntry) {
+    content = h(RepositoryLandingView, {
+      repositories: repositoryProjection?.repositories ?? [],
+      onSelect: onRepositorySelect,
+      onAddRepository,
+      loadSummary: loadRepositorySummary,
+    });
   } else if (route.section === "not-found") {
-    content = h(RouteNotFound, { raw: route.raw, onBack: () => onNavigate("overview") });
+    content = h(EmptyNotice, {
+      title: "Page not found",
+      detail: `No factory view matches "${route.raw ?? ""}".`,
+      action: h("button", { type: "button", className: "text-sm font-medium text-primary hover:underline", onClick: () => onNavigate("overview") }, "Back to overview"),
+    });
+  } else if (!ctx) {
+    content = h(ErrorNotice, { message: "The selected repository configuration is unavailable.", onRetry });
   } else if (route.section === "overview") {
-    const snapshot = ready(data.snapshot);
-    content = snapshot ? h(OverviewView, {
-      snapshot,
-      settings: ready(data.settings),
-      settingsError: data.settings.status === "error" ? data.settings.error : null,
-      health: ready(data.health),
-      healthError: data.health.status === "error" ? data.health.error : null,
-      dashboardLink: snapshot.dashboard.canonicalDashboardUrl ? h(UrlLink, { href: snapshot.dashboard.canonicalDashboardUrl, className: `${buttonClass} shrink-0` }, `Open ${snapshot.dashboard.canonicalPath}`) : null,
-      fileLink,
-      onRetry,
-      feedback: actionState.feedback.message || actionState.feedback.error ? actionState.feedback : null,
-      dispatchActions: ready(data.settings) ? h(DispatchControls, {
-        mode: ready(data.settings)!.dispatch.mode,
-        acceptingNewRuns: ready(data.settings)!.dispatch.acceptingNewRuns,
-        feedback: actionState.pendingTarget ? { pending: true, message: null, error: null } : null,
-        onRunNow,
-        onPause,
-        onResume,
-      }) : null,
-    }) : data.snapshot.status === "error" ? h(ErrorNotice, { message: resourceMessage(data.snapshot, "Repository snapshot")!, onRetry }) : h(LoadingNotice, { label: "Loading repository overview" });
-  } else if (route.section === "queue") {
-    const snapshot = ready(data.snapshot);
-    content = snapshot ? h(QueueView, { snapshot, fileLink, onApprove, pendingTarget: actionState.pendingTarget, feedback: actionState.feedback.message || actionState.feedback.error ? actionState.feedback : null }) : data.snapshot.status === "error" ? h(ErrorNotice, { message: resourceMessage(data.snapshot, "Repository queue")!, onRetry }) : h(LoadingNotice, { label: "Loading repository queue" });
+    const stillLoading = (data.snapshot.status === "idle" || data.snapshot.status === "loading")
+      || data.settings.status === "loading" || data.settings.status === "idle";
+    content = stillLoading
+      ? h(LoadingNotice, { label: "Loading repository state" })
+      : h(OverviewView, {
+          snapshot,
+          snapshotError: resourceError(data.snapshot),
+          settings,
+          health,
+          runs,
+          attention,
+          activeRun,
+          ctx,
+        });
+  } else if (route.section === "work") {
+    content = snapshot
+      ? h(WorkView, { snapshot, ctx, focusItemId: route.anchor?.replace(/^work-/u, "") ?? null })
+      : data.snapshot.status === "error"
+        ? h(ErrorNotice, { message: data.snapshot.error, onRetry })
+        : h(LoadingNotice, { label: "Loading repository work" });
   } else if (route.section === "questions") {
-    const snapshot = ready(data.snapshot);
-    content = snapshot ? h(QuestionsView, { snapshot, interactions: ready(data.interactions), interactionsError: data.interactions.status === "error" ? data.interactions.error : null, markdownRenderer: Markdown as ComponentType<MarkdownProps>, onOpenThread, onRetry, onAnswerQuestion, onResolveInteraction, pendingTarget: actionState.pendingTarget, feedback: actionState.feedback.message || actionState.feedback.error ? actionState.feedback : null }) : data.snapshot.status === "error" ? h(ErrorNotice, { message: resourceMessage(data.snapshot, "Repository questions")!, onRetry }) : h(LoadingNotice, { label: "Loading repository questions" });
+    content = snapshot
+      ? h(QuestionsView, { snapshot, interactions, ctx, focusQuestionId: route.anchor?.replace(/^question-/u, "") ?? null })
+      : data.snapshot.status === "error"
+        ? h(ErrorNotice, { message: data.snapshot.error, onRetry })
+        : h(LoadingNotice, { label: "Loading questions" });
   } else if (route.section === "runs") {
-    const detailResource = routeRunId ? data.detail : null;
-    const detail = detailResource ? ready(detailResource)?.run ?? null : null;
-    content = routeRunId ? (detailResource?.status === "error" ? h(ErrorNotice, { message: resourceMessage(detailResource, "Run detail")!, onRetry }) : detailResource?.status === "loading" || !detailResource ? h(LoadingNotice, { label: "Loading run detail" }) : selectedRepositoryConfiguration ? h(RunDetailView, { detail, repository: selectedRepositoryConfiguration, fileLink, onBack: onBackToRuns, onOpenThread, onOpenProject, onStop: onStopRun, onRetry: onRetryAttempt, pendingTarget: actionState.pendingTarget, feedback: actionState.feedback.message || actionState.feedback.error ? actionState.feedback : null }) : h(ErrorNotice, { message: "The selected repository configuration is unavailable for file links.", onRetry })) : ready(data.runs) ? h(RunsView, { runs: ready(data.runs)!.runs, nextCursor: ready(data.runs)!.nextCursor, onOpenRun, onOpenThread, onOpenProject }) : data.runs.status === "error" ? h(ErrorNotice, { message: resourceMessage(data.runs, "Run history")!, onRetry }) : h(LoadingNotice, { label: "Loading run history" });
+    content = routeRunId
+      ? detailError
+        ? h(ErrorNotice, { message: detailError, onRetry })
+        : detailLoading || !detail
+          ? h(LoadingNotice, { label: "Loading run detail" })
+          : h(RunDetailView, { detail, ctx })
+      : runs
+        ? h(RunsView, { runs, ctx })
+        : data.runs.status === "error"
+          ? h(ErrorNotice, { message: data.runs.error, onRetry })
+          : h(LoadingNotice, { label: "Loading run history" });
   } else {
-    content = ready(data.settings) ? h(SettingsView, { projection: ready(data.settings)! }) : data.settings.status === "error" ? h(ErrorNotice, { message: resourceMessage(data.settings, "Settings")!, onRetry }) : h(LoadingNotice, { label: "Loading settings" });
+    content = settings
+      ? h(SettingsView, { projection: settings, health, ctx })
+      : data.settings.status === "error"
+        ? h(ErrorNotice, { message: data.settings.error, onRetry })
+        : h(LoadingNotice, { label: "Loading settings" });
   }
 
+  const dispatch = settings?.dispatch ?? null;
+  const sectionForShell: FactorySection = scopeSection;
+
   return h(FactoryShell, {
-    activeSection: route.section === "not-found" ? "overview" : route.section,
-    connectionState,
-    malformedSignal,
+    section: sectionForShell,
     onNavigate,
-    repositoryProjection,
-    repositorySelectionKey: requestedRepositoryKey ?? repositoryProjection?.selectedRepositoryKey,
+    repositories: repositoryProjection?.repositories ?? [],
+    selectedRepositoryKey: selectedRepositoryKey(repositoryProjection ?? { repositories: [], selectedRepositoryKey: null }),
     repositorySelectionLoading: data.repositories.status === "loading",
-    onRepositorySelect,
+    onSelectRepository: onRepositorySelect,
+    onShowRepositories,
+    onAddRepository,
+    dispatch,
+    branch: health?.host.branch ?? snapshot?.repository.factoryBranch ?? null,
+    commit: snapshot?.revision.gitCommit ?? null,
+    activeRun,
+    badges: { work: needsYouCount, questions: openQuestionCount, runsActive: activeRun !== null },
+    refreshedAt,
+    onRefresh: reload,
+    onPause: () => void submitAction({ kind: "pause" }, "dispatch"),
+    onResume: () => void submitAction({ kind: "resume" }, "dispatch"),
+    runNow: dispatch
+      ? {
+          disabled: runNowDisabledReason !== null,
+          reason: runNowDisabledReason,
+          confirmTitle: `Run the foreman on ${selectedConfiguration?.repositoryKey ?? "this repository"}?`,
+          confirmBody: `Starts a foreman run on ${selectedConfiguration?.repositoryKey ?? "the repository"} now, ignoring the night window and minimum gap. ${providerLine}`,
+          onConfirm: () => void submitAction({ kind: "run-now" }, "dispatch"),
+        }
+      : null,
+    actionPending: actionState.pendingTarget !== null,
+    connectionState: connectionState === "connecting" ? "reconnecting" : connectionState,
+    malformedSignal,
     children: content,
   });
 }
 
 export default FactoryView;
+
+// Re-export for tests and the legacy barrel.
+export { revisionEqual };
+export type { AttentionItem };

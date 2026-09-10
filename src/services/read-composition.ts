@@ -4,6 +4,7 @@ import {
   resolveRepositoryRegistry,
   type FactorySettings,
   type RepositoryKey,
+  type RegistryOptionsProjection,
   type RepositoryRegistryEntry,
   type RepositoryRegistryResolution,
   type RepositorySelectionProjection,
@@ -39,6 +40,7 @@ export interface ReadCompositionOptions {
 }
 
 export interface ReadComposition {
+  readonly sdk: BbSdk;
   readonly settings: FactorySettings;
   readonly resolution: RepositoryRegistryResolution;
   readonly operationalState: OperationalStateReader;
@@ -49,6 +51,7 @@ export interface ReadComposition {
   listRepositories(selectedRepositoryKey?: RepositoryKey | null): RepositorySelectionProjection;
   getRepositoryEntry(repositoryKey: RepositoryKey): RepositoryRegistryEntry | null;
   getSettingsProjection(repositoryKey: RepositoryKey): Promise<SettingsProjection>;
+  listRegistryOptions(): Promise<RegistryOptionsProjection>;
 }
 
 function configuredEntries(resolution: RepositoryRegistryResolution): readonly RepositoryRegistryEntry[] {
@@ -177,19 +180,24 @@ function settingsProjection(
     projectId: entry.projectId,
     environmentId: entry.environmentId,
   }) as FactorySettings;
-  const accepting = settings.dispatchMode === "enabled" && activeRunCount < settings.concurrencyLimit;
+  const repositoryPaused = entry.dispatchPaused === true;
+  const accepting =
+    settings.dispatchMode === "enabled" && !repositoryPaused && activeRunCount < settings.concurrencyLimit;
   return {
     settings: repositorySettings,
     validation: { valid: true, fieldErrors: {} },
     dispatch: {
       mode: settings.dispatchMode,
+      repositoryPaused,
       acceptingNewRuns: accepting,
       activeRunCount,
       reason: settings.dispatchMode !== "enabled"
         ? "Dispatch is paused."
-        : accepting
-          ? "Dispatch is enabled."
-          : "The concurrency limit is reached.",
+        : repositoryPaused
+          ? "Dispatch is paused for this repository."
+          : accepting
+            ? "Dispatch is enabled."
+            : "The concurrency limit is reached.",
     },
   };
 }
@@ -234,6 +242,7 @@ export function createReadComposition(options: ReadCompositionOptions): ReadComp
   });
 
   return {
+    sdk: options.sdk,
     settings,
     resolution,
     operationalState,
@@ -258,6 +267,9 @@ export function createReadComposition(options: ReadCompositionOptions): ReadComp
       return {
         repositories: entries.map((entry) => ({
           configuration: entry.configuration,
+          projectId: entry.projectId,
+          environmentId: entry.environmentId,
+          dispatchPaused: entry.dispatchPaused === true,
           selected: entry.configuration.repositoryKey === selected,
           available: true,
           reasons: selectionIssue ? [selectionIssue] : [],
@@ -274,6 +286,20 @@ export function createReadComposition(options: ReadCompositionOptions): ReadComp
         throw new Error(`Repository '${repositoryKey}' is not configured.`);
       }
       return settingsProjection(settings, entry, await countActiveRuns(operationalState, repositoryKey));
+    },
+    async listRegistryOptions() {
+      const [hostsResult, projectsResult] = await Promise.allSettled([
+        options.sdk.hosts.list(),
+        options.sdk.projects.list(),
+      ]);
+      return {
+        hosts: hostsResult.status === "fulfilled"
+          ? hostsResult.value.map((host) => ({ hostId: host.id, label: host.name, status: host.status }))
+          : [],
+        projects: projectsResult.status === "fulfilled"
+          ? projectsResult.value.map((project) => ({ projectId: project.id, label: project.name }))
+          : [],
+      } satisfies RegistryOptionsProjection;
     },
   };
 }

@@ -115,7 +115,12 @@ export default async function plugin(bb: BbPluginApi): Promise<void> {
     bb.realtime.publish("factory", invalidationEventSchema.parse(event));
   };
 
-  bb.rpc.register(factoryRpcContract, createFactoryRpcHandlers(activeComposition, publish));
+  bb.rpc.register(factoryRpcContract, createFactoryRpcHandlers(activeComposition, publish, {
+    sdk: bb.sdk,
+    applySettings: async (values) => {
+      await settings.experimental_set(values);
+    },
+  }));
 
   settings.onChange((next) => {
     try {

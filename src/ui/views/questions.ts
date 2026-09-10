@@ -1,0 +1,646 @@
+import { Markdown } from "@get-bb/plugin-sdk/app";
+import { createElement, useEffect, useMemo, useState, type ReactNode } from "react";
+import type {
+  ApprovalDecision,
+  BbInteractionResolution,
+  PendingInteraction,
+  PendingInteractionsProjection,
+  ProtocolSnapshot,
+  Question,
+} from "../../contracts.js";
+import type { ViewContext } from "../context.js";
+import {
+  ActionButton,
+  Badge,
+  ConfirmDialog,
+  Disclosure,
+  EmptyNotice,
+  FeedbackNotice,
+  Section,
+  safeMarkdown,
+  type Tone,
+} from "../primitives.js";
+
+const h = createElement;
+
+const inputClass =
+  "rounded-md border border-border bg-background px-2 py-1 text-sm text-foreground placeholder:text-muted-foreground";
+const labelClass = "text-xs font-medium uppercase tracking-wide text-muted-foreground";
+
+type KindFilter = "all" | "blocking" | "assumption";
+type StateFilter = "all" | "open" | "answered";
+
+/** Queue items a question gates, resolved via blockedBy and blocked-by status. */
+function questionGates(snapshot: ProtocolSnapshot, questionId: string): string[] {
+  return snapshot.queue
+    .filter(
+      (entry) =>
+        entry.blockedBy.includes(questionId) ||
+        (entry.status.kind === "blocked-by" && entry.status.questionId === questionId),
+    )
+    .map((entry) => entry.id);
+}
+
+function truncateText(value: string, max = 80): string {
+  const clean = value.replace(/\s+/g, " ").trim();
+  return clean.length > max ? `${clean.slice(0, max - 1)}...` : clean;
+}
+
+function classificationBadge(classification: Question["classification"]) {
+  return h(Badge, {
+    label: classification === "blocking" ? "Blocking" : "Assumption",
+    tone: classification === "blocking" ? "warning" : "neutral",
+  });
+}
+
+/** Markdown block clamped to about three lines with a show-more toggle. */
+function ClampedMarkdown({ content, className }: { content: string; className?: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const likelyOverflow = content.split("\n").length > 3 || content.length > 160;
+  return h(
+    "div",
+    null,
+    h(
+      "div",
+      { className: expanded || !likelyOverflow ? "" : "line-clamp-3" },
+      h(Markdown, { content: safeMarkdown(content), className: className ?? "text-sm text-muted-foreground" }),
+    ),
+    likelyOverflow
+      ? h(
+          "button",
+          {
+            type: "button",
+            className: "mt-1 text-xs text-primary underline-offset-2 hover:underline",
+            onClick: () => setExpanded((current) => !current),
+          },
+          expanded ? "Show less" : "Show more",
+        )
+      : null,
+  );
+}
+
+function RepositoryQuestionCard(props: {
+  question: Question;
+  gates: string[];
+  pending: boolean;
+  onRecord: (questionId: string, answer: string) => void;
+  onOpenGated: (queueItemId: string) => void;
+}) {
+  const { question, gates, pending } = props;
+  const assumed = question.assumed;
+  const [draft, setDraft] = useState("");
+  const [confirmAnswer, setConfirmAnswer] = useState<string | null>(null);
+  const trimmed = draft.trim();
+
+  return h(
+    "section",
+    { id: `question-${question.id}`, className: "rounded-lg border border-border bg-card p-4" },
+    h(
+      "div",
+      { className: "flex flex-wrap items-center gap-2 text-xs text-muted-foreground" },
+      h("span", { className: "font-mono" }, question.id),
+      h("span", null, question.date),
+      classificationBadge(question.classification),
+    ),
+    h("h3", { className: "mt-1.5 text-sm font-medium text-foreground" }, question.question),
+    gates.length > 0
+      ? h(
+          "p",
+          { className: "mt-2 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground" },
+          "Blocks:",
+          gates.map((id) =>
+            h(
+              "button",
+              {
+                key: id,
+                type: "button",
+                className: "font-mono text-primary underline-offset-2 hover:underline",
+                onClick: () => props.onOpenGated(id),
+              },
+              id,
+            ),
+          ),
+        )
+      : null,
+    h(
+      "div",
+      { className: "mt-3" },
+      h("p", { className: labelClass }, "Context"),
+      h(
+        "div",
+        { className: "mt-1 rounded-md bg-surface-recessed/40 p-3" },
+        h(ClampedMarkdown, { content: question.context }),
+      ),
+    ),
+    question.classification === "assumption" && assumed
+      ? h("p", { className: "mt-3 text-sm text-muted-foreground" }, "Current assumption: ", assumed)
+      : null,
+    h(
+      "div",
+      { className: "mt-4 border-t border-border pt-3" },
+      h("textarea", {
+        className: `${inputClass} min-h-20 w-full`,
+        value: draft,
+        placeholder: `Your answer. Recorded to plans/factory/questions.md as ${question.id}'s answer.`,
+        "aria-label": `Answer ${question.id}`,
+        disabled: pending,
+        onChange: (event: { target: { value: string } }) => setDraft(event.target.value),
+      }),
+      h(
+        "div",
+        { className: "mt-2 flex flex-wrap justify-end gap-2" },
+        question.classification === "assumption" && assumed
+          ? h(ActionButton, {
+              label: "Accept assumption",
+              variant: "secondary",
+              disabled: pending,
+              onClick: () => setConfirmAnswer(assumed),
+            })
+          : null,
+        h(ActionButton, {
+          label: "Record answer",
+          variant: "primary",
+          disabled: pending || !trimmed,
+          busy: pending,
+          onClick: () => setConfirmAnswer(trimmed),
+        }),
+      ),
+    ),
+    h(ConfirmDialog, {
+      open: confirmAnswer !== null,
+      title: `Record ${question.id} answer`,
+      body: `Appends to plans/factory/questions.md on branch factory. ${question.id} gates: ${gates.length > 0 ? gates.join(", ") : "no items"}.`,
+      confirmLabel: "Record answer",
+      busy: pending,
+      onConfirm: () => {
+        const answer = confirmAnswer;
+        setConfirmAnswer(null);
+        if (answer) props.onRecord(question.id, answer);
+      },
+      onCancel: () => setConfirmAnswer(null),
+    }),
+  );
+}
+
+function AnsweredQuestionRow(props: { question: Question; recorded: boolean }) {
+  const { question, recorded } = props;
+  return h(
+    "div",
+    { id: `question-${question.id}`, className: "py-1.5" },
+    h(Disclosure, {
+      summary: h(
+        "span",
+        { className: "inline-flex items-center gap-2" },
+        h("span", { className: "font-mono text-xs" }, question.id),
+        classificationBadge(question.classification),
+        h("span", { className: "truncate text-xs text-foreground" }, truncateText(question.question)),
+        h(
+          "span",
+          { className: "rounded-full bg-muted px-1.5 py-0.5 text-xs text-muted-foreground" },
+          recorded ? "Recorded" : "Answered",
+        ),
+      ),
+      children: h(
+        "div",
+        { className: "space-y-3 py-2 pl-5" },
+        h("p", { className: "text-sm font-medium text-foreground" }, question.question),
+        h(
+          "div",
+          null,
+          h("p", { className: labelClass }, "Context"),
+          h(
+            "div",
+            { className: "mt-1 rounded-md bg-surface-recessed/40 p-3" },
+            h(ClampedMarkdown, { content: question.context }),
+          ),
+        ),
+        question.answer !== null
+          ? h(
+              "div",
+              null,
+              h("p", { className: labelClass }, "Recorded answer"),
+              h(Markdown, {
+                content: safeMarkdown(question.answer),
+                className: "mt-1 text-sm text-muted-foreground",
+              }),
+            )
+          : h("p", { className: "text-xs text-muted-foreground" }, "Answer recorded this session."),
+      ),
+    }),
+  );
+}
+
+const DECISION_LABELS: Record<ApprovalDecision, string> = {
+  allow_once: "Allow once",
+  allow_for_session: "Allow for session",
+  deny: "Deny",
+};
+
+function ApprovalControls(props: {
+  interaction: PendingInteraction;
+  pending: boolean;
+  onResolve: (resolution: BbInteractionResolution) => void;
+}) {
+  const decisions =
+    props.interaction.metadata.kind === "approval" ? props.interaction.metadata.availableDecisions : [];
+  return h(
+    "div",
+    { className: "mt-3 flex flex-wrap gap-2" },
+    decisions.map((decision) =>
+      h(ActionButton, {
+        key: decision,
+        label: DECISION_LABELS[decision],
+        variant: decision === "deny" ? "danger" : decision === "allow_once" ? "primary" : "secondary",
+        disabled: props.pending,
+        onClick: () => props.onResolve({ kind: "approval", decision }),
+      }),
+    ),
+  );
+}
+
+function UserQuestionControls(props: {
+  interaction: PendingInteraction;
+  pending: boolean;
+  onResolve: (resolution: BbInteractionResolution) => void;
+}) {
+  const questions =
+    props.interaction.metadata.kind === "user_question" ? props.interaction.metadata.questions : [];
+  const [selected, setSelected] = useState<Record<string, string[]>>({});
+  const [freeText, setFreeText] = useState<Record<string, string>>({});
+  const complete =
+    questions.length > 0 &&
+    questions.every(
+      (question) =>
+        (selected[question.id] ?? []).length > 0 || (freeText[question.id] ?? "").trim().length > 0,
+    );
+  const toggle = (questionId: string, value: string) => {
+    setSelected((current) => {
+      const list = current[questionId] ?? [];
+      return {
+        ...current,
+        [questionId]: list.includes(value) ? list.filter((item) => item !== value) : [...list, value],
+      };
+    });
+  };
+
+  return h(
+    "div",
+    { className: "mt-3 space-y-4" },
+    questions.map((question) =>
+      h(
+        "div",
+        { key: question.id, className: "space-y-2" },
+        h("p", { className: "text-sm text-foreground" }, question.prompt),
+        question.options && question.options.length > 0
+          ? question.multiSelect
+            ? h(
+                "div",
+                { className: "space-y-1.5" },
+                question.options.map((option) =>
+                  h(
+                    "label",
+                    { key: option.value, className: "flex items-start gap-2 text-sm" },
+                    h("input", {
+                      type: "checkbox",
+                      className: "mt-1",
+                      checked: (selected[question.id] ?? []).includes(option.value),
+                      disabled: props.pending,
+                      onChange: () => toggle(question.id, option.value),
+                    }),
+                    h(
+                      "span",
+                      null,
+                      option.label,
+                      option.description
+                        ? h("span", { className: "ml-1 text-xs text-muted-foreground" }, option.description)
+                        : null,
+                    ),
+                  ),
+                ),
+              )
+            : h(
+                "select",
+                {
+                  className: `${inputClass} w-full`,
+                  "aria-label": question.prompt,
+                  value: selected[question.id]?.[0] ?? "",
+                  disabled: props.pending,
+                  onChange: (event: { target: { value: string } }) =>
+                    setSelected((current) => ({
+                      ...current,
+                      [question.id]: event.target.value ? [event.target.value] : [],
+                    })),
+                },
+                h("option", { value: "" }, "Select an answer"),
+                question.options.map((option) =>
+                  h(
+                    "option",
+                    {
+                      key: option.value,
+                      value: option.value,
+                      ...(option.description ? { title: option.description } : {}),
+                    },
+                    option.label,
+                  ),
+                ),
+              )
+          : null,
+        question.allowFreeText
+          ? h("input", {
+              type: "text",
+              className: `${inputClass} w-full`,
+              placeholder: "Other answer",
+              "aria-label": `${question.prompt} (free text)`,
+              value: freeText[question.id] ?? "",
+              disabled: props.pending,
+              onChange: (event: { target: { value: string } }) =>
+                setFreeText((current) => ({ ...current, [question.id]: event.target.value })),
+            })
+          : null,
+      ),
+    ),
+    h(
+      "div",
+      { className: "flex justify-end" },
+      h(ActionButton, {
+        label: "Answer",
+        variant: "primary",
+        disabled: props.pending || !complete,
+        busy: props.pending,
+        onClick: () =>
+          props.onResolve({
+            kind: "user_answer",
+            answers: Object.fromEntries(
+              questions.map((question) => [
+                question.id,
+                {
+                  selected: selected[question.id] ?? [],
+                  ...((freeText[question.id] ?? "").trim()
+                    ? { freeText: freeText[question.id]!.trim() }
+                    : {}),
+                },
+              ]),
+            ),
+          }),
+      }),
+    ),
+  );
+}
+
+const INTERACTION_KIND_LABEL: Record<PendingInteraction["kind"], string> = {
+  approval: "Approval",
+  "user-question": "Question",
+  plugin: "Plugin",
+};
+
+const INTERACTION_KIND_TONE: Record<PendingInteraction["kind"], Tone> = {
+  approval: "warning",
+  "user-question": "primary",
+  plugin: "neutral",
+};
+
+function PendingInteractionRow(props: { interaction: PendingInteraction; ctx: ViewContext }) {
+  const { interaction, ctx } = props;
+  const pending = ctx.pendingTarget === `interaction:${interaction.interactionId}`;
+  const resolve = (resolution: BbInteractionResolution) =>
+    ctx.onAction({
+      kind: "answer-question",
+      source: "bb-interaction",
+      interactionId: interaction.interactionId,
+      resolution,
+    });
+
+  return h(
+    "div",
+    { id: `interaction-${interaction.interactionId}`, className: "py-3" },
+    h(
+      "div",
+      { className: "flex flex-wrap items-center gap-2" },
+      h("p", { className: "text-sm font-medium text-foreground" }, interaction.title),
+      h(Badge, { label: INTERACTION_KIND_LABEL[interaction.kind], tone: INTERACTION_KIND_TONE[interaction.kind] }),
+    ),
+    interaction.prompt
+      ? h(
+          "div",
+          { className: "mt-1.5" },
+          h(Markdown, { content: safeMarkdown(interaction.prompt), className: "text-sm text-muted-foreground" }),
+        )
+      : null,
+    interaction.kind === "approval"
+      ? h(ApprovalControls, { interaction, pending, onResolve: resolve })
+      : interaction.kind === "user-question"
+        ? h(UserQuestionControls, { interaction, pending, onResolve: resolve })
+        : h(
+            "div",
+            { className: "mt-3" },
+            h(ActionButton, {
+              label: "Respond in the thread",
+              variant: "secondary",
+              onClick: () => ctx.onOpenThread(interaction.threadId),
+            }),
+          ),
+  );
+}
+
+/** Reveal a focused card: open collapsed ancestors and the row expander. */
+function revealQuestion(id: string) {
+  if (typeof document === "undefined") return;
+  const element = document.getElementById(`question-${id}`);
+  if (!element) return;
+  const rowDetails = element.querySelector(":scope > details");
+  if (rowDetails instanceof HTMLDetailsElement) rowDetails.open = true;
+  let node = element.parentElement;
+  while (node) {
+    if (node instanceof HTMLDetailsElement) node.open = true;
+    node = node.parentElement;
+  }
+  if (typeof element.scrollIntoView === "function") {
+    element.scrollIntoView({ block: "nearest" });
+  }
+}
+
+export function QuestionsView(props: {
+  snapshot: ProtocolSnapshot;
+  interactions: PendingInteractionsProjection | null;
+  ctx: ViewContext;
+  focusQuestionId?: string | null;
+}): ReactNode {
+  const { snapshot, interactions, ctx } = props;
+  const focusQuestionId = props.focusQuestionId ?? null;
+  const [query, setQuery] = useState("");
+  const [kindFilter, setKindFilter] = useState<KindFilter>("all");
+  const [stateFilter, setStateFilter] = useState<StateFilter>("all");
+  const [locallyAnswered, setLocallyAnswered] = useState<ReadonlySet<string>>(() => new Set());
+  const [answeredOpen, setAnsweredOpen] = useState(false);
+  const digest = ctx.revision?.protocolDigest ?? null;
+
+  // Optimistic answers are stale once the protocol files actually change.
+  useEffect(() => {
+    setLocallyAnswered((current) => (current.size === 0 ? current : new Set()));
+  }, [digest]);
+
+  const isAnswered = (question: Question) =>
+    question.answer !== null || locallyAnswered.has(question.id);
+
+  const filtered = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return snapshot.questions.filter((question) => {
+      if (kindFilter !== "all" && question.classification !== kindFilter) return false;
+      const answered = question.answer !== null || locallyAnswered.has(question.id);
+      if (stateFilter === "open" && answered) return false;
+      if (stateFilter === "answered" && !answered) return false;
+      if (needle && !`${question.id} ${question.question} ${question.context}`.toLowerCase().includes(needle)) {
+        return false;
+      }
+      return true;
+    });
+  }, [snapshot.questions, kindFilter, stateFilter, query, locallyAnswered]);
+
+  const openQuestions = filtered
+    .filter((question) => !isAnswered(question))
+    .sort(
+      (left, right) =>
+        (left.classification === "blocking" ? 0 : 1) - (right.classification === "blocking" ? 0 : 1),
+    );
+  const answeredQuestions = filtered.filter((question) => isAnswered(question));
+
+  useEffect(() => {
+    if (focusQuestionId) revealQuestion(focusQuestionId);
+  }, [focusQuestionId, digest]);
+
+  const recordAnswer = (questionId: string, answer: string) => {
+    ctx.onAction({ kind: "answer-question", source: "repository-question", questionId, answer });
+    setLocallyAnswered((current) => {
+      const next = new Set(current);
+      next.add(questionId);
+      return next;
+    });
+  };
+
+  const pendingInteractions = interactions?.interactions ?? [];
+  const filtersActive = query.trim() !== "" || kindFilter !== "all" || stateFilter !== "all";
+  const forceAnsweredOpen =
+    stateFilter === "answered" ||
+    (focusQuestionId !== null && answeredQuestions.some((question) => question.id === focusQuestionId));
+
+  return h(
+    "div",
+    { className: "space-y-4" },
+    h(FeedbackNotice, { feedback: ctx.feedback }),
+    h(
+      "div",
+      { className: "flex flex-wrap items-center gap-2" },
+      h("input", {
+        type: "search",
+        className: `${inputClass} min-w-48 flex-1`,
+        placeholder: "Filter by id, question, or context",
+        "aria-label": "Filter questions",
+        value: query,
+        onChange: (event: { target: { value: string } }) => setQuery(event.target.value),
+      }),
+      h(
+        "select",
+        {
+          className: inputClass,
+          "aria-label": "Question kind",
+          value: kindFilter,
+          onChange: (event: { target: { value: string } }) => setKindFilter(event.target.value as KindFilter),
+        },
+        h("option", { value: "all" }, "All"),
+        h("option", { value: "blocking" }, "Blocking"),
+        h("option", { value: "assumption" }, "Assumption"),
+      ),
+      h(
+        "select",
+        {
+          className: inputClass,
+          "aria-label": "Question state",
+          value: stateFilter,
+          onChange: (event: { target: { value: string } }) => setStateFilter(event.target.value as StateFilter),
+        },
+        h("option", { value: "all" }, "All"),
+        h("option", { value: "open" }, "Open"),
+        h("option", { value: "answered" }, "Answered"),
+      ),
+    ),
+    pendingInteractions.length > 0
+      ? h(Section, {
+          title: "BB questions",
+          count: pendingInteractions.length,
+          children: pendingInteractions.map((interaction) =>
+            h(PendingInteractionRow, { key: interaction.interactionId, interaction, ctx }),
+          ),
+        })
+      : null,
+    filtered.length === 0
+      ? h(EmptyNotice, {
+          title: "No questions",
+          detail: filtersActive
+            ? "No repository questions match the current filters."
+            : "The selected repository has no parsed questions.",
+        })
+      : h(
+          "div",
+          { className: "space-y-3" },
+          openQuestions.map((question) =>
+            h(RepositoryQuestionCard, {
+              key: question.id,
+              question,
+              gates: questionGates(snapshot, question.id),
+              pending: ctx.pendingTarget === `question:${question.id}`,
+              onRecord: recordAnswer,
+              onOpenGated: (queueItemId) => ctx.onOpenSection("work", `work-${queueItemId}`),
+            }),
+          ),
+          answeredQuestions.length > 0
+            ? h(
+                "details",
+                {
+                  className: "group",
+                  "data-testid": "answered-questions",
+                  open: answeredOpen || forceAnsweredOpen,
+                  onToggle: (event: { currentTarget: HTMLDetailsElement }) =>
+                    setAnsweredOpen(event.currentTarget.open),
+                },
+                h(
+                  "summary",
+                  {
+                    className:
+                      "cursor-pointer list-none select-none rounded-md px-1 py-1.5 hover:bg-state-hover",
+                    onClick: (event: { preventDefault(): void }) => {
+                      event.preventDefault();
+                      setAnsweredOpen((value) => !value);
+                    },
+                  },
+                  h(
+                    "div",
+                    { className: "flex items-center gap-2" },
+                    h("h2", { className: "text-sm font-semibold text-foreground" }, "Answered"),
+                    h(
+                      "span",
+                      {
+                        className:
+                          "rounded-full bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground",
+                      },
+                      String(answeredQuestions.length),
+                    ),
+                  ),
+                ),
+                (answeredOpen || forceAnsweredOpen)
+                  ? h(
+                      "div",
+                      { className: "mt-1 divide-y divide-border" },
+                      answeredQuestions.map((question) =>
+                        h(AnsweredQuestionRow, {
+                          key: question.id,
+                          question,
+                          recorded: question.answer === null,
+                        }),
+                      ),
+                    )
+                  : null,
+              )
+            : null,
+        ),
+  );
+}

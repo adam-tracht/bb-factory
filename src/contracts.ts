@@ -57,6 +57,7 @@ export const repositoryRegistryEntrySchema = z
     configuration: repositoryConfigurationSchema,
     projectId: nonEmptyString,
     environmentId: nonEmptyString,
+    dispatchPaused: z.boolean().optional(),
   })
   .strict();
 export type RepositoryRegistryEntry = z.infer<typeof repositoryRegistryEntrySchema>;
@@ -287,6 +288,7 @@ export const queueStatusSchema = z.discriminatedUnion("kind", [
   z
     .object({ kind: z.literal("blocked-by"), questionId: nonEmptyString, detail: nonEmptyString.optional() })
     .strict(),
+  z.object({ kind: z.literal("unknown"), raw: nonEmptyString }).strict(),
 ]);
 export type QueueStatus = z.infer<typeof queueStatusSchema>;
 
@@ -326,6 +328,7 @@ export const queueEntrySchema = z
     validate: z.array(nonEmptyString),
     notes: z.string().nullable(),
     blockingQuestionIds: z.array(nonEmptyString),
+    blockedBy: z.array(nonEmptyString),
     eligible: z.boolean(),
     eligibilityReasons: z.array(queueEligibilityReasonSchema),
   })
@@ -733,7 +736,9 @@ export const bbInteractionActionRequestSchema = z
     repositoryKey: repositoryKeySchema,
     action: bbInteractionActionSchema,
     idempotencyKey: idempotencyKeySchema,
-    expectedRevision: repositoryRevisionSchema,
+    // Optional so dispatch controls keep working when the repository protocol
+    // files fail to parse (the stale-revision guard is skipped when absent).
+    expectedRevision: repositoryRevisionSchema.optional(),
   })
   .strict()
   .superRefine(validateIdempotencyBinding);
@@ -844,6 +849,9 @@ export type RepositorySelectionInput = z.infer<typeof repositorySelectionInputSc
 export const repositorySelectionSchema = z
   .object({
     configuration: repositoryConfigurationSchema,
+    projectId: nonEmptyString,
+    environmentId: nonEmptyString,
+    dispatchPaused: z.boolean(),
     selected: z.boolean(),
     available: z.boolean(),
     reasons: z.array(nonEmptyString),
@@ -875,6 +883,7 @@ export type SettingsValidation = z.infer<typeof settingsValidationSchema>;
 export const dispatchStatusSchema = z
   .object({
     mode: z.enum(["enabled", "paused"]),
+    repositoryPaused: z.boolean(),
     acceptingNewRuns: z.boolean(),
     activeRunCount: z.number().int().nonnegative(),
     reason: nonEmptyString.nullable(),
@@ -1058,3 +1067,74 @@ export const operationalRunDetailProjectionSchema = z
   .object({ run: operationalRunDetailSchema.nullable() })
   .strict();
 export type OperationalRunDetailProjection = z.infer<typeof operationalRunDetailProjectionSchema>;
+
+/**
+ * Writable global dispatch settings. `null` unsets an optional value; absent
+ * keys are left unchanged. Applied through the plugin settings handle.
+ */
+export const factorySettingsPatchSchema = z
+  .object({
+    dispatchMode: z.enum(["enabled", "paused"]).optional(),
+    scheduleCron: nonEmptyString.nullable().optional(),
+    timeZone: nonEmptyString.optional(),
+    nightWindowEndHour: z.number().int().min(0).max(23).optional(),
+    runtimeCapSeconds: z.number().int().positive().optional(),
+    providerPreference: providerPreferenceSchema.nullable().optional(),
+    minimumStartGapSeconds: z.number().int().min(3600).optional(),
+    concurrencyLimit: z.number().int().positive().optional(),
+  })
+  .strict()
+  .refine((patch) => Object.keys(patch).length > 0, "at least one settings field is required");
+export type FactorySettingsPatch = z.infer<typeof factorySettingsPatchSchema>;
+
+export const settingsMutationResultSchema = z.discriminatedUnion("ok", [
+  z.object({ ok: z.literal(true), message: nonEmptyString }).strict(),
+  z.object({ ok: z.literal(false), error: factoryErrorSchema }).strict(),
+]);
+export type SettingsMutationResult = z.infer<typeof settingsMutationResultSchema>;
+
+export const updateSettingsInputSchema = z
+  .object({ repositoryKey: repositoryKeySchema, patch: factorySettingsPatchSchema })
+  .strict();
+export type UpdateSettingsInput = z.infer<typeof updateSettingsInputSchema>;
+
+export const updateRepositoryInputSchema = z
+  .object({ repositoryKey: repositoryKeySchema, dispatchPaused: z.boolean() })
+  .strict();
+export type UpdateRepositoryInput = z.infer<typeof updateRepositoryInputSchema>;
+
+export const addRepositoryInputSchema = z
+  .object({
+    configuration: z
+      .object({
+        repositoryKey: repositoryKeySchema,
+        repositoryRoot: absolutePath,
+        connectedHostId: nonEmptyString,
+        checkoutPath: absolutePath,
+        mainRef: nonEmptyString.default("origin/main"),
+      })
+      .strict(),
+    projectId: nonEmptyString,
+    environmentId: nonEmptyString,
+    dispatchPaused: z.boolean().default(true),
+  })
+  .strict();
+export type AddRepositoryInput = z.infer<typeof addRepositoryInputSchema>;
+
+export const registryOptionHostSchema = z
+  .object({ hostId: nonEmptyString, label: nonEmptyString.nullable(), status: nonEmptyString })
+  .strict();
+export type RegistryOptionHost = z.infer<typeof registryOptionHostSchema>;
+
+export const registryOptionProjectSchema = z
+  .object({ projectId: nonEmptyString, label: nonEmptyString.nullable() })
+  .strict();
+export type RegistryOptionProject = z.infer<typeof registryOptionProjectSchema>;
+
+export const registryOptionsProjectionSchema = z
+  .object({
+    hosts: z.array(registryOptionHostSchema),
+    projects: z.array(registryOptionProjectSchema),
+  })
+  .strict();
+export type RegistryOptionsProjection = z.infer<typeof registryOptionsProjectionSchema>;

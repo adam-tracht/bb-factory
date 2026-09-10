@@ -117,7 +117,7 @@ async function queueEntry(
   policy: ProtocolRepositoryPolicy,
   dependencyResolver: ProtocolDependencyResolver | undefined,
 ): Promise<QueueEntry> {
-  const referencedQuestionIds = new Set<string>();
+  const referencedQuestionIds = new Set<string>(parsed.blockedBy);
   if (parsed.status.kind === "blocked-by") {
     referencedQuestionIds.add(parsed.status.questionId);
   }
@@ -162,11 +162,13 @@ async function queueEntry(
       ? { kind: "in-progress" as const, detail: parsed.status.detail }
       : parsed.status.kind === "done"
         ? { kind: "done" as const, ...(parsed.status.detail ? { detail: parsed.status.detail } : {}) }
-        : {
-            kind: "blocked-by" as const,
-            questionId: parsed.status.questionId,
-            ...(parsed.status.detail ? { detail: parsed.status.detail } : {}),
-          };
+        : parsed.status.kind === "unknown"
+          ? { kind: "unknown" as const, raw: parsed.status.raw }
+          : {
+              kind: "blocked-by" as const,
+              questionId: parsed.status.questionId,
+              ...(parsed.status.detail ? { detail: parsed.status.detail } : {}),
+            };
   const value = {
     id: parsed.id,
     title: parsed.title,
@@ -182,6 +184,7 @@ async function queueEntry(
     validate: [...parsed.validate],
     notes: parsed.notes,
     blockingQuestionIds: [...referencedQuestionIds].filter((id) => openQuestions.some((question) => question.id === id)),
+    blockedBy: [...referencedQuestionIds],
     eligible: eligibilityReasons.length === 0,
     eligibilityReasons,
   };

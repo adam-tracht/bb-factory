@@ -5,10 +5,13 @@ import {
   factoryActionResultSchema,
   type FactoryActionResult,
   type InvalidationEvent,
+  type SettingsMutationResult,
 } from "../contracts.js";
+import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { actionError } from "../actions/results.js";
 import { errorMessage } from "../errors.js";
 import type { FactoryComposition } from "../services/action-composition.js";
+import { createSettingsMutationHandlers } from "../services/settings-mutations.js";
 import type { FactoryReadRpcHandlers } from "./read-router.js";
 import { createFactoryReadRpcHandlers } from "./read-router.js";
 
@@ -21,10 +24,41 @@ import { createFactoryReadRpcHandlers } from "./read-router.js";
 export function createFactoryRpcHandlers(
   getComposition: () => FactoryComposition,
   publish: (event: InvalidationEvent) => void,
+  options: {
+    applySettings?: (values: Record<string, string | number | boolean | null>) => Promise<void>;
+    sdk?: BbPluginApi["sdk"];
+  } = {},
 ): FactoryReadRpcHandlers {
   const read = createFactoryReadRpcHandlers(getComposition);
+  const mutations = options.applySettings && options.sdk
+    ? createSettingsMutationHandlers({
+        getSettings: () => getComposition().settings,
+        getComposition,
+        applySettings: options.applySettings,
+        sdk: options.sdk,
+      })
+    : null;
+  const mutationsUnavailable = (): SettingsMutationResult => ({
+    ok: false,
+    error: {
+      category: "unsupported",
+      message: "Settings writes are not available in this runtime.",
+    },
+  });
   return {
     ...read,
+    async factory_update_settings(input) {
+      return mutations ? mutations.factory_update_settings(input) : mutationsUnavailable();
+    },
+    async factory_update_repository(input) {
+      return mutations ? mutations.factory_update_repository(input) : mutationsUnavailable();
+    },
+    async factory_add_repository(input) {
+      return mutations ? mutations.factory_add_repository(input) : mutationsUnavailable();
+    },
+    async factory_registry_options() {
+      return getComposition().listRegistryOptions();
+    },
     async factory_action(input) {
       const composition = getComposition();
       const revisionFree = revisionFreeActionRequestSchema.safeParse(input);
