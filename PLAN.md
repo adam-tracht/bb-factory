@@ -7,7 +7,7 @@
 The implementation must preserve the behavior already encoded in the dispatcher and in the two managed repositories. Current behavior includes:
 
 - One unattended foreman per repository during the night window, working on `factory`, never merging or switching to `main`.
-- Human authorization for the initial queue transition to `ready`, satisfied dependencies, and no open blocking question before work can start.
+- For each selected queue item: human authorization for its initial transition to `ready`, satisfied dependencies, and no open blocking question on that item before work can start.
 - Repository-specific `plans/factory/foreman.md` and `repo.md` rules, queue entries, current state, immutable run records, questions, lock files, checks, dashboards, and integration policies.
 - A runtime cap that defaults to 10,800 seconds, provider retry and failover behavior, and a default one-hour minimum gap between foreman starts. The spacing must be configurable, with the current one-hour behavior as the default and the rolling-hour safety guard preserved.
 - Dispatcher state containing active thread and provider, start times, provider limits, last foreman state, failure and no-op counts, and the current night key. `noopCount` resets on a night-key change, not after a successful run.
@@ -75,7 +75,7 @@ No task may edit another task's owned module without first updating the interfac
 
 Run these tasks in parallel with separate file ownership:
 
-- **Luna xhigh, protocol adapter:** implement repository discovery and root confinement; parse both repositories' `plans/factory/` files; expose queue eligibility, dependencies, blocking questions, current state, immutable run records, dashboard rows, and merge-state projections. Preserve Markdown customizations rather than normalizing them into a generic policy language. Parse enough structure to explain why an item is or is not eligible, including authorization provenance when present.
+- **Luna xhigh, protocol adapter:** implement repository discovery and root confinement; parse both repositories' `plans/factory/` files; expose per-item queue eligibility, dependencies, item-level blocking questions, current state, immutable run records, dashboard rows, and merge-state projections. Preserve Markdown customizations rather than normalizing them into a generic policy language. Parse enough structure to explain why each item is or is not eligible, including authorization provenance when present. One blocked item must not prevent another eligible item from dispatching.
 - **Luna xhigh, operational state:** implement SQLite initialization, append-only migrations, read models for run history and current ownership, and transaction helpers. Add uniqueness constraints for run creation, dispatch attempts, question answers, and repository writes. Do not persist queue or question copies.
 - **Luna xhigh, UI:** implement read-only Overview, Queue, Questions, Runs, and Settings panels using typed projections. Overview shows repository health, current foreman state, spacing/window status, host prerequisites, and the canonical dashboard link. Runs link every execution to stable BB thread, project, environment, provider, and repository revision identifiers. Settings show validation and status without returning secrets.
 After each Luna task, run a separate Sol low review in this order: first check the frozen contract, repository protocol, and acceptance criteria; then check reuse, simplicity, and maintainability. The task owner fixes concrete review findings before its output becomes a dependency. Finish with one Sol low product review across the assembled read-only surfaces, including whether main-branch integration is presented only as a report.
@@ -86,7 +86,7 @@ After each Luna task, run a separate Sol low review in this order: first check t
 
 **Dependency:** Phase 1 projections and the frozen write/RPC interfaces.
 
-- **Luna xhigh, repository actions:** implement narrow actions for queue approval, queue updates allowed by the repository protocol, and question updates or resolution where the authoritative source permits it. Every action validates the target path, expected content or revision, authorization provenance, dependencies, blocking-question state, and repository-specific policy before writing.
+- **Luna xhigh, repository actions:** implement narrow actions for queue approval, queue updates allowed by the repository protocol, and question updates or resolution where the authoritative source permits it. Every action validates the target path, expected content or revision, authorization provenance, that item's dependencies, that item's blocking-question state, and repository-specific policy before writing. A blocked item remains blocked without preventing other eligible items from proceeding.
 - **Luna xhigh, BB interaction actions:** implement Answer question, Approve queue, Retry, Pause, and Stop request plumbing. Answer resolves one identified BB interaction once and repeated submissions return the prior outcome. Retry references a failed attempt and uses bounded retry policy; it must not duplicate the original user message. Stop requests cancellation and preserves history, repository records, and user-authored queue items.
 Each Luna task receives its own Sol low review before integration: spec and authorization compliance first, then reuse, simplicity, and maintainability. The policy review must cover edge cases where a generic action would violate either repository's `repo.md`, especially main-branch, deployment, migration, dbt, and non-dbt integration rules. The UI must state the active rule at the action point and reject, rather than broaden, permissions.
 
@@ -136,7 +136,7 @@ A rollout is accepted only when all of these are demonstrated for each repositor
 - The plugin runs on an always-on BB host and reports the connected checkout and any host-local browser or dbt prerequisite accurately.
 - Exactly one dispatch owner exists. A restart, reconnect, cron replay, double-click, or recovery attempt cannot create a duplicate run.
 - The configured spacing and night window behave as displayed, while the rolling-hour safety rule remains enforced.
-- Initial queue authorization is human-only. Dependencies and blocking questions gate dispatch, and authorization provenance is visible.
+- Queue eligibility is evaluated per item: each item needs human-only initial authorization, satisfied dependencies, and no open blocking question attached to that item. A blocked item does not gate other eligible items, and authorization provenance is visible.
 - Queue and Questions views reflect repository files and BB pending interactions, not a plugin task or question database.
 - Preview performs no dispatch, write, branch, or schedule mutation. Run now creates one durable intent. Pause, Stop, Approve, Answer, Retry, and Integration follow their defined semantics.
 - A stale repository write fails safely. A cancellation, host outage, provider limit, and interrupted worker leave enough durable state for reconciliation.
