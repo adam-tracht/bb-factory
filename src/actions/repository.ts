@@ -11,15 +11,13 @@ import { ProtocolError } from "../protocol/errors.js";
 import { confinedPath, digestText, readTextFile, type ProtocolFiles } from "../protocol/files.js";
 import { PROTOCOL_PATHS } from "../protocol/paths.js";
 import {
-  IdempotencyConflictError,
-  PendingActionIntentExpiredError,
   type OperationalStateStore,
   type PendingActionFileChange,
   type PendingActionIntentRecord,
   type PendingActionIntentTarget,
 } from "../storage/index.js";
 import { ActionTargetMissingError, writeQuestionAnswer, writeQueueApproval } from "./markdown.js";
-import { recordedIntentResult } from "./intents.js";
+import { claimErrorResult, completeIntent, consumedResult, reconcileIntent, recordedIntentResult } from "./intents.js";
 import { actionError, actionSuccess, errorMessage, sameRevision, staleRevisionError } from "./results.js";
 
 export interface RepositoryFileWriter {
@@ -98,6 +96,30 @@ function planRepositoryAction(snapshot: ProtocolSnapshot, request: RepositoryAct
   if (entry.status.kind === "in-progress") {
     return actionError("conflict", `Queue item '${entry.id}' is already in progress: ${entry.status.detail}`, request.idempotencyKey);
   }
+  if (entry.status.kind === "done") {
+    return actionError("conflict", `Queue item '${entry.id}' is already done and cannot transition to ready.`, request.idempotencyKey);
+  }
+  if (entry.blockingQuestionIds.length > 0) {
+    return actionError(
+      "blocked-by-question",
+      `Queue item '${entry.id}' is blocked by open question(s): ${entry.blockingQuestionIds.join(", ")}. Answer them before approval.`,
+      request.idempotencyKey,
+    );
+  }
+  if (entry.eligibilityReasons.includes("unmet-dependency")) {
+    return actionError(
+      "dependency-unsatisfied",
+      `Queue item '${entry.id}' has unsatisfied dependencies: ${entry.dependsOn.join(", ") || "see depends_on"}.`,
+      request.idempotencyKey,
+    );
+  }
+  if (entry.eligibilityReasons.includes("repository-policy")) {
+    return actionError(
+      "authorization-required",
+      `Queue item '${entry.id}' is ineligible under the repository's repo.md policy.`,
+      request.idempotencyKey,
+    );
+  }
   if (entry.approved.kind === "explicit" && entry.approved.text !== action.approvedText) {
     return actionError(
       "conflict",
@@ -111,18 +133,6 @@ function planRepositoryAction(snapshot: ProtocolSnapshot, request: RepositoryAct
     alreadyApplied: false,
     build: (content) => writeQueueApproval(content, entry.id, action.approvedText),
   };
-}
-
-function consumedResult(record: PendingActionIntentRecord): FactoryActionResult {
-  if (record.result) return record.result;
-  if (record.status === "reconciliation-required") {
-    return actionError(
-      "conflict",
-      `Action '${record.idempotencyKey}' needs reconciliation: ${record.lastError ?? "the external result is ambiguous"}.`,
-      record.idempotencyKey,
-    );
-  }
-  return actionError("conflict", `Action '${record.idempotencyKey}' is already being executed.`, record.idempotencyKey);
 }
 
 export function createRepositoryActionExecutor(options: RepositoryActionExecutorOptions): RepositoryActionExecutor {
@@ -229,51 +239,30 @@ export function createRepositoryActionExecutor(options: RepositoryActionExecutor
         : options.store.claimPendingActionIntent({ request: valid, target: plan.target, fileChange: change });
       record = claim.record;
     } catch (error) {
-      if (error instanceof IdempotencyConflictError) {
-        return actionError("idempotency-conflict", errorMessage(error), valid.idempotencyKey);
-      }
-      if (error instanceof PendingActionIntentExpiredError) {
-        return actionError("invalid-input", errorMessage(error), valid.idempotencyKey);
-      }
-      return actionError("internal", errorMessage(error), valid.idempotencyKey);
+      return claimErrorResult(error, valid.idempotencyKey);
     }
-    if (record.status === "completed" && record.result) return record.result;
-    if (record.status === "reconciliation-required") return consumedResult(record);
+    if (record.status === "completed" || record.status === "reconciliation-required") {
+      return consumedResult(record);
+    }
 
     let consumption;
     try {
       consumption = options.store.consumePendingActionIntent(valid.idempotencyKey);
     } catch (error) {
-      if (error instanceof PendingActionIntentExpiredError) {
-        return actionError("invalid-input", errorMessage(error), valid.idempotencyKey);
-      }
-      return actionError("internal", errorMessage(error), valid.idempotencyKey);
+      return claimErrorResult(error, valid.idempotencyKey);
     }
     if (!consumption.consumed) return consumedResult(consumption.record);
-
-    const applyResult = async (result: FactoryActionResult, observedStatus?: "written" | "conflict" | "verified") => {
-      options.store.updatePendingActionIntent({
-        idempotencyKey: valid.idempotencyKey,
-        status: "completed",
-        result,
-        ...(observedStatus === undefined ? {} : { observedStatus }),
-      });
-      return result;
-    };
-    const reconcile = (message: string, observedStatus?: "written" | "conflict" | "verified") => {
-      options.store.updatePendingActionIntent({
-        idempotencyKey: valid.idempotencyKey,
-        status: "reconciliation-required",
-        lastError: message,
-        ...(observedStatus === undefined ? {} : { observedStatus }),
-      });
-      return actionError("conflict", `${message} The action was marked for reconciliation and was not retried.`, valid.idempotencyKey);
-    };
+    record = consumption.record;
+    const store = options.store;
+    const complete = (result: FactoryActionResult, observedStatus?: "written" | "conflict" | "verified") =>
+      completeIntent(store, record, result, observedStatus === undefined ? undefined : { observedStatus });
+    const reconcile = (message: string, observedStatus?: "written" | "conflict" | "verified") =>
+      reconcileIntent(store, record, message, observedStatus === undefined ? undefined : { observedStatus });
 
     const alreadyApplied = change.intendedSha256 === change.expectedSha256;
     if (alreadyApplied) {
       const revision = await reloadRevision(configuration);
-      return applyResult(actionSuccess(outcomeFor(valid, plan, "already-applied", revision), revision), "verified");
+      return complete(actionSuccess(outcomeFor(valid, plan, "already-applied", revision), revision), "verified");
     }
 
     let writeOutcome: Awaited<ReturnType<RepositoryFileWriter["write"]>>;
@@ -290,10 +279,10 @@ export function createRepositoryActionExecutor(options: RepositoryActionExecutor
         const observed = await postVerify(configuration, change);
         if (observed.verified) {
           const revision = await reloadRevision(configuration);
-          return applyResult(actionSuccess(outcomeFor(valid, plan, "accepted", revision), revision), "verified");
+          return complete(actionSuccess(outcomeFor(valid, plan, "accepted", revision), revision), "verified");
         }
         if (observed.currentSha256 === change.expectedSha256) {
-          return applyResult(
+          return complete(
             actionError("internal", `Repository write failed before it was applied: ${errorMessage(error)}`, valid.idempotencyKey),
             "conflict",
           );
@@ -305,7 +294,7 @@ export function createRepositoryActionExecutor(options: RepositoryActionExecutor
     }
 
     if (writeOutcome.outcome === "conflict") {
-      return applyResult(
+      return complete(
         actionError(
           "conflict",
           `File '${change.relativePath}' changed after the preflight read; the intended write was not applied.`,
@@ -328,7 +317,7 @@ export function createRepositoryActionExecutor(options: RepositoryActionExecutor
     }
 
     const revision = await reloadRevision(configuration);
-    return applyResult(actionSuccess(outcomeFor(valid, plan, "accepted", revision), revision), "verified");
+    return complete(actionSuccess(outcomeFor(valid, plan, "accepted", revision), revision), "verified");
   }
 
   return { execute };

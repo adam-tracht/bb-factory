@@ -2,9 +2,13 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type {
   DispatcherState,
   OperationalStateStore,
+  RunDispatchUpdate,
 } from "../storage/index.js";
 import type {
+  CanonicalFileRecordLink,
   FactorySettings,
+  OperationalRunStatus,
+  OperationalRunSummary,
   RepositoryKey,
   RepositoryRegistryEntry,
 } from "../contracts.js";
@@ -52,4 +56,37 @@ export function nightKeyAt(date: Date, windowEndHour: number): string {
 export function nightState(state: DispatcherState, nightKey: string): DispatcherState {
   if (state.nightKey === nightKey) return state;
   return { ...state, nightKey, lastState: "", failedCount: 0, noopCount: 0, lastStartProvider: "" };
+}
+
+/**
+ * Builds a RunDispatchUpdate from the recorded run, applying the caller's
+ * overrides. Unrecorded identities fall back to explicit sentinels rather than
+ * null so stored rows stay queryable.
+ */
+export function runDispatchUpdate(
+  run: OperationalRunSummary,
+  update: {
+    status: Exclude<OperationalRunStatus, "pending">;
+    finishedAt?: string | null;
+    providerId?: string;
+    workerThreadId?: string;
+    projectId?: string;
+    environmentId?: string;
+    repositoryRevision?: OperationalRunSummary["repositoryRevision"];
+    canonicalRecords?: readonly CanonicalFileRecordLink[];
+  },
+): RunDispatchUpdate {
+  return {
+    repositoryKey: run.repositoryKey,
+    runId: run.runId,
+    status: update.status,
+    startedAt: run.startedAt,
+    finishedAt: update.finishedAt === undefined ? run.finishedAt : update.finishedAt,
+    providerId: update.providerId ?? run.providerId ?? "unknown",
+    workerThreadId: update.workerThreadId ?? run.workerThreadId ?? "unknown-thread",
+    projectId: update.projectId ?? run.projectId ?? "unknown",
+    environmentId: update.environmentId ?? run.environmentId ?? "unknown",
+    repositoryRevision: update.repositoryRevision ?? run.repositoryRevision,
+    ...(update.canonicalRecords === undefined ? {} : { canonicalRecords: update.canonicalRecords }),
+  };
 }

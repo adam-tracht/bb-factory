@@ -8,6 +8,7 @@ import {
   type RepositoryKey,
 } from "../contracts.js";
 import type { FactoryHealthReader } from "../ports.js";
+import { errorMessage } from "../errors.js";
 import { normalizeAbsolutePath } from "../protocol/files.js";
 
 type BbSdk = BbPluginApi["sdk"];
@@ -23,10 +24,6 @@ type Environment = Awaited<ReturnType<BbSdk["environments"]["get"]>>;
 export interface LiveHealthOptions {
   readonly sdk: BbSdk;
   readonly repositoryLookup: (repositoryKey: RepositoryKey) => RepositoryRegistryEntry | null;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error && error.message.trim() ? error.message : String(error);
 }
 
 export async function validateConfiguredEnvironment(

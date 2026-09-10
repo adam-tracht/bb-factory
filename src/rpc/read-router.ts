@@ -6,6 +6,7 @@ import {
   type FactoryActionRequest,
   type RepositoryKey,
 } from "../contracts.js";
+import { errorMessage } from "../errors.js";
 import { factoryRpcContract, type FactoryRpcContract } from "../rpc.js";
 import type { ReadComposition } from "../services/read-composition.js";
 
@@ -33,10 +34,6 @@ function disabledAction(request: FactoryActionRequest) {
       idempotencyKey: request.idempotencyKey,
     },
   };
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error && error.message.trim() ? error.message : String(error);
 }
 
 function providerReadFailure(error: unknown): ProviderStatus {

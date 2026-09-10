@@ -5,6 +5,7 @@ import type {
   RepositoryKey,
   RepositoryRevision,
 } from "../contracts.js";
+import { errorMessage } from "../errors.js";
 import { ProtocolError } from "../protocol/errors.js";
 import { readTextFile } from "../protocol/files.js";
 import { parseCurrentState } from "../protocol/markdown.js";
@@ -16,15 +17,12 @@ import {
   dispatcherNowSeconds,
   nightKeyAt,
   nightState,
+  runDispatchUpdate,
   type DispatchContext,
 } from "./types.js";
 
 type ThreadStatusValue = "active" | "error" | "idle" | "pending" | "starting" | "stopping";
 type ForemanState = "success" | "blocked" | "failed-safe" | "no-op";
-
-function errorText(error: unknown): string {
-  return error instanceof Error && error.message.trim() ? error.message : String(error);
-}
 
 function outcomeToStatus(state: ForemanState): "completed" | "blocked" | "failed-safe" | "no-op" {
   return state === "success" ? "completed" : state;
@@ -120,11 +118,8 @@ function finalizeRun(
 ): void {
   const run = detail.summary;
   ctx.store.withTransaction((transaction) => {
-    transaction.updateRunDispatch({
-      repositoryKey: run.repositoryKey,
-      runId: run.runId,
+    transaction.updateRunDispatch(runDispatchUpdate(run, {
       status: input.status,
-      startedAt: run.startedAt,
       finishedAt: input.finishedAt,
       providerId: input.providerId,
       workerThreadId: input.workerThreadId,
@@ -132,7 +127,7 @@ function finalizeRun(
       environmentId: input.environmentId,
       repositoryRevision: input.revision,
       canonicalRecords: input.canonicalRecords,
-    });
+    }));
     for (const attempt of detail.attempts) {
       if (attempt.status === "started" || attempt.status === "cancel-requested" || attempt.status === "pending") {
         transaction.updateDispatchAttempt({ ...attempt, status: input.status, finishedAt: input.finishedAt });
@@ -170,18 +165,12 @@ function markRunForReconciliation(
   const entry = ctx.repositoryLookup(run.repositoryKey);
   const finishedAt = ctx.now().toISOString();
   ctx.store.withTransaction((transaction) => {
-    transaction.updateRunDispatch({
-      repositoryKey: run.repositoryKey,
-      runId: run.runId,
+    transaction.updateRunDispatch(runDispatchUpdate(run, {
       status: "reconciliation-required",
-      startedAt: run.startedAt,
       finishedAt: run.finishedAt ?? finishedAt,
-      providerId: run.providerId ?? "unknown",
-      workerThreadId: run.workerThreadId ?? "unknown-thread",
       projectId: run.projectId ?? entry?.projectId ?? "unknown",
       environmentId: run.environmentId ?? entry?.environmentId ?? "unknown",
-      repositoryRevision: run.repositoryRevision,
-    });
+    }));
     for (const attempt of detail.attempts) {
       if (attempt.status === "started" || attempt.status === "cancel-requested" || attempt.status === "pending") {
         transaction.updateDispatchAttempt({ ...attempt, status: "reconciliation-required", finishedAt: attempt.finishedAt ?? finishedAt });
@@ -208,7 +197,7 @@ async function reconcileStartedRun(ctx: DispatchContext, detail: OperationalRunD
     const thread = await ctx.sdk.threads.get({ threadId });
     threadStatus = thread.status as ThreadStatusValue;
   } catch (error) {
-    ctx.log?.(`run ${run.runId}: could not read worker thread '${threadId}': ${errorText(error)}; retrying next reconcile`);
+    ctx.log?.(`run ${run.runId}: could not read worker thread '${threadId}': ${errorMessage(error)}; retrying next reconcile`);
     return;
   }
 
@@ -222,22 +211,11 @@ async function reconcileStartedRun(ctx: DispatchContext, detail: OperationalRunD
     try {
       await ctx.sdk.threads.stop({ threadId });
     } catch (error) {
-      ctx.log?.(`run ${run.runId}: stop request for '${threadId}' failed: ${errorText(error)}; retrying next reconcile`);
+      ctx.log?.(`run ${run.runId}: stop request for '${threadId}' failed: ${errorMessage(error)}; retrying next reconcile`);
       return;
     }
     ctx.store.withTransaction((transaction) => {
-      transaction.updateRunDispatch({
-        repositoryKey: run.repositoryKey,
-        runId: run.runId,
-        status: "cancel-requested",
-        startedAt: run.startedAt,
-        finishedAt: null,
-        providerId: run.providerId!,
-        workerThreadId: threadId,
-        projectId: run.projectId!,
-        environmentId: run.environmentId!,
-        repositoryRevision: run.repositoryRevision,
-      });
+      transaction.updateRunDispatch(runDispatchUpdate(run, { status: "cancel-requested", finishedAt: null, workerThreadId: threadId }));
       for (const attempt of detail.attempts) {
         if (attempt.status === "started") {
           transaction.updateDispatchAttempt({ ...attempt, status: "cancel-requested" });
@@ -253,7 +231,7 @@ async function reconcileStartedRun(ctx: DispatchContext, detail: OperationalRunD
   try {
     current = await readCurrentState(ctx, run.repositoryKey, startedAtMs);
   } catch (error) {
-    markRunForReconciliation(ctx, detail, `could not read ${PROTOCOL_PATHS.current}: ${errorText(error)}`);
+    markRunForReconciliation(ctx, detail, `could not read ${PROTOCOL_PATHS.current}: ${errorMessage(error)}`);
     return;
   }
 

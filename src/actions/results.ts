@@ -55,6 +55,4 @@ export function sameRevision(left: RepositoryRevision, right: RepositoryRevision
   return leftKeys.every((key) => left.fileDigests[key] === right.fileDigests[key]);
 }
 
-export function errorMessage(error: unknown): string {
-  return error instanceof Error && error.message.trim() ? error.message : String(error);
-}
+export { errorMessage } from "../errors.js";

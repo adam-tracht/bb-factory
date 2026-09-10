@@ -1,4 +1,5 @@
 import type { HostPreflight, ProviderStatus, RepositoryKey } from "../contracts.js";
+import { errorMessage } from "../errors.js";
 import type { DispatcherState } from "../storage/index.js";
 import type { DispatchContext } from "./types.js";
 import { FACTORY_PROVIDERS, otherProvider, type FactoryProviderId } from "./types.js";
@@ -12,7 +13,7 @@ export async function hostPreflight(ctx: DispatchContext, repositoryKey: Reposit
     return {
       ok: false,
       hostId: "unknown",
-      reasons: [`Could not read host preflight: ${error instanceof Error ? error.message : String(error)}`],
+      reasons: [`Could not read host preflight: ${errorMessage(error)}`],
     };
   }
 }

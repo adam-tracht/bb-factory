@@ -15,7 +15,7 @@ import {
   type PendingActionIntentTarget,
 } from "../storage/index.js";
 import { actionError, actionSuccess, errorMessage } from "./results.js";
-import { claimErrorResult, completeIntent, consumedResult, reconcileIntent, recordedIntentResult } from "./intents.js";
+import { claimErrorResult, completeIntent, consumedResult, deepEqual, reconcileIntent, recordedIntentResult } from "./intents.js";
 
 type ThreadsApi = BbPluginApi["sdk"]["threads"];
 type SdkPendingInteraction = Awaited<ReturnType<ThreadsApi["interactions"]["get"]>>;
@@ -40,20 +40,6 @@ interface LocatedInteraction {
   readonly pending: PendingInteraction | null;
 }
 
-function stable(value: unknown): string {
-  return JSON.stringify(sortDeep(value));
-}
-
-function sortDeep(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortDeep);
-  if (value !== null && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => [k, sortDeep(v)]),
-    );
-  }
-  return value;
-}
-
 /** True when the resolved state BB recorded matches the validated intent. */
 function resolutionMatches(intent: BbInteractionResolution, observed: SdkPendingInteraction["resolution"]): boolean {
   if (intent.kind === "approval") {
@@ -63,7 +49,7 @@ function resolutionMatches(intent: BbInteractionResolution, observed: SdkPending
   if (intent.kind === "user_answer") {
     if (observed === null || typeof observed !== "object" || (observed as { kind?: unknown }).kind !== "user_answer") return false;
     const answers = (observed as { answers?: unknown }).answers;
-    return stable(answers ?? {}) === stable(intent.answers);
+    return deepEqual(answers ?? {}, intent.answers);
   }
   return false;
 }
@@ -137,12 +123,17 @@ function validateResolution(interaction: PendingInteraction, resolution: BbInter
 export function createBbInteractionActionExecutor(options: BbInteractionActionExecutorOptions): BbInteractionActionExecutor {
   const { threads, store, interactionReader, scopeLookup, dispatch, setDispatchMode } = options;
 
-  async function findPending(repositoryKey: RepositoryKey, interactionId: string): Promise<PendingInteraction | null> {
+  /**
+   * Reads the local pending-interaction projection. A read failure is kept as
+   * an error string instead of null so a caller can distinguish "not pending"
+   * from "could not verify"; unresolved interactions fail closed on it.
+   */
+  async function findPending(repositoryKey: RepositoryKey, interactionId: string): Promise<{ interaction: PendingInteraction | null; readError: string | null }> {
     try {
       const projection = await interactionReader.listPendingInteractions(repositoryKey);
-      return projection.interactions.find((candidate) => candidate.interactionId === interactionId) ?? null;
-    } catch {
-      return null;
+      return { interaction: projection.interactions.find((candidate) => candidate.interactionId === interactionId) ?? null, readError: null };
+    } catch (error) {
+      return { interaction: null, readError: errorMessage(error) };
     }
   }
 
@@ -179,7 +170,14 @@ export function createBbInteractionActionExecutor(options: BbInteractionActionEx
       return claimErrorResult(error, request.idempotencyKey);
     }
     if (!consumption.consumed) return consumedResult(consumption.record);
-    return perform(consumption.record);
+    try {
+      return await perform(consumption.record);
+    } catch (error) {
+      // The external side effect may already have happened. Do not let an
+      // ambiguous failure leave the intent resolving or get retried blindly.
+      reconcileIntent(store, consumption.record, `Unhandled executor failure: ${errorMessage(error)}`);
+      return actionError("internal", `The action failed after claiming intent '${request.idempotencyKey}': ${errorMessage(error)}`, request.idempotencyKey);
+    }
   }
 
   async function answerInteraction(
@@ -190,7 +188,7 @@ export function createBbInteractionActionExecutor(options: BbInteractionActionEx
     if (!scope) {
       return actionError("not-found", `Repository '${request.repositoryKey}' is not configured.`, request.idempotencyKey);
     }
-    const pending = await findPending(request.repositoryKey, action.interactionId);
+    const { interaction: pending, readError: pendingReadError } = await findPending(request.repositoryKey, action.interactionId);
     if (pending) {
       const invalid = validateResolution(pending, action.resolution);
       if (invalid) return invalid;
@@ -257,6 +255,17 @@ export function createBbInteractionActionExecutor(options: BbInteractionActionEx
         return reconcileIntent(store, record, `Cannot resolve ${describe}: it is already resolving.`, {
           observedStatus: "resolving",
         });
+      }
+
+      if (pendingReadError) {
+        // The interaction is still pending but its metadata could not be
+        // verified, so the resolution cannot be validated. Fail closed rather
+        // than submit an unvalidated answer to BB.
+        return completeIntent(store, record, actionError(
+          "internal",
+          `Cannot validate the resolution for ${describe}: the pending-interaction read failed: ${pendingReadError}`,
+          request.idempotencyKey,
+        ));
       }
 
       let resolved: SdkPendingInteraction;

@@ -252,6 +252,18 @@ describe("dispatch engine", () => {
     expect(detail.run?.summary.status).toBe("reconciliation-required");
   });
 
+  it("refuses to release ownership on a stop request for a reconciliation-required run", async () => {
+    const harness = makeHarness();
+    harness.threads.spawnError = new Error("connection reset during spawn");
+    await harness.engine.requestRun(MANUAL_REQUEST);
+    const runs = harness.store.listActiveRuns("monorepo");
+    const runId = runs[0]!.runId;
+
+    const stopped = await harness.engine.requestStop("monorepo");
+    expect(stopped).toMatchObject({ ok: false, error: { category: "conflict" } });
+    expect(harness.store.getLeaseForRun(runId)?.status).toBe("reconciliation-required");
+  });
+
   it("requests stop on the active run and releases the lease after the worker idles", async () => {
     const { engine, threads, store } = makeHarness();
     const started = await engine.requestRun(MANUAL_REQUEST);

@@ -7,6 +7,7 @@ import {
   type InvalidationEvent,
 } from "../contracts.js";
 import { actionError } from "../actions/results.js";
+import { errorMessage } from "../errors.js";
 import type { FactoryComposition } from "../services/action-composition.js";
 import type { FactoryReadRpcHandlers } from "./read-router.js";
 import { createFactoryReadRpcHandlers } from "./read-router.js";
@@ -65,7 +66,7 @@ export function createFactoryRpcHandlers(
       } catch (error) {
         return actionError(
           "internal",
-          `The action executor failed: ${error instanceof Error ? error.message : String(error)}`,
+          `The action executor failed: ${errorMessage(error)}`,
           request.idempotencyKey,
         );
       }

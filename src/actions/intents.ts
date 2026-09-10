@@ -1,4 +1,4 @@
-import type { BbInteractionResolution, FactoryActionResult } from "../contracts.js";
+import type { BbInteractionResolution, FactoryActionResult, IdempotencyKey } from "../contracts.js";
 import {
   IdempotencyConflictError,
   PendingActionIntentExpiredError,
@@ -21,7 +21,8 @@ export function consumedResult(record: PendingActionIntentRecord): FactoryAction
   return actionError("conflict", `Action '${record.idempotencyKey}' is already being executed.`, record.idempotencyKey);
 }
 
-function deepEqual(a: unknown, b: unknown): boolean {
+/** Structural deep equality for recorded request and resolution payloads. */
+export function deepEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (Array.isArray(a) && Array.isArray(b)) {
     return a.length === b.length && a.every((item, index) => deepEqual(item, b[index]));
@@ -61,14 +62,14 @@ export function recordedIntentResult(
   return consumedResult(record);
 }
 
-export function claimErrorResult(error: unknown, idempotencyKey: string): FactoryActionResult {
+export function claimErrorResult(error: unknown, idempotencyKey: IdempotencyKey): FactoryActionResult {
   if (error instanceof IdempotencyConflictError) {
-    return actionError("idempotency-conflict", errorMessage(error), idempotencyKey as never);
+    return actionError("idempotency-conflict", errorMessage(error), idempotencyKey);
   }
   if (error instanceof PendingActionIntentExpiredError) {
-    return actionError("invalid-input", errorMessage(error), idempotencyKey as never);
+    return actionError("invalid-input", errorMessage(error), idempotencyKey);
   }
-  return actionError("internal", errorMessage(error), idempotencyKey as never);
+  return actionError("internal", errorMessage(error), idempotencyKey);
 }
 
 export function completeIntent(

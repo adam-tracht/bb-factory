@@ -109,14 +109,55 @@ describe("repository action executor", () => {
     expect(identical).toMatchObject({ ok: true, result: { status: "already-applied" } });
   });
 
-  it("approves a queue item to ready with the recorded authorization text", async () => {
+  it("rejects approval while a blocking question is still open", async () => {
     const { files, executor } = makeExecutor();
     const revision = await revisionOf({ files });
     const result = await executor.execute(approveRequest(revision));
+    expect(result).toMatchObject({ ok: false, error: { category: "blocked-by-question" } });
+    expect(files.writes).toHaveLength(0);
+    expect(files.content(PROTOCOL_PATHS.queue)).toContain("status: blocked-by: Q6");
+  });
+
+  it("approves a queue item to ready once its blocking question is answered", async () => {
+    const { files, executor } = makeExecutor();
+    const revision = await revisionOf({ files });
+    const answered = await executor.execute(answerRequest(revision));
+    expect(answered.ok).toBe(true);
+
+    const ready = await revisionOf({ files });
+    const result = await executor.execute(approveRequest(ready));
     expect(result).toMatchObject({ ok: true, result: { status: "accepted", action: "approve-queue", queueItemId: "T1" } });
     const content = files.content(PROTOCOL_PATHS.queue)!;
     expect(content).toContain("status: ready");
     expect(content).toContain("approved: no gated actions");
+    expect(content).not.toContain("blocked-by");
+  });
+
+  it("rejects approval for a done queue item", async () => {
+    const files = new FakeFileSystem();
+    const queue = [
+      "# Queue",
+      "",
+      "## T1 Sample task",
+      "status: done completed last run",
+      "priority: 2",
+      "depends_on: none",
+      "risk: low",
+      "plan: plans/factory/plan-t1.md",
+      "approved: none",
+      "acceptance:",
+      "- the task is done",
+      "validate:",
+      "- pnpm test",
+      "notes: none",
+      "",
+    ].join("\n");
+    const { executor } = makeExecutor(files);
+    files.seed(PROTOCOL_PATHS.queue, queue);
+    const revision = await revisionOf({ files });
+    const result = await executor.execute(approveRequest(revision));
+    expect(result).toMatchObject({ ok: false, error: { category: "conflict" } });
+    expect(files.writes).toHaveLength(0);
   });
 
   it("rejects mismatched authorization on an already-explicit entry", async () => {
@@ -140,6 +181,15 @@ describe("repository action executor", () => {
     ].join("\n");
     const { executor } = makeExecutor(files);
     files.seed(PROTOCOL_PATHS.queue, queue);
+    files.seed(PROTOCOL_PATHS.questions, [
+      "# Questions",
+      "",
+      "## Q6 2026-09-10 blocking T1",
+      "question: Which provider should run this?",
+      "context: The plan needs a choice.",
+      "answer: Use codex.",
+      "",
+    ].join("\n"));
     const revision = await revisionOf({ files });
     const mismatch = await executor.execute(approveRequest(revision, "different text"));
     expect(mismatch).toMatchObject({ ok: false, error: { category: "conflict" } });
@@ -362,6 +412,43 @@ function bbRequest(action: BbInteractionActionRequest["action"]): BbInteractionA
 }
 
 describe("BB interaction action executor", () => {
+  it("marks the intent for reconciliation when dispatch throws after the claim", async () => {
+    const harness = makeInteractionHarness([]);
+    vi.mocked(harness.dispatch.requestRun).mockRejectedValue(new Error("store write lost"));
+    const request = bbRequest({ kind: "run-now" });
+    const result = await harness.executor.execute(request);
+    expect(result).toMatchObject({ ok: false, error: { category: "internal" } });
+    const record = harness.store.getPendingActionIntent(request.idempotencyKey);
+    expect(record?.status).toBe("reconciliation-required");
+    const replay = await harness.executor.execute(request);
+    expect(replay).toMatchObject({ ok: false, error: { category: "conflict" } });
+  });
+
+  it("fails closed when the pending-interaction read fails before resolve", async () => {
+    const harness = makeInteractionHarness([approvalInteraction()]);
+    const failingReader: PendingInteractionReader = {
+      listPendingInteractions: async () => {
+        throw new Error("projection unavailable");
+      },
+    };
+    const executor = createBbInteractionActionExecutor({
+      threads: harness.threads as never,
+      store: harness.store,
+      interactionReader: failingReader,
+      scopeLookup: (key) => key === "monorepo" ? { projectId: "project-1", environmentId: "environment-1" } : null,
+      dispatch: harness.dispatch,
+      setDispatchMode: harness.setDispatchMode,
+    });
+    const result = await executor.execute(bbRequest({
+      kind: "answer-question",
+      source: "bb-interaction",
+      interactionId: "interaction-1",
+      resolution: { kind: "approval", decision: "allow_once" },
+    }));
+    expect(result).toMatchObject({ ok: false, error: { category: "internal" } });
+    expect(harness.resolve).not.toHaveBeenCalled();
+  });
+
   it("resolves an approval interaction and records the observed resolution", async () => {
     const harness = makeInteractionHarness([approvalInteraction()]);
     const result = await harness.executor.execute(bbRequest({

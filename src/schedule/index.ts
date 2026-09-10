@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { RepositoryKey } from "../contracts.js";
+import { errorMessage } from "../errors.js";
 import { reconcileRepository } from "../dispatch/lifecycle.js";
 import { startRun } from "../dispatch/start.js";
 import {
@@ -125,9 +126,9 @@ export async function schedulerTick(
   if (clock.hour >= settings.nightWindowEndHour) return skip(`outside the night window (hour ${clock.hour} >= ${settings.nightWindowEndHour})`);
 
   const nightKey = nightKeyAt(now, settings.nightWindowEndHour);
-  let state = ctx.store.getDispatcherState(repositoryKey);
-  state = nightState(state, nightKey);
-  if (state.nightKey !== ctx.store.getDispatcherState(repositoryKey).nightKey) {
+  const previous = ctx.store.getDispatcherState(repositoryKey);
+  let state = nightState(previous, nightKey);
+  if (state.nightKey !== previous.nightKey) {
     ctx.store.saveDispatcherState(state);
   }
 
@@ -152,10 +153,10 @@ export async function schedulerTick(
   const started = await startRun(ctx, {
     repositoryKey,
     trigger: "schedule",
-    idempotencyKey: idempotencyKey as never,
+    idempotencyKey,
   });
   if (started.result.ok) return { repositoryKey, action: "started", reason: started.result.result.message };
-  return skip(started.result.ok ? "started" : started.result.error.message);
+  return skip(started.result.error.message);
 }
 
 export function createScheduler(
@@ -173,7 +174,7 @@ export function createScheduler(
           results.push({
             repositoryKey,
             action: "skipped",
-            reason: `tick failed: ${error instanceof Error ? error.message : String(error)}`,
+            reason: `tick failed: ${errorMessage(error)}`,
           });
         }
       }

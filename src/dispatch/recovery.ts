@@ -1,4 +1,5 @@
 import type { RepositoryKey } from "../contracts.js";
+import { errorMessage } from "../errors.js";
 import { reconcileRepository } from "./lifecycle.js";
 import type { DispatchContext } from "./types.js";
 
@@ -12,7 +13,7 @@ export async function reconcileAll(ctx: DispatchContext, repositoryKeys: readonl
     try {
       await reconcileRepository(ctx, repositoryKey);
     } catch (error) {
-      ctx.log?.(`reconciliation for '${repositoryKey}' failed: ${error instanceof Error ? error.message : String(error)}`);
+      ctx.log?.(`reconciliation for '${repositoryKey}' failed: ${errorMessage(error)}`);
     }
   }
 }

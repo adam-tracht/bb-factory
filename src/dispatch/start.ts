@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type {
   FactoryActionResult,
-  OperationalRunSummary,
   ProtocolSnapshot,
   RepositoryKey,
   RepositoryRevision,
@@ -109,21 +108,7 @@ export async function startRun(ctx: DispatchContext, input: StartRunInput): Prom
   const priorRunId = ctx.store.findRunIdByIdempotencyKey(input.idempotencyKey);
   if (priorRunId !== null) {
     const prior = (await ctx.store.getRun({ repositoryKey: input.repositoryKey, runId: priorRunId })).run;
-    return {
-      result: actionSuccess({
-        status: "already-applied",
-        message: `Run '${priorRunId}' was already recorded for this idempotency key.`,
-        revision: prior?.summary.repositoryRevision ?? null,
-        runId: priorRunId,
-        leaseId: null,
-        queueItemId: null,
-        action: "run-now",
-        questionId: null,
-        interactionId: null,
-      }, prior?.summary.repositoryRevision ?? null),
-      runId: priorRunId,
-      leaseId: null,
-    };
+    return alreadyRecorded(priorRunId, prior?.summary.repositoryRevision ?? null);
   }
 
   if (ctx.settings.dispatchMode !== "enabled") {
@@ -244,17 +229,7 @@ export async function startRun(ctx: DispatchContext, input: StartRunInput): Prom
   }
 
   if (!created) {
-    return { result: actionSuccess({
-      status: "already-applied",
-      message: `Run '${persistedRunId}' was already recorded for this idempotency key.`,
-      revision: snapshot.revision,
-      runId: persistedRunId,
-      leaseId: null,
-      queueItemId: null,
-      action: "run-now",
-      questionId: null,
-      interactionId: null,
-    }, snapshot.revision), runId: persistedRunId, leaseId: null };
+    return alreadyRecorded(persistedRunId, snapshot.revision);
   }
 
   let threadId: string;
@@ -338,4 +313,20 @@ export async function startRun(ctx: DispatchContext, input: StartRunInput): Prom
   };
 }
 
-export type { OperationalRunSummary };
+function alreadyRecorded(runId: string, revision: RepositoryRevision | null): StartRunResult {
+  return {
+    result: actionSuccess({
+      status: "already-applied",
+      message: `Run '${runId}' was already recorded for this idempotency key.`,
+      revision,
+      runId,
+      leaseId: null,
+      queueItemId: null,
+      action: "run-now",
+      questionId: null,
+      interactionId: null,
+    }, revision),
+    runId,
+    leaseId: null,
+  };
+}

@@ -983,7 +983,6 @@ function insertPendingActionIntent(
     fileChange: normalized.fileChange,
     entryPoint,
     oneShot,
-    expiresAt: normalized.expiresAt,
   }));
   const existingBeforeInsert = readPendingActionIntent(db, normalized.request.idempotencyKey);
   if (existingBeforeInsert !== null) {

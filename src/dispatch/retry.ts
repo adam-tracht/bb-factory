@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { FactoryActionResult, RepositoryKey, RepositoryRevision } from "../contracts.js";
 import { actionError, actionSuccess, errorMessage, sameRevision, staleRevisionError } from "../actions/results.js";
-import { MAX_RUN_ATTEMPTS, type DispatchContext } from "./types.js";
+import { MAX_RUN_ATTEMPTS, runDispatchUpdate, type DispatchContext } from "./types.js";
 
 export interface RetryAttemptInput {
   readonly repositoryKey: RepositoryKey;
@@ -111,18 +111,7 @@ export async function retryAttempt(ctx: DispatchContext, input: RetryAttemptInpu
       startedAt,
       finishedAt: null,
     });
-    transaction.updateRunDispatch({
-      repositoryKey: run.repositoryKey,
-      runId: run.runId,
-      status: "started",
-      startedAt: run.startedAt,
-      finishedAt: null,
-      providerId: run.providerId!,
-      workerThreadId: threadId,
-      projectId: run.projectId!,
-      environmentId: run.environmentId!,
-      repositoryRevision: run.repositoryRevision,
-    });
+    transaction.updateRunDispatch(runDispatchUpdate(run, { status: "started", finishedAt: null, workerThreadId: threadId }));
   });
 
   return actionSuccess({

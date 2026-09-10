@@ -1,6 +1,6 @@
 import type { FactoryActionResult, RepositoryKey } from "../contracts.js";
 import { actionError, actionSuccess, errorMessage } from "../actions/results.js";
-import type { DispatchContext } from "./types.js";
+import { runDispatchUpdate, type DispatchContext } from "./types.js";
 
 export interface StopRunInput {
   readonly repositoryKey: RepositoryKey;
@@ -48,21 +48,35 @@ export async function stopRun(ctx: DispatchContext, input: StopRunInput): Promis
   }
 
   const threadId = run.workerThreadId;
+  if (run.status === "reconciliation-required") {
+    // The recorded worker state is ambiguous: a thread may exist without a
+    // known identity, so the lease must not be released until an operator
+    // resolves the run's recorded worker state.
+    return actionError(
+      "conflict",
+      `Run '${run.runId}' is marked for reconciliation; its worker state must be resolved before ownership can be released.`,
+    );
+  }
   if (run.status !== "started" || !threadId) {
     // The run was never dispatched or already finished: no side effect to undo.
-    ctx.store.withTransaction((transaction) => {
-      transaction.updateRunDispatch({
-        repositoryKey: run.repositoryKey,
-        runId: run.runId,
-        status: run.status === "pending" ? "no-op" : run.status,
-        startedAt: run.startedAt,
-        finishedAt: ctx.now().toISOString(),
-        providerId: run.providerId ?? "unknown",
-        workerThreadId: threadId ?? "never-dispatched",
-        projectId: run.projectId ?? "unknown",
-        environmentId: run.environmentId ?? "unknown",
-        repositoryRevision: run.repositoryRevision,
+    // A pending run with a recorded worker thread means the start update was
+    // lost after spawn; keep ownership and require reconciliation instead.
+    if (run.status === "pending" && threadId && threadId !== "spawn-ambiguous") {
+      ctx.store.withTransaction((transaction) => {
+        transaction.updateRunDispatch(runDispatchUpdate(run, { status: "reconciliation-required", finishedAt: null, workerThreadId: threadId }));
+        transaction.updateOwnershipLease({ ...lease, status: "reconciliation-required" });
       });
+      return actionError(
+        "conflict",
+        `Run '${run.runId}' has a recorded worker thread but no confirmed start; it was marked for reconciliation instead of releasing ownership.`,
+      );
+    }
+    ctx.store.withTransaction((transaction) => {
+      transaction.updateRunDispatch(runDispatchUpdate(run, {
+        status: run.status === "pending" ? "no-op" : run.status,
+        finishedAt: ctx.now().toISOString(),
+        workerThreadId: threadId ?? "never-dispatched",
+      }));
       if (lease.status !== "released") {
         transaction.updateOwnershipLease({ ...lease, status: "released" });
       }
@@ -87,18 +101,7 @@ export async function stopRun(ctx: DispatchContext, input: StopRunInput): Promis
   }
 
   ctx.store.withTransaction((transaction) => {
-    transaction.updateRunDispatch({
-      repositoryKey: run.repositoryKey,
-      runId: run.runId,
-      status: "cancel-requested",
-      startedAt: run.startedAt,
-      finishedAt: null,
-      providerId: run.providerId!,
-      workerThreadId: threadId,
-      projectId: run.projectId!,
-      environmentId: run.environmentId!,
-      repositoryRevision: run.repositoryRevision,
-    });
+    transaction.updateRunDispatch(runDispatchUpdate(run, { status: "cancel-requested", finishedAt: null, workerThreadId: threadId }));
     for (const attempt of detail.attempts) {
       if (attempt.status === "started") {
         transaction.updateDispatchAttempt({ ...attempt, status: "cancel-requested" });

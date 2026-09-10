@@ -1,5 +1,6 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { RepositoryKey } from "../contracts.js";
+import { errorMessage } from "../errors.js";
 import { reconcileAll } from "../dispatch/recovery.js";
 import type { DispatchContext } from "../dispatch/types.js";
 
@@ -25,11 +26,11 @@ export function registerFactoryLifecycle(
       try {
         await reconcile();
       } catch (error) {
-        bb.log.error(`startup reconciliation failed: ${error instanceof Error ? error.message : String(error)}`);
+        bb.log.error(`startup reconciliation failed: ${errorMessage(error)}`);
       }
       const timer = setInterval(() => {
         void reconcile().catch((error) => {
-          bb.log.error(`periodic reconciliation failed: ${error instanceof Error ? error.message : String(error)}`);
+          bb.log.error(`periodic reconciliation failed: ${errorMessage(error)}`);
         });
       }, RECONCILE_INTERVAL_MS);
       signal.addEventListener("abort", () => clearInterval(timer));
