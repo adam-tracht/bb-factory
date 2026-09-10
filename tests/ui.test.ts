@@ -436,3 +436,135 @@ describe("Factory read-only UI helpers", () => {
     }
   });
 });
+
+describe("Factory guarded actions", () => {
+  const blockedSnapshot = {
+    ...snapshot,
+    queue: [{
+      ...snapshot.queue[0]!,
+      id: "blocked-item",
+      status: { kind: "blocked-by" as const, questionId: "Q1", detail: "Waiting on Q1" },
+      approved: { kind: "none" as const, source: "none" as const },
+      eligible: false,
+      eligibilityReasons: ["not-ready" as const],
+    }],
+  };
+
+  const actionResult = (action: string) => ({
+    ok: true as const,
+    revision,
+    result: {
+      status: "accepted" as const,
+      message: `${action} applied.`,
+      revision,
+      runId: action === "run-now" ? "run-2" : null,
+      leaseId: null,
+      queueItemId: action === "approve-queue" ? "blocked-item" : null,
+      action,
+      questionId: null,
+      interactionId: null,
+    },
+  });
+
+  function actionRpc(overrides: Record<string, unknown> = {}) {
+    return {
+      factory_repositories: () => repositorySelection,
+      factory_snapshot: () => overrides.snapshot ?? snapshot,
+      factory_settings: () => overrides.settings ?? settingsProjection,
+      factory_health: () => healthProjection,
+      factory_interactions: () => ({ repositoryKey: "demo", interactions: [] }),
+      factory_runs: () => ({ runs: [runSummary], nextCursor: null }),
+      factory_run_detail: () => runDetail,
+      factory_action: vi.fn((input: { action: { kind: string } }) => actionResult(input.action.kind)),
+    } as unknown as PluginRpcTestHandlers<FactoryRpcContract> & { factory_action: ReturnType<typeof vi.fn> };
+  }
+
+  it("submits a guarded queue approval with the recorded authorization text", async () => {
+    const { FactoryView } = await import("../src/ui/FactoryView.js");
+    const rpc = actionRpc({ snapshot: blockedSnapshot });
+    const slot = renderSlot<FactoryViewProps, FactoryRpcContract>(
+      { component: FactoryView },
+      { subPath: "queue", panelPath: "factory" },
+      { rpc, settings: { repositoryKey: "demo" } },
+    );
+    try {
+      const input = await slot.findByRole("textbox");
+      fireEvent.change(input, { target: { value: "no gated actions" } });
+      fireEvent.click(await slot.findByRole("button", { name: "Approve as ready" }));
+      await vi.waitFor(() => {
+        expect(rpc.factory_action).toHaveBeenCalledWith(expect.objectContaining({
+          repositoryKey: "demo",
+          expectedRevision: revision,
+          action: { kind: "approve-queue", queueItemId: "blocked-item", approvedText: "no gated actions" },
+        }));
+      });
+    } finally {
+      slot.lifecycle.unmount();
+    }
+  });
+
+  it("keeps ready queue entries free of approval controls", async () => {
+    const { FactoryView } = await import("../src/ui/FactoryView.js");
+    const rpc = actionRpc();
+    const slot = renderSlot<FactoryViewProps, FactoryRpcContract>(
+      { component: FactoryView },
+      { subPath: "queue", panelPath: "factory" },
+      { rpc, settings: { repositoryKey: "demo" } },
+    );
+    try {
+      await slot.findByRole("heading", { name: "Ready work" });
+      const buttons = Array.from(slot.container.querySelectorAll("button"));
+      expect(buttons.some((button) => button.textContent === "Approve as ready")).toBe(false);
+      expect(slot.container.querySelector("input[type='text']")).toBeNull();
+    } finally {
+      slot.lifecycle.unmount();
+    }
+  });
+
+  it("dispatches run-now from the overview when dispatch is enabled", async () => {
+    const { FactoryView } = await import("../src/ui/FactoryView.js");
+    const enabledSettings = {
+      ...settingsProjection,
+      settings: { ...settingsProjection.settings, dispatchMode: "enabled" as const },
+      dispatch: { mode: "enabled" as const, acceptingNewRuns: true, activeRunCount: 0, reason: null },
+    };
+    const rpc = actionRpc({ settings: enabledSettings });
+    const slot = renderSlot<FactoryViewProps, FactoryRpcContract>(
+      { component: FactoryView },
+      { subPath: "", panelPath: "factory" },
+      { rpc, settings: { repositoryKey: "demo" } },
+    );
+    try {
+      fireEvent.click(await slot.findByRole("button", { name: "Run now" }));
+      await vi.waitFor(() => {
+        expect(rpc.factory_action).toHaveBeenCalledWith(expect.objectContaining({
+          repositoryKey: "demo",
+          expectedRevision: revision,
+          action: { kind: "run-now" },
+        }));
+      });
+    } finally {
+      slot.lifecycle.unmount();
+    }
+  });
+
+  it("disables run-now and offers resume while dispatch is paused", async () => {
+    const { FactoryView } = await import("../src/ui/FactoryView.js");
+    const rpc = actionRpc();
+    const slot = renderSlot<FactoryViewProps, FactoryRpcContract>(
+      { component: FactoryView },
+      { subPath: "", panelPath: "factory" },
+      { rpc, settings: { repositoryKey: "demo" } },
+    );
+    try {
+      const runNow = await slot.findByRole("button", { name: "Run now" });
+      expect((runNow as HTMLButtonElement).disabled).toBe(true);
+      fireEvent.click(await slot.findByRole("button", { name: "Resume dispatch" }));
+      await vi.waitFor(() => {
+        expect(rpc.factory_action).toHaveBeenCalledWith(expect.objectContaining({ action: { kind: "resume" } }));
+      });
+    } finally {
+      slot.lifecycle.unmount();
+    }
+  });
+});

@@ -61,7 +61,7 @@ function operationalState() {
 }
 
 describe("P1 read integration", () => {
-  it("selects both configured repositories and keeps dispatch disabled", async () => {
+  it("selects both configured repositories and reports the concurrency limit", async () => {
     const settings = factorySettingsSchema.parse({
       repositoryKey: "data-platform",
       repositoryRegistry: { repositories: entries, defaultRepositoryKey: "monorepo" },
@@ -94,7 +94,7 @@ describe("P1 read integration", () => {
         mode: "enabled",
         acceptingNewRuns: false,
         activeRunCount: 1,
-        reason: "This plugin version exposes no dispatch implementation.",
+        reason: "The concurrency limit is reached.",
       },
     });
 

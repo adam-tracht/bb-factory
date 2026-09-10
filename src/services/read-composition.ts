@@ -177,14 +177,19 @@ function settingsProjection(
     projectId: entry.projectId,
     environmentId: entry.environmentId,
   }) as FactorySettings;
+  const accepting = settings.dispatchMode === "enabled" && activeRunCount < settings.concurrencyLimit;
   return {
     settings: repositorySettings,
     validation: { valid: true, fieldErrors: {} },
     dispatch: {
       mode: settings.dispatchMode,
-      acceptingNewRuns: false,
+      acceptingNewRuns: accepting,
       activeRunCount,
-      reason: "This plugin version exposes no dispatch implementation.",
+      reason: settings.dispatchMode !== "enabled"
+        ? "Dispatch is paused."
+        : accepting
+          ? "Dispatch is enabled."
+          : "The concurrency limit is reached.",
     },
   };
 }

@@ -214,6 +214,16 @@ export const OPERATIONAL_STORAGE_MIGRATIONS = [
     observed_resolution_json TEXT,
     last_error TEXT
   )`,
+  `CREATE TABLE dispatcher_states (
+    repository_key TEXT PRIMARY KEY,
+    night_key TEXT NOT NULL,
+    last_state TEXT NOT NULL,
+    failed_count INTEGER NOT NULL,
+    noop_count INTEGER NOT NULL,
+    last_start_at INTEGER NOT NULL,
+    last_start_provider TEXT NOT NULL,
+    limits_json TEXT NOT NULL
+  )`,
 ] as const;
 
 export interface CreateRunIntentInput {
@@ -364,6 +374,25 @@ export interface PendingActionIntentListInput {
   readonly status?: PendingActionIntentStatus;
 }
 
+/**
+ * Durable per-repository dispatcher state, ported from the shell dispatcher's
+ * state file. All times are epoch seconds. `lastState` is the most recent
+ * finished foreman outcome, `dead-start` for a thread that produced no run
+ * record, or "" before the night's first finish. Provider `limits` map a
+ * provider id to the epoch second until which it is marked limited.
+ */
+export interface DispatcherState {
+  readonly repositoryKey: RepositoryKey;
+  readonly nightKey: string;
+  readonly lastState: string;
+  readonly failedCount: number;
+  readonly noopCount: number;
+  readonly lastStartAt: number;
+  readonly lastStartProvider: string;
+  readonly limits: Record<string, number>;
+}
+
+
 export interface OperationalTransaction {
   createRunIntent(input: CreateRunIntentInput): CreateRunIntentResult;
   updateRunDispatch(input: RunDispatchUpdate): void;
@@ -379,6 +408,8 @@ export interface OperationalTransaction {
   claimInitialReadyIntent(input: InitialReadyIntentInput): IdempotencyClaim<PendingActionIntentRecord>;
   consumePendingActionIntent(idempotencyKey: IdempotencyKey): PendingActionIntentConsumption;
   updatePendingActionIntent(input: PendingActionIntentUpdate): PendingActionIntentRecord;
+  getDispatcherState(repositoryKey: RepositoryKey): DispatcherState;
+  saveDispatcherState(state: DispatcherState): void;
 }
 
 export interface OperationalStateStore extends OperationalStateReader {
@@ -403,6 +434,12 @@ export interface OperationalStateStore extends OperationalStateReader {
   getPendingActionIntent(idempotencyKey: IdempotencyKey): PendingActionIntentRecord | null;
   listPendingActionIntents(input?: PendingActionIntentListInput): PendingActionIntentRecord[];
   updatePendingActionIntent(input: PendingActionIntentUpdate): PendingActionIntentRecord;
+  getDispatchAttempt(attemptId: string): DispatchAttempt | null;
+  getLeaseForRun(runId: string): OwnershipLease | null;
+  findRunIdByIdempotencyKey(idempotencyKey: IdempotencyKey): string | null;
+  listActiveRuns(repositoryKey: RepositoryKey): OperationalRunSummary[];
+  getDispatcherState(repositoryKey: RepositoryKey): DispatcherState;
+  saveDispatcherState(state: DispatcherState): void;
 }
 
 interface RunRow {
@@ -474,6 +511,17 @@ interface RepositoryWriteRow {
   result_json: string | null;
   submitted_at: string;
   completed_at: string | null;
+}
+
+interface DispatcherStateRow {
+  readonly repository_key: string;
+  readonly night_key: string;
+  readonly last_state: string;
+  readonly failed_count: number;
+  readonly noop_count: number;
+  readonly last_start_at: number;
+  readonly last_start_provider: string;
+  readonly limits_json: string;
 }
 
 interface PendingActionIntentRow {
@@ -720,7 +768,67 @@ class OperationalSqliteStore implements OperationalStateStore {
       claimInitialReadyIntent: (input) => claimInitialReadyIntent(this.db, input, this.executionNow),
       consumePendingActionIntent: (idempotencyKey) => consumePendingActionIntent(this.db, idempotencyKey, this.executionNow),
       updatePendingActionIntent: (input) => updatePendingActionIntent(this.db, input, this.executionNow),
+      getDispatcherState: (repositoryKey) => readDispatcherState(this.db, repositoryKey),
+      saveDispatcherState: (state) => saveDispatcherState(this.db, state),
     };
+  }
+
+  getDispatchAttempt(attemptId: string): DispatchAttempt | null {
+    const row = this.db
+      .prepare<unknown[], AttemptRow>(
+        `SELECT attempt_id, run_id, repository_key, provider_id, model,
+                reasoning_level, worker_thread_id, status, started_at, finished_at
+           FROM dispatch_attempts
+          WHERE attempt_id = ?`,
+      )
+      .get(z.string().trim().min(1).parse(attemptId));
+    return row === undefined ? null : attemptFromRow(row);
+  }
+
+  getLeaseForRun(runId: string): OwnershipLease | null {
+    const row = this.db
+      .prepare<unknown[], OwnershipRow>(
+        `SELECT lease_id, repository_key, run_id, queue_item_ids_json, worker_thread_id,
+                authorization_provenance_json, acquired_at, expires_at, status
+           FROM ownership_leases
+          WHERE run_id = ?
+          ORDER BY acquired_at DESC
+          LIMIT 1`,
+      )
+      .get(z.string().trim().min(1).parse(runId));
+    return row === undefined ? null : ownershipFromRow(row);
+  }
+
+  findRunIdByIdempotencyKey(idempotencyKey: IdempotencyKey): string | null {
+    const row = this.db
+      .prepare<unknown[], { run_id: string }>(
+        `SELECT run_id FROM operational_runs WHERE idempotency_key = ?`,
+      )
+      .get(idempotencyKeySchema.parse(idempotencyKey));
+    return row === undefined ? null : row.run_id;
+  }
+
+  listActiveRuns(repositoryKey: RepositoryKey): OperationalRunSummary[] {
+    const key = repositoryKeySchema.parse(repositoryKey);
+    const rows = this.db
+      .prepare<unknown[], RunRow>(
+        `SELECT run_id, repository_key, requested_at, status, started_at, finished_at,
+                provider_id, worker_thread_id, project_id, environment_id,
+                queue_item_ids_json, repository_revision_json, canonical_records_json
+           FROM operational_runs
+          WHERE repository_key = ? AND status IN ('pending', 'started', 'cancel-requested', 'reconciliation-required')
+          ORDER BY requested_at ASC, run_id ASC`,
+      )
+      .all(key);
+    return rows.map(runSummaryFromRow);
+  }
+
+  getDispatcherState(repositoryKey: RepositoryKey): DispatcherState {
+    return readDispatcherState(this.db, repositoryKey);
+  }
+
+  saveDispatcherState(state: DispatcherState): void {
+    this.withTransaction((transaction) => transaction.saveDispatcherState(state));
   }
 }
 
@@ -1125,6 +1233,72 @@ function pendingActionIntentFromRow(row: PendingActionIntentRow): PendingActionI
     observedResolution,
     lastError: row.last_error,
   };
+}
+
+const dispatcherStateLimitsSchema = z.record(z.string(), z.number().int().nonnegative());
+
+export function emptyDispatcherState(repositoryKey: RepositoryKey): DispatcherState {
+  return {
+    repositoryKey,
+    nightKey: "",
+    lastState: "",
+    failedCount: 0,
+    noopCount: 0,
+    lastStartAt: 0,
+    lastStartProvider: "",
+    limits: {},
+  };
+}
+
+function readDispatcherState(db: SqliteDatabase, repositoryKey: RepositoryKey): DispatcherState {
+  const key = repositoryKeySchema.parse(repositoryKey);
+  const row = db
+    .prepare<unknown[], DispatcherStateRow>(
+      `SELECT repository_key, night_key, last_state, failed_count, noop_count,
+              last_start_at, last_start_provider, limits_json
+         FROM dispatcher_states
+        WHERE repository_key = ?`,
+    )
+    .get(key);
+  if (row === undefined) return emptyDispatcherState(key);
+  return {
+    repositoryKey: key,
+    nightKey: row.night_key,
+    lastState: row.last_state,
+    failedCount: row.failed_count,
+    noopCount: row.noop_count,
+    lastStartAt: row.last_start_at,
+    lastStartProvider: row.last_start_provider,
+    limits: dispatcherStateLimitsSchema.parse(parseJson(row.limits_json)),
+  };
+}
+
+function saveDispatcherState(db: SqliteDatabase, state: DispatcherState): void {
+  const repositoryKey = repositoryKeySchema.parse(state.repositoryKey);
+  const limits = dispatcherStateLimitsSchema.parse(state.limits);
+  db.prepare(
+    `INSERT INTO dispatcher_states (
+       repository_key, night_key, last_state, failed_count, noop_count,
+       last_start_at, last_start_provider, limits_json
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (repository_key) DO UPDATE SET
+       night_key = excluded.night_key,
+       last_state = excluded.last_state,
+       failed_count = excluded.failed_count,
+       noop_count = excluded.noop_count,
+       last_start_at = excluded.last_start_at,
+       last_start_provider = excluded.last_start_provider,
+       limits_json = excluded.limits_json`,
+  ).run(
+    repositoryKey,
+    z.string().parse(state.nightKey),
+    z.string().parse(state.lastState),
+    z.number().int().nonnegative().parse(state.failedCount),
+    z.number().int().nonnegative().parse(state.noopCount),
+    z.number().int().nonnegative().parse(state.lastStartAt),
+    z.string().parse(state.lastStartProvider),
+    stableJson(limits),
+  );
 }
 
 function persistedRequestPayload(request: PendingActionIntentRequest): unknown {

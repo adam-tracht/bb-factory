@@ -2,12 +2,26 @@ import { describe, expect, beforeEach, it, vi } from "vitest";
 import { resolveRepositoryRegistry } from "../src/contracts.js";
 import plugin from "../server.js";
 
-const { createComposition } = vi.hoisted(() => ({
+const { createComposition, createActionComposition, fakeStore } = vi.hoisted(() => ({
   createComposition: vi.fn(),
+  createActionComposition: vi.fn(),
+  fakeStore: { marker: "operational-store" },
 }));
 
 vi.mock("../src/services/read-composition.js", () => ({
   createReadComposition: createComposition,
+}));
+
+vi.mock("../src/services/action-composition.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../src/services/action-composition.js")>();
+  return {
+    ...original,
+    createActionComposition: createActionComposition,
+  };
+});
+
+vi.mock("../src/storage/index.js", () => ({
+  initializeOperationalStorage: vi.fn().mockReturnValue(fakeStore),
 }));
 
 const registry = {
@@ -61,16 +75,29 @@ function makeBb(initialSettings: unknown) {
     rpc: { register: vi.fn() },
     realtime: { publish: vi.fn() },
     events: { on: vi.fn() },
+    background: { service: vi.fn(), schedule: vi.fn() },
     log: { info: vi.fn(), error: vi.fn() },
     onDispose: vi.fn(),
   };
   return { bb: bb as never, settingsApi, status: bb.status, rpc: bb.rpc };
 }
 
+function fakeActionComposition() {
+  return {
+    repositoryActionExecutor: { execute: vi.fn() },
+    bbInteractionActionExecutor: { execute: vi.fn() },
+    dispatchEngine: { reconcile: vi.fn().mockResolvedValue(undefined) },
+    dispatchContext: {},
+    scheduler: { tick: vi.fn().mockResolvedValue([]) },
+  };
+}
+
 describe("server invalid configuration state", () => {
   beforeEach(() => {
     createComposition.mockReset();
     createComposition.mockImplementation(() => fakeComposition());
+    createActionComposition.mockReset();
+    createActionComposition.mockImplementation(() => fakeActionComposition());
   });
 
   it("reports invalid initial settings and registers fail-closed read routes", async () => {

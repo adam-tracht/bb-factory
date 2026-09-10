@@ -11,6 +11,7 @@ import {
   type MarkdownProps,
 } from "@get-bb/plugin-sdk/app";
 import {
+  factoryActionResultSchema,
   healthProjectionSchema,
   invalidationEventSchema,
   operationalRunDetailProjectionSchema,
@@ -19,6 +20,8 @@ import {
   protocolSnapshotSchema,
   repositorySelectionProjectionSchema,
   settingsProjectionSchema,
+  type FactoryAction,
+  type FactoryActionRequest,
   type HealthProjection,
   type OperationalRunDetailProjection,
   type OperationalRunListProjection,
@@ -47,6 +50,11 @@ import {
   sectionPath,
   type FactorySection,
 } from "./views.js";
+import {
+  DispatchControls,
+  idleActionFeedback,
+  type ActionFeedback,
+} from "./action-entry.js";
 import { createElement } from "react";
 
 const h = createElement;
@@ -149,6 +157,7 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
   const [malformedSignal, setMalformedSignal] = useState(false);
   const [repositoryOverride, setRepositoryOverride] = useState<{ settingsIdentity: string; repositoryKey: string } | null>(null);
   const [data, setData] = useState<FactoryData>(() => initialData(Boolean(routeRunId)));
+  const [actionState, setActionState] = useState<{ pendingTarget: string | null; feedback: ActionFeedback }>({ pendingTarget: null, feedback: idleActionFeedback });
   const loadToken = useRef(0);
   const requestedRepositoryKey = repositoryOverride?.settingsIdentity === settingsIdentity ? repositoryOverride.repositoryKey : configuredRepositoryKey;
 
@@ -257,6 +266,59 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
   const repositoryProjection = ready(data.repositories);
   const selectedRepositoryConfiguration = repositoryProjection ? selectedRepository(repositoryProjection)?.configuration ?? null : null;
   const fileLink = experimental_FileLink as ComponentType<FileLinkProps> as FileLinkRenderer;
+
+  const submitAction = useCallback(async (action: FactoryAction, target: string) => {
+    const repositoryKey = repositoryProjection ? selectedRepositoryKey(repositoryProjection) : null;
+    const snapshot = data.snapshot.status === "ready" ? data.snapshot.data : null;
+    if (!repositoryKey) {
+      setActionState({ pendingTarget: null, feedback: { pending: false, message: null, error: "No repository is selected." } });
+      return;
+    }
+    const revisionFree = action.kind === "preview" || action.kind === "integration-report";
+    if (!revisionFree && !snapshot) {
+      setActionState({ pendingTarget: null, feedback: { pending: false, message: null, error: "The repository snapshot must load before guarded actions can run." } });
+      return;
+    }
+    const idempotencyKey = `bbf:v1:${repositoryKey}:${action.kind}:${crypto.randomUUID()}`;
+    let request: FactoryActionRequest;
+    if (action.kind === "preview" || action.kind === "integration-report") {
+      request = { repositoryKey, action, idempotencyKey };
+    } else if (action.kind === "approve-queue" || (action.kind === "answer-question" && action.source === "repository-question")) {
+      request = { repositoryKey, action, idempotencyKey, expectedRevision: snapshot!.revision };
+    } else {
+      request = { repositoryKey, action, idempotencyKey, expectedRevision: snapshot!.revision };
+    }
+    setActionState({ pendingTarget: target, feedback: idleActionFeedback });
+    try {
+      const raw = await rpcRef.current.call("factory_action", request);
+      const parsed = factoryActionResultSchema.safeParse(raw);
+      if (!parsed.success) {
+        setActionState({ pendingTarget: null, feedback: { pending: false, message: null, error: "The action result was malformed." } });
+      } else if (parsed.data.ok) {
+        setActionState({ pendingTarget: null, feedback: { pending: false, message: parsed.data.result.message, error: null } });
+      } else {
+        setActionState({ pendingTarget: null, feedback: { pending: false, message: null, error: parsed.data.error.message } });
+      }
+    } catch (error) {
+      setActionState({ pendingTarget: null, feedback: { pending: false, message: null, error: errorText(error) } });
+    }
+    reload();
+  }, [repositoryProjection, data.snapshot, reload]);
+
+  const onApprove = useCallback((queueItemId: string, approvedText: string) => {
+    void submitAction({ kind: "approve-queue", queueItemId, approvedText }, `approve:${queueItemId}`);
+  }, [submitAction]);
+  const onAnswerQuestion = useCallback((questionId: string, answer: string) => {
+    void submitAction({ kind: "answer-question", source: "repository-question", questionId, answer }, `question:${questionId}`);
+  }, [submitAction]);
+  const onResolveInteraction = useCallback((interactionId: string, resolution: { kind: "approval"; decision: "allow_once" | "allow_for_session" | "deny" } | { kind: "user_answer"; answers: Record<string, { selected: string[]; freeText?: string }> }) => {
+    void submitAction({ kind: "answer-question", source: "bb-interaction", interactionId, resolution }, `interaction:${interactionId}`);
+  }, [submitAction]);
+  const onRunNow = useCallback(() => void submitAction({ kind: "run-now" }, "run-now"), [submitAction]);
+  const onPause = useCallback(() => void submitAction({ kind: "pause" }, "pause"), [submitAction]);
+  const onResume = useCallback(() => void submitAction({ kind: "resume" }, "resume"), [submitAction]);
+  const onStopRun = useCallback(() => void submitAction({ kind: "stop" }, "stop"), [submitAction]);
+  const onRetryAttempt = useCallback((attemptId: string) => void submitAction({ kind: "retry", attemptId }, `retry:${attemptId}`), [submitAction]);
   let content: ReturnType<typeof h>;
   if (data.repositories.status === "loading" || data.repositories.status === "idle") {
     content = h(LoadingNotice, { label: "Loading repository selection" });
@@ -277,17 +339,26 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
       dashboardLink: snapshot.dashboard.canonicalDashboardUrl ? h(UrlLink, { href: snapshot.dashboard.canonicalDashboardUrl, className: `${buttonClass} shrink-0` }, `Open ${snapshot.dashboard.canonicalPath}`) : null,
       fileLink,
       onRetry,
+      feedback: actionState.feedback.message || actionState.feedback.error ? actionState.feedback : null,
+      dispatchActions: ready(data.settings) ? h(DispatchControls, {
+        mode: ready(data.settings)!.dispatch.mode,
+        acceptingNewRuns: ready(data.settings)!.dispatch.acceptingNewRuns,
+        feedback: actionState.pendingTarget ? { pending: true, message: null, error: null } : null,
+        onRunNow,
+        onPause,
+        onResume,
+      }) : null,
     }) : data.snapshot.status === "error" ? h(ErrorNotice, { message: resourceMessage(data.snapshot, "Repository snapshot")!, onRetry }) : h(LoadingNotice, { label: "Loading repository overview" });
   } else if (route.section === "queue") {
     const snapshot = ready(data.snapshot);
-    content = snapshot ? h(QueueView, { snapshot, fileLink }) : data.snapshot.status === "error" ? h(ErrorNotice, { message: resourceMessage(data.snapshot, "Repository queue")!, onRetry }) : h(LoadingNotice, { label: "Loading repository queue" });
+    content = snapshot ? h(QueueView, { snapshot, fileLink, onApprove, pendingTarget: actionState.pendingTarget, feedback: actionState.feedback.message || actionState.feedback.error ? actionState.feedback : null }) : data.snapshot.status === "error" ? h(ErrorNotice, { message: resourceMessage(data.snapshot, "Repository queue")!, onRetry }) : h(LoadingNotice, { label: "Loading repository queue" });
   } else if (route.section === "questions") {
     const snapshot = ready(data.snapshot);
-    content = snapshot ? h(QuestionsView, { snapshot, interactions: ready(data.interactions), interactionsError: data.interactions.status === "error" ? data.interactions.error : null, markdownRenderer: Markdown as ComponentType<MarkdownProps>, onOpenThread, onRetry }) : data.snapshot.status === "error" ? h(ErrorNotice, { message: resourceMessage(data.snapshot, "Repository questions")!, onRetry }) : h(LoadingNotice, { label: "Loading repository questions" });
+    content = snapshot ? h(QuestionsView, { snapshot, interactions: ready(data.interactions), interactionsError: data.interactions.status === "error" ? data.interactions.error : null, markdownRenderer: Markdown as ComponentType<MarkdownProps>, onOpenThread, onRetry, onAnswerQuestion, onResolveInteraction, pendingTarget: actionState.pendingTarget, feedback: actionState.feedback.message || actionState.feedback.error ? actionState.feedback : null }) : data.snapshot.status === "error" ? h(ErrorNotice, { message: resourceMessage(data.snapshot, "Repository questions")!, onRetry }) : h(LoadingNotice, { label: "Loading repository questions" });
   } else if (route.section === "runs") {
     const detailResource = routeRunId ? data.detail : null;
     const detail = detailResource ? ready(detailResource)?.run ?? null : null;
-    content = routeRunId ? (detailResource?.status === "error" ? h(ErrorNotice, { message: resourceMessage(detailResource, "Run detail")!, onRetry }) : detailResource?.status === "loading" || !detailResource ? h(LoadingNotice, { label: "Loading run detail" }) : selectedRepositoryConfiguration ? h(RunDetailView, { detail, repository: selectedRepositoryConfiguration, fileLink, onBack: onBackToRuns, onOpenThread, onOpenProject }) : h(ErrorNotice, { message: "The selected repository configuration is unavailable for file links.", onRetry })) : ready(data.runs) ? h(RunsView, { runs: ready(data.runs)!.runs, nextCursor: ready(data.runs)!.nextCursor, onOpenRun, onOpenThread, onOpenProject }) : data.runs.status === "error" ? h(ErrorNotice, { message: resourceMessage(data.runs, "Run history")!, onRetry }) : h(LoadingNotice, { label: "Loading run history" });
+    content = routeRunId ? (detailResource?.status === "error" ? h(ErrorNotice, { message: resourceMessage(detailResource, "Run detail")!, onRetry }) : detailResource?.status === "loading" || !detailResource ? h(LoadingNotice, { label: "Loading run detail" }) : selectedRepositoryConfiguration ? h(RunDetailView, { detail, repository: selectedRepositoryConfiguration, fileLink, onBack: onBackToRuns, onOpenThread, onOpenProject, onStop: onStopRun, onRetry: onRetryAttempt, pendingTarget: actionState.pendingTarget, feedback: actionState.feedback.message || actionState.feedback.error ? actionState.feedback : null }) : h(ErrorNotice, { message: "The selected repository configuration is unavailable for file links.", onRetry })) : ready(data.runs) ? h(RunsView, { runs: ready(data.runs)!.runs, nextCursor: ready(data.runs)!.nextCursor, onOpenRun, onOpenThread, onOpenProject }) : data.runs.status === "error" ? h(ErrorNotice, { message: resourceMessage(data.runs, "Run history")!, onRetry }) : h(LoadingNotice, { label: "Loading run history" });
   } else {
     content = ready(data.settings) ? h(SettingsView, { projection: ready(data.settings)! }) : data.settings.status === "error" ? h(ErrorNotice, { message: resourceMessage(data.settings, "Settings")!, onRetry }) : h(LoadingNotice, { label: "Loading settings" });
   }

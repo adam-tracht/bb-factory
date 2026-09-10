@@ -18,8 +18,10 @@ Phase 1 checkpoint: operational storage passed compliance review `thr_xb9qqm6u9f
 
 - [x] Phase 0 contract and bootstrap complete, frozen at v1.2.
 - [x] Phase 1 local read acceptance complete, covering both repositories, reload, all five UI surfaces, repository switching, settings, Done status, capability wording, canonical links, and the enabled, paused, no-service, no-schedule state. Evidence: [docs/phase-1-acceptance.md](docs/phase-1-acceptance.md).
+- [x] Phase 2 guarded actions implemented: repository question answers and queue `ready` approval under durable one-shot intents, BB interaction answers with the typed resolution state machine, and run controls (run now, pause, resume, retry, stop) routed through the action RPC. Guard details: [docs/action-implementation-gates.md](docs/action-implementation-gates.md).
+- [x] Phase 3 dispatch engine implemented: host preflight, ownership leases, durable run intents, worker start and lifecycle reconciliation, runtime caps, cancellation, bounded retry, startup recovery, and the night-window scheduler with spacing and provider alternation. Dispatch remains `paused` until the hosting gate closes.
 - [ ] Phase 1 rollout gate: verify an approved always-on host, the remote Connect owner-session route, and a live `run_detail` path when a run exists. The hosting decision remains pending in [docs/hosting-decision.md](docs/hosting-decision.md).
-- [ ] Phases 2 through 5 remain open. Future P2 action constraints are recorded in [docs/action-implementation-gates.md](docs/action-implementation-gates.md).
+- [ ] Phases 4 and 5 remain open: controlled cutover behind a disabled dispatch mode, then legacy shell removal after stable operation.
 
 Hosting gate: [docs/hosting-decision.md](docs/hosting-decision.md) remains pending. No always-on non-personal BB server and execution host is verified, so dispatch remains disabled and no host is selected or provisioned. Data-platform work requiring Mac-local Aside/browser or dbt Studio remains gated; a general-work Linux pilot still requires separate approval and host preflight.
 

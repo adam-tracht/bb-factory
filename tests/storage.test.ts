@@ -130,6 +130,7 @@ describe("operational SQLite storage", () => {
     ).all();
     expect(rawTables.map(({ name }) => name)).toEqual([
       "dispatch_attempts",
+      "dispatcher_states",
       "operational_runs",
       "ownership_leases",
       "pending_action_intents",

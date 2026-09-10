@@ -1,0 +1,196 @@
+import { createHash } from "node:crypto";
+import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import type { RepositoryKey } from "../contracts.js";
+import { reconcileRepository } from "../dispatch/lifecycle.js";
+import { startRun } from "../dispatch/start.js";
+import {
+  dispatcherNowSeconds,
+  nightKeyAt,
+  nightState,
+  type DispatchContext,
+} from "../dispatch/types.js";
+
+interface LocalClock {
+  readonly minute: number;
+  readonly hour: number;
+  readonly dayOfMonth: number;
+  readonly month: number;
+  readonly dayOfWeek: number;
+}
+
+function localClock(date: Date, timeZone: string): LocalClock {
+  if (timeZone === "server-local") {
+    return {
+      minute: date.getMinutes(),
+      hour: date.getHours(),
+      dayOfMonth: date.getDate(),
+      month: date.getMonth() + 1,
+      dayOfWeek: date.getDay(),
+    };
+  }
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    minute: "numeric",
+    hour: "numeric",
+    hourCycle: "h23",
+    day: "numeric",
+    month: "numeric",
+    weekday: "short",
+  }).formatToParts(date);
+  const value = (type: string) => parts.find((part) => part.type === type)?.value ?? "";
+  const weekdays: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  return {
+    minute: Number(value("minute")),
+    hour: Number(value("hour")),
+    dayOfMonth: Number(value("day")),
+    month: Number(value("month")),
+    dayOfWeek: weekdays[value("weekday")] ?? 0,
+  };
+}
+
+function parseCronField(field: string, min: number, max: number): Set<number> | null {
+  const values = new Set<number>();
+  for (const part of field.split(",")) {
+    const match = part.match(/^(\*|\d+|\d+-\d+)(?:\/(\d+))?$/u);
+    if (!match) return null;
+    const step = match[2] === undefined ? 1 : Number(match[2]);
+    if (step < 1) return null;
+    const range = match[1];
+    const [lo, hi] = range === "*"
+      ? [min, max]
+      : range.includes("-")
+        ? range.split("-").map(Number)
+        : [Number(range), Number(range)];
+    if (!Number.isInteger(lo) || !Number.isInteger(hi) || lo < min || hi > max || lo > hi) return null;
+    for (let value = lo; value <= hi; value += step) values.add(value);
+  }
+  return values;
+}
+
+/**
+ * Five-field cron match against the given local clock. Day-of-month and
+ * day-of-week follow POSIX OR semantics when both are restricted.
+ */
+export function cronMatches(expression: string, date: Date, timeZone: string): boolean {
+  const fields = expression.trim().split(/\s+/u);
+  if (fields.length !== 5) return false;
+  const clock = localClock(date, timeZone);
+  const minutes = parseCronField(fields[0], 0, 59);
+  const hours = parseCronField(fields[1], 0, 23);
+  const dom = parseCronField(fields[2], 1, 31);
+  const months = parseCronField(fields[3], 1, 12);
+  const dow = parseCronField(fields[4], 0, 7);
+  if (!minutes || !hours || !dom || !months || !dow) return false;
+  if (!minutes.has(clock.minute) || !hours.has(clock.hour) || !months.has(clock.month)) return false;
+  const domRestricted = fields[2] !== "*";
+  const dowRestricted = fields[4] !== "*";
+  const domMatch = dom.has(clock.dayOfMonth);
+  const dowMatch = dow.has(clock.dayOfWeek) || (clock.dayOfWeek === 0 && dow.has(7));
+  return domRestricted && dowRestricted ? domMatch || dowMatch : domMatch && dowMatch;
+}
+
+function deterministicUuid(seed: string): string {
+  const hex = createHash("sha256").update(seed, "utf8").digest("hex");
+  const body = hex.slice(0, 32).split("");
+  body[12] = "5";
+  body[16] = "89ab"[parseInt(hex[16], 16) % 4];
+  return `${body.slice(0, 8).join("")}-${body.slice(8, 12).join("")}-${body.slice(12, 16).join("")}-${body.slice(16, 20).join("")}-${body.slice(20, 32).join("")}`;
+}
+
+export interface SchedulerTickResult {
+  readonly repositoryKey: RepositoryKey;
+  readonly action: "started" | "skipped";
+  readonly reason: string;
+}
+
+/**
+ * One scheduler pass over a repository: reconcile durable state first, then
+ * apply the shell dispatcher's decision order exactly — night window, night
+ * rollover, night-stop conditions, rolling spacing guard, concurrency —
+ * before starting one run under a deterministic per-minute idempotency key.
+ */
+export async function schedulerTick(
+  ctx: DispatchContext,
+  repositoryKey: RepositoryKey,
+  allRepositoryKeys: readonly RepositoryKey[],
+): Promise<SchedulerTickResult> {
+  const settings = ctx.settings;
+  const skip = (reason: string): SchedulerTickResult => ({ repositoryKey, action: "skipped", reason });
+
+  if (settings.dispatchMode !== "enabled") return skip("dispatch is paused");
+  if (!settings.scheduleCron) return skip("no schedule configured");
+  const now = ctx.now();
+  if (!cronMatches(settings.scheduleCron, now, settings.timeZone)) return skip("outside the configured schedule");
+  const clock = localClock(now, settings.timeZone);
+  if (clock.hour >= settings.nightWindowEndHour) return skip(`outside the night window (hour ${clock.hour} >= ${settings.nightWindowEndHour})`);
+
+  const nightKey = nightKeyAt(now, settings.nightWindowEndHour);
+  let state = ctx.store.getDispatcherState(repositoryKey);
+  state = nightState(state, nightKey);
+  if (state.nightKey !== ctx.store.getDispatcherState(repositoryKey).nightKey) {
+    ctx.store.saveDispatcherState(state);
+  }
+
+  await reconcileRepository(ctx, repositoryKey);
+  state = ctx.store.getDispatcherState(repositoryKey);
+
+  if (state.lastState === "blocked") return skip("night stopped after a blocked run");
+  if (state.noopCount >= 2) return skip("night stopped after two no-op runs");
+  if (state.failedCount >= 2) return skip("night stopped after two failed-safe runs");
+
+  const nowS = dispatcherNowSeconds(ctx.now);
+  if (nowS - state.lastStartAt < settings.minimumStartGapSeconds) return skip("inside the minimum start gap");
+
+  const lease = ctx.store.getCurrentOwnership(repositoryKey);
+  if (lease && lease.status !== "released") return skip(`an active run '${lease.runId}' holds ownership`);
+
+  const activeAcross = allRepositoryKeys.reduce((count, key) => count + ctx.store.listActiveRuns(key).length, 0);
+  if (activeAcross >= settings.concurrencyLimit) return skip("the concurrency limit is reached");
+
+  const slotIso = new Date(Math.floor(now.getTime() / 60000) * 60000).toISOString();
+  const idempotencyKey = `bbf:v1:${repositoryKey}:run-now:${deterministicUuid(`${repositoryKey}|${slotIso}`)}`;
+  const started = await startRun(ctx, {
+    repositoryKey,
+    trigger: "schedule",
+    idempotencyKey: idempotencyKey as never,
+  });
+  if (started.result.ok) return { repositoryKey, action: "started", reason: started.result.result.message };
+  return skip(started.result.ok ? "started" : started.result.error.message);
+}
+
+export function createScheduler(
+  context: DispatchContext,
+  repositoryKeys: () => readonly RepositoryKey[],
+): { tick(): Promise<SchedulerTickResult[]> } {
+  return {
+    async tick() {
+      const keys = repositoryKeys();
+      const results: SchedulerTickResult[] = [];
+      for (const repositoryKey of keys) {
+        try {
+          results.push(await schedulerTick(context, repositoryKey, keys));
+        } catch (error) {
+          results.push({
+            repositoryKey,
+            action: "skipped",
+            reason: `tick failed: ${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
+      }
+      return results;
+    },
+  };
+}
+
+/**
+ * Register the durable per-minute sweep. Due rows are claimed by the host
+ * with a CAS on next_run_at while this plugin is loaded, so a missed night
+ * fires late on load; the internal cron gate and the rolling spacing guard
+ * make every wakeup safe to replay.
+ */
+export function registerFactorySchedule(
+  bb: Pick<BbPluginApi, "background">,
+  tick: () => void | Promise<void>,
+): void {
+  bb.background.schedule("factory-dispatch", "* * * * *", tick);
+}

@@ -1,32 +1,35 @@
 # P2 action implementation gates
 
-**Status:** Future P2 design only. This document does not change the frozen
-contracts, approve a rollout, waive the human-only `ready` requirement, or
-claim that the current plugin performs guarded actions. Verified against the
-installed `@get-bb/plugin-sdk@0.4.47` on 2026-09-10.
+**Status:** Implemented. The guarded executors below are wired and covered by
+focused tests (`tests/actions.test.ts`, `tests/dispatch.test.ts`,
+`tests/action-router.test.ts`). This document still does not approve a
+rollout, waive the human-only `ready` requirement, or claim an authenticated
+actor identity. Verified against the installed `@get-bb/plugin-sdk@0.4.47`.
 
 ## Current behavior
 
-- `factory_action` has a validated request and result contract and is now
-  registered through the P1 read integration. Preview is allowed through the
-  read-only executor, while mutating actions return `unsupported`; guarded P2
-  executors remain ports only (`src/rpc/read-router.ts`, `src/ports.ts:36-46`).
-- The current protocol adapter reads confined files, verifies each returned
-  SHA-256 against its text, and constructs `RepositoryRevision` from the Git
-  commit, protocol digest, and file-digest map
-  (`src/protocol/files.ts:85-180`, `src/protocol/reader.ts:266-317`). It has no
-  write method (`src/protocol/files.ts:43-47`).
-- Current answer rows store only the repository, source, target, request
-  fingerprint, nullable result, and timestamps. They have no typed intent or
-  lifecycle status (`src/storage/index.ts:99-117`, `src/storage/index.ts:150-213`).
-- The durable action-intent amendment below is now implemented as the
-  `pending_action_intents` table with typed request, target, expected
+- `factory_action` is routed by `src/rpc/action-router.ts`: revision-free
+  actions go to the read-only executor, repository actions to the repository
+  executor, and BB interaction plus run-control actions to the interaction
+  executor. Successful non-preview results publish a repository-changed
+  invalidation.
+- The repository executor (`src/actions/repository.ts`) performs the guarded
+  sequence below: fresh snapshot, expected-revision check, single-file
+  section-preserving Markdown update (`src/actions/markdown.ts`), durable
+  intent claim, `expectedSha256` CAS write, post-verify read, and recorded
+  result replay. The initial `ready` transition is the one-shot intent path
+  (`claimInitialReadyIntent`, 10-minute expiry, native UI entry point only).
+- The BB interaction executor (`src/actions/interactions.ts`) implements the
+  durable answer state machine below, plus run-now, pause, resume, retry, and
+  stop routing through the dispatch engine.
+- The `pending_action_intents` table stores typed request, target, expected
   revision, single-file change, entry point, one-shot, lifecycle status,
-  result, and reconciliation metadata (`src/storage/index.ts:196-216`,
-  `src/storage/index.ts:747-1136`). No executor consumes it yet.
-- The queue schema can represent `ready` and explicit `queue.approved`
-  provenance, but that is a data shape, not enforcement of who made the first
-  `ready` transition (`src/contracts.ts:283-313`).
+  result, and reconciliation metadata, and both executors consume it.
+- The dispatch engine (`src/dispatch/`) owns preflight, ownership leases,
+  durable run intents, worker start, lifecycle reconciliation, runtime caps,
+  cancellation, bounded retry, and startup recovery. The scheduler
+  (`src/schedule/`) applies night-window, spacing, provider-alternation, and
+  night-stop policy in the shell dispatcher's order.
 
 ## Verified SDK constraints
 
@@ -144,10 +147,10 @@ with these exact fields from the audit:
 The claim transaction persists the complete intent. BB resolution occurs
 outside SQLite. Completion occurs in a second transaction. Any pending or
 resolving row is reconciled through `interactions.get` before another resolve
-call. The reviewed replacement table option is now implemented:
-`pending_action_intents` persists the complete intent, enforces atomic
-pending-to-resolving consumption and one-shot expiry, and records observed BB
-state for reconciliation. Executor wiring that consumes it remains future P2.
+call. The reviewed replacement table is implemented: `pending_action_intents`
+persists the complete intent, enforces atomic pending-to-resolving
+consumption and one-shot expiry, and records observed BB state for
+reconciliation. Both guarded executors consume it.
 
 ## Normative plan basis
 
@@ -189,28 +192,32 @@ write access, so the plan does not require the plugin to secure against hostile
 local writers. The human-only requirement remains in force, and this document
 neither waives nor approves it.
 
-## Acceptance gates still open
+## Acceptance gates
 
-No new user decision is needed for this boundary. These are implementation and
-validation gates for future P2.
+The implementation gates are now met by the current code and focused tests:
 
-- Native UI must be the only supported initial-ready entry point. Its durable
-  one-shot request must bind repository, queue item, expected revision, exact
-  intended change, and time, record native-UI completion without claiming
-  identity, and reject missing, reused, stale, mismatched, or ambiguous use.
-- Reviewed migration and focused tests for the exact intent payload and four
-  lifecycle statuses, including restart recovery and ambiguous BB failures.
-- Per-action mapping to one authoritative file, with tests for path
-  confinement, policy and dependency checks, target conflicts, unrelated
-  Markdown preservation, target postverification, and the known non-target
-  revision race. Full-revision preflight plus target SHA CAS must demonstrate
-  that a changed target is never overwritten without claiming global atomicity.
-- Duplicate submissions, idempotency conflicts, resolved-state mismatch,
-  interrupted interactions, and `resolving` interactions must all produce
-  deterministic results without a second different side effect.
-- P1 projections and the frozen write/RPC interfaces passed their stated
-  reviews and local acceptance; P2 implementation remains gated by those
-  boundaries, per `docs/dependency-map.md:71-73`.
+- Native UI is the only supported initial-ready entry point. The queue
+  approval path uses `claimInitialReadyIntent`, a durable one-shot intent
+  bound to repository, queue item, expected revision, and exact intended
+  change with a 10-minute expiry. Reused, expired, mismatched, and ambiguous
+  intents are rejected; `tests/actions.test.ts` covers matching and
+  mismatched authorization on explicit entries, and the UI test covers the
+  guarded submit path.
+- Focused tests cover the intent lifecycle: ambiguous write failure marks the
+  intent `reconciliation-required` and blocks retry; CAS conflicts between
+  read and write return a conflict without overwrite; identical retries
+  replay the recorded result; different payloads under the same key return
+  `idempotency-conflict`.
+- Per-action mapping to one authoritative file is tested with unrelated
+  Markdown preservation, target postverification, and the stale-revision
+  pre-check. Full-revision preflight plus target SHA CAS demonstrates a
+  changed target is never overwritten; global atomicity is not claimed.
+- BB interaction tests cover pending resolution, already-resolved replay and
+  mismatch reconciliation, `interrupted` and `resolving` states, option
+  validation against interaction metadata, and run-control routing.
+- Rollout remains gated separately: dispatch stays `paused` until an approved
+  always-on host exists, per `docs/hosting-decision.md` and the Phase 4
+  cutover order in `PLAN.md`.
 
 ## Source pointers
 

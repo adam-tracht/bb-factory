@@ -1,4 +1,12 @@
 import { createElement, type ChangeEvent, type ComponentType, type ReactNode } from "react";
+import {
+  ActionFeedbackNotice,
+  PendingInteractionControls,
+  QueueApprovalControl,
+  QuestionAnswerControl,
+  RunActionControls,
+  type ActionFeedback,
+} from "./action-entry.js";
 import type {
   DispatchStatus,
   FactorySettings,
@@ -407,9 +415,11 @@ export interface OverviewViewProps {
   dashboardLink?: ReactNode;
   fileLink?: FileLinkRenderer;
   onRetry: () => void;
+  dispatchActions?: ReactNode;
+  feedback?: ActionFeedback | null;
 }
 
-export function OverviewView({ snapshot, settings, settingsError, health, healthError, dashboardLink, fileLink, onRetry }: OverviewViewProps) {
+export function OverviewView({ snapshot, settings, settingsError, health, healthError, dashboardLink, fileLink, onRetry, dispatchActions, feedback }: OverviewViewProps) {
   const repository = snapshot.repository;
   const dashboard = snapshot.dashboard;
   const dashboardTarget = repositoryFileTarget(repository, dashboard.canonicalPath);
@@ -418,7 +428,8 @@ export function OverviewView({ snapshot, settings, settingsError, health, health
     "div",
     { className: "space-y-4" },
     h("section", { className: "rounded-lg border border-border bg-card p-4" }, h("p", { className: labelClass }, "Repository"), h("h2", { className: "mt-1 text-xl font-semibold" }, repository.repositoryKey), h("p", { className: "mt-1 break-all font-mono text-xs text-muted-foreground" }, repository.repositoryRoot), h("div", { className: "mt-4 flex flex-wrap items-center gap-2 text-sm text-muted-foreground" }, h(Badge, { label: `branch ${repository.factoryBranch}`, tone: "primary" }), h(Badge, { label: `compare ${repository.mainRef}`, tone: "neutral" }), h(Badge, { label: `revision ${snapshot.revision.gitCommit ?? "uncommitted"}`, tone: "neutral" }))),
-    h("div", { className: "grid gap-4 lg:grid-cols-2" }, h(CurrentForemanCard, { snapshot, fileLink }), settings ? h(DispatchWindowCard, { settings: settings.settings, dispatch: settings.dispatch }) : h(ResourceNotice, { loaded: false, label: "Spacing and window status", error: settingsError, onRetry })),
+    feedback ? h(ActionFeedbackNotice, { feedback }) : null,
+    h("div", { className: "grid gap-4 lg:grid-cols-2" }, h(CurrentForemanCard, { snapshot, fileLink }), settings ? h("div", null, h(DispatchWindowCard, { settings: settings.settings, dispatch: settings.dispatch }), dispatchActions ?? null) : h(ResourceNotice, { loaded: false, label: "Spacing and window status", error: settingsError, onRetry })),
     h("div", { className: "grid gap-4 lg:grid-cols-2" }, h(HealthCard, { health, error: healthError, onRetry }), health ? h(HostPrerequisites, { host: health.host }) : h(ResourceNotice, { loaded: false, label: "Host prerequisites", error: healthError, onRetry })),
     h(
       "section",
@@ -444,7 +455,7 @@ function queueBadge(entry: QueueEntry): { label: string; tone: ReturnType<typeof
   }
 }
 
-function QueueEntryCard({ entry, repository, fileLink }: { entry: QueueEntry; repository: RepositoryConfiguration; fileLink?: FileLinkRenderer }) {
+function QueueEntryCard({ entry, repository, fileLink, onApprove, actionPending }: { entry: QueueEntry; repository: RepositoryConfiguration; fileLink?: FileLinkRenderer; onApprove?: (queueItemId: string, approvedText: string) => void; actionPending?: boolean }) {
   const reasons = entry.eligibilityReasons.length > 0 ? entry.eligibilityReasons.map(formatEligibilityReason) : entry.eligible ? ["All recorded eligibility checks pass."] : ["Eligibility was not reported by the protocol adapter."];
   const badge = queueBadge(entry);
   return h(
@@ -458,16 +469,28 @@ function QueueEntryCard({ entry, repository, fileLink }: { entry: QueueEntry; re
     entry.dependsOn.length > 0 ? h("p", { className: "mt-4 text-sm text-muted-foreground" }, h("span", { className: "font-medium text-foreground" }, "Depends on: "), entry.dependsOn.join(", ")) : null,
     entry.blockingQuestionIds.length > 0 ? h("p", { className: "mt-2 text-sm text-warning" }, h("span", { className: "font-medium" }, "Blocking questions: "), entry.blockingQuestionIds.join(", ")) : null,
     entry.notes ? h("p", { className: "mt-4 border-t border-border pt-3 text-sm leading-6 text-muted-foreground" }, entry.notes) : null,
+    onApprove ? h(QueueApprovalControl, { entry, feedback: actionPending ? pendingActionFeedback : null, onApprove }) : null,
   );
 }
 
-export function QueueView({ snapshot, fileLink }: { snapshot: ProtocolSnapshot; fileLink?: FileLinkRenderer }) {
+const pendingActionFeedback: ActionFeedback = { pending: true, message: null, error: null };
+
+export interface QueueViewProps {
+  snapshot: ProtocolSnapshot;
+  fileLink?: FileLinkRenderer;
+  onApprove?: (queueItemId: string, approvedText: string) => void;
+  pendingTarget?: string | null;
+  feedback?: ActionFeedback | null;
+}
+
+export function QueueView({ snapshot, fileLink, onApprove, pendingTarget, feedback }: QueueViewProps) {
   const eligibleCount = snapshot.queue.filter((entry) => entry.eligible).length;
   return h(
     "div",
     { className: "space-y-4" },
     h("div", null, h("p", { className: labelClass }, "Repository-backed queue"), h("h2", { className: "mt-1 text-xl font-semibold" }, "Queue"), h("p", { className: "mt-1 text-sm text-muted-foreground" }, `${snapshot.queue.length} item${snapshot.queue.length === 1 ? "" : "s"}; ${eligibleCount} currently eligible. The repository remains the source of truth.`)),
-    snapshot.queue.length > 0 ? h("div", { className: "space-y-3" }, snapshot.queue.map((entry) => h(QueueEntryCard, { key: entry.id, entry, repository: snapshot.repository, fileLink }))) : h(EmptyNotice, { title: "No queue entries", detail: "The selected repository has no parsed queue items." }),
+    feedback ? h(ActionFeedbackNotice, { feedback }) : null,
+    snapshot.queue.length > 0 ? h("div", { className: "space-y-3" }, snapshot.queue.map((entry) => h(QueueEntryCard, { key: entry.id, entry, repository: snapshot.repository, fileLink, onApprove, actionPending: pendingTarget !== null && pendingTarget !== undefined }))) : h(EmptyNotice, { title: "No queue entries", detail: "The selected repository has no parsed queue items." }),
   );
 }
 
@@ -477,7 +500,7 @@ function MarkdownBlock({ content, renderer: Renderer }: { content: string; rende
   return Renderer ? h(Renderer, { content, className: "text-sm leading-6" }) : h("p", { className: "whitespace-pre-wrap text-sm leading-6" }, content);
 }
 
-function RepositoryQuestionCard({ question, snapshot, markdownRenderer }: { question: Question; snapshot: ProtocolSnapshot; markdownRenderer?: MarkdownRenderer }) {
+function RepositoryQuestionCard({ question, snapshot, markdownRenderer, onAnswer, actionPending }: { question: Question; snapshot: ProtocolSnapshot; markdownRenderer?: MarkdownRenderer; onAnswer?: (questionId: string, answer: string) => void; actionPending?: boolean }) {
   const relatedQueueItems = snapshot.queue.filter((entry) => entry.blockingQuestionIds.includes(question.id));
   return h(
     "article",
@@ -486,19 +509,24 @@ function RepositoryQuestionCard({ question, snapshot, markdownRenderer }: { ques
     h("div", { className: "mt-4 space-y-4" }, h("div", null, h("p", { className: labelClass }, "Context"), h("div", { className: "mt-1" }, h(MarkdownBlock, { content: question.context, renderer: markdownRenderer }))), question.assumed ? h("div", null, h("p", { className: labelClass }, "Current assumption"), h("p", { className: "mt-1 whitespace-pre-wrap text-sm leading-6" }, question.assumed)) : null, question.recommended ? h("div", null, h("p", { className: labelClass }, "Recommendation"), h("p", { className: "mt-1 whitespace-pre-wrap text-sm leading-6" }, question.recommended)) : null),
     h("div", { className: "mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-3" }, h(Badge, { label: question.answer ? "Answered" : "Open", tone: question.answer ? "success" : "warning" }), relatedQueueItems.length > 0 ? h("span", { className: "text-xs text-muted-foreground" }, `Blocks ${relatedQueueItems.map((entry) => entry.id).join(", ")}`) : h("span", { className: "text-xs text-muted-foreground" }, "No queue item currently points to this question.")),
     question.answer ? h("div", { className: "mt-3 rounded-md bg-surface-recessed/40 p-3" }, h("p", { className: labelClass }, "Recorded answer"), h("div", { className: "mt-1" }, h(MarkdownBlock, { content: question.answer, renderer: markdownRenderer }))) : null,
+    !question.answer && onAnswer ? h(QuestionAnswerControl, { questionId: question.id, feedback: actionPending ? pendingActionFeedback : null, onAnswer }) : null,
   );
 }
 
-function PendingInteractionCard({ interaction, onOpenThread }: { interaction: PendingInteraction; onOpenThread: (threadId: string) => void }) {
+function PendingInteractionCard({ interaction, onOpenThread, onResolve, actionPending }: { interaction: PendingInteraction; onOpenThread: (threadId: string) => void; onResolve?: InteractionResolveHandler; actionPending?: boolean }) {
   return h(
     "article",
     { className: "rounded-lg border border-warning/30 bg-warning/5 p-4" },
     h("div", { className: "flex flex-wrap items-start justify-between gap-3" }, h("div", null, h("h3", { className: "text-sm font-semibold" }, interaction.title), h("p", { className: "mt-1 font-mono text-xs text-muted-foreground" }, interaction.interactionId)), h(Badge, { label: "BB pending", tone: "warning" })),
     interaction.prompt ? h("div", { className: "mt-3" }, h(MarkdownBlock, { content: interaction.prompt })) : h("p", { className: "mt-3 text-sm text-muted-foreground" }, "BB did not provide a prompt."),
     h("div", { className: "mt-4 flex flex-wrap items-center gap-3 text-xs text-muted-foreground" }, h("span", null, `Created ${formatTimestamp(interaction.createdAt)}`), interaction.expiresAt ? h("span", null, `Expires ${formatTimestamp(interaction.expiresAt)}`) : null, h("button", { type: "button", className: quietButtonClass, onClick: () => onOpenThread(interaction.threadId) }, `Open thread ${interaction.threadId}`)),
-    h("p", { className: "mt-3 text-xs text-muted-foreground" }, "Read-only in Phase 1. Answering this interaction is not available here."),
+    onResolve
+      ? h(PendingInteractionControls, { interaction, feedback: actionPending ? pendingActionFeedback : null, onResolve })
+      : h("p", { className: "mt-3 text-xs text-muted-foreground" }, "Read-only. Answering this interaction is not available here."),
   );
 }
+
+type InteractionResolveHandler = (interactionId: string, resolution: { kind: "approval"; decision: "allow_once" | "allow_for_session" | "deny" } | { kind: "user_answer"; answers: Record<string, { selected: string[]; freeText?: string }> }) => void;
 
 export interface QuestionsViewProps {
   snapshot: ProtocolSnapshot;
@@ -507,12 +535,16 @@ export interface QuestionsViewProps {
   markdownRenderer?: MarkdownRenderer;
   onOpenThread: (threadId: string) => void;
   onRetry: () => void;
+  onAnswerQuestion?: (questionId: string, answer: string) => void;
+  onResolveInteraction?: InteractionResolveHandler;
+  pendingTarget?: string | null;
+  feedback?: ActionFeedback | null;
 }
 
-export function QuestionsView({ snapshot, interactions, interactionsError, markdownRenderer, onOpenThread, onRetry }: QuestionsViewProps) {
+export function QuestionsView({ snapshot, interactions, interactionsError, markdownRenderer, onOpenThread, onRetry, onAnswerQuestion, onResolveInteraction, pendingTarget, feedback }: QuestionsViewProps) {
   const pendingContent = interactions
     ? interactions.interactions.length > 0
-      ? interactions.interactions.map((interaction) => h(PendingInteractionCard, { key: interaction.interactionId, interaction, onOpenThread }))
+      ? interactions.interactions.map((interaction) => h(PendingInteractionCard, { key: interaction.interactionId, interaction, onOpenThread, onResolve: onResolveInteraction, actionPending: pendingTarget !== null && pendingTarget !== undefined }))
       : h(EmptyNotice, { title: "No pending BB interactions", detail: "There are no approval or question prompts waiting in BB for this repository." })
     : interactionsError
       ? h(ErrorNotice, { message: `BB pending interactions: ${interactionsError}`, onRetry })
@@ -520,8 +552,9 @@ export function QuestionsView({ snapshot, interactions, interactionsError, markd
   return h(
     "div",
     { className: "space-y-5" },
-    h("div", null, h("p", { className: labelClass }, "Repository-backed decisions"), h("h2", { className: "mt-1 text-xl font-semibold" }, "Questions"), h("p", { className: "mt-1 text-sm text-muted-foreground" }, "Questions stay in the repository protocol. BB pending interactions are shown alongside them, but are not mutated here.")),
-    h("section", { className: "space-y-3", "aria-labelledby": "repository-questions-heading" }, h("h3", { id: "repository-questions-heading", className: "text-sm font-semibold" }, "Repository questions"), snapshot.questions.length > 0 ? snapshot.questions.map((question) => h(RepositoryQuestionCard, { key: question.id, question, snapshot, markdownRenderer })) : h(EmptyNotice, { title: "No repository questions", detail: "The selected repository has no parsed questions." })),
+    h("div", null, h("p", { className: labelClass }, "Repository-backed decisions"), h("h2", { className: "mt-1 text-xl font-semibold" }, "Questions"), h("p", { className: "mt-1 text-sm text-muted-foreground" }, "Questions stay in the repository protocol. BB pending interactions can be resolved here with typed answers.")),
+    feedback ? h(ActionFeedbackNotice, { feedback }) : null,
+    h("section", { className: "space-y-3", "aria-labelledby": "repository-questions-heading" }, h("h3", { id: "repository-questions-heading", className: "text-sm font-semibold" }, "Repository questions"), snapshot.questions.length > 0 ? snapshot.questions.map((question) => h(RepositoryQuestionCard, { key: question.id, question, snapshot, markdownRenderer, onAnswer: onAnswerQuestion, actionPending: pendingTarget !== null && pendingTarget !== undefined })) : h(EmptyNotice, { title: "No repository questions", detail: "The selected repository has no parsed questions." })),
     h("section", { className: "space-y-3", "aria-labelledby": "pending-interactions-heading" }, h("div", { className: "flex items-center justify-between gap-3" }, h("h3", { id: "pending-interactions-heading", className: "text-sm font-semibold" }, "BB pending interactions"), h(Badge, { label: interactions ? String(interactions.interactions.length) : "…", tone: "neutral" })), pendingContent),
   );
 }
@@ -579,9 +612,13 @@ export interface RunDetailViewProps {
   onBack: () => void;
   onOpenThread: (threadId: string) => void;
   onOpenProject: (projectId: string) => void;
+  onStop?: () => void;
+  onRetry?: (attemptId: string) => void;
+  pendingTarget?: string | null;
+  feedback?: ActionFeedback | null;
 }
 
-export function RunDetailView({ detail, repository, fileLink, onBack, onOpenThread, onOpenProject }: RunDetailViewProps) {
+export function RunDetailView({ detail, repository, fileLink, onBack, onOpenThread, onOpenProject, onStop, onRetry, pendingTarget, feedback }: RunDetailViewProps) {
   if (!detail) {
     return h(
       "div",
@@ -630,11 +667,20 @@ export function RunDetailView({ detail, repository, fileLink, onBack, onOpenThre
     ),
   );
 
+  const latestFailedAttempt = [...detail.attempts].reverse().find((attempt) => attempt.status === "failed-safe");
   return h(
     "div",
     { className: "space-y-4" },
     h("button", { type: "button", className: quietButtonClass, onClick: onBack }, "Back to runs"),
     summary,
+    feedback ? h(ActionFeedbackNotice, { feedback }) : null,
+    onStop || onRetry ? h(RunActionControls, {
+      status: run.status,
+      latestFailedAttemptId: run.status === "failed-safe" && latestFailedAttempt ? latestFailedAttempt.attemptId : null,
+      feedback: pendingTarget ? pendingActionFeedback : null,
+      onStop: onStop ?? (() => {}),
+      onRetry: onRetry ?? (() => {}),
+    }) : null,
     h(CanonicalRecords, { run, repository, fileLink }),
     h(Attempts, { detail }),
     intent,
