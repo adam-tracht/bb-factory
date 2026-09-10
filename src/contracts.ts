@@ -1,20 +1,9 @@
 import { z } from "zod";
-import type { JsonValue } from "@get-bb/plugin-sdk";
 
 const nonEmptyString = z.string().trim().min(1);
 const isoTimestamp = z.string().datetime({ offset: true });
 const sha256 = z.string().regex(/^[a-f0-9]{64}$/, "must be a lowercase SHA-256 digest");
 const absolutePath = z.string().regex(/^(?:\/|[A-Za-z]:[\\/])/, "must be an absolute path");
-const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
-  z.union([
-    z.string(),
-    z.number(),
-    z.boolean(),
-    z.null(),
-    z.array(jsonValueSchema),
-    z.record(z.string(), jsonValueSchema),
-  ]),
-);
 
 export const repositoryKeySchema = z
   .string()
@@ -393,12 +382,88 @@ const repositoryQuestionAnswerActionSchema = z
     answer: nonEmptyString,
   })
   .strict();
+
+export const approvalDecisionSchema = z.enum(["allow_once", "allow_for_session", "deny"]);
+export type ApprovalDecision = z.infer<typeof approvalDecisionSchema>;
+
+export const pendingInteractionQuestionOptionSchema = z
+  .object({
+    description: z.string().optional(),
+    label: z.string(),
+    value: z.string(),
+  })
+  .strict();
+export type PendingInteractionQuestionOption = z.infer<typeof pendingInteractionQuestionOptionSchema>;
+
+export const pendingInteractionQuestionSchema = z
+  .object({
+    allowFreeText: z.boolean(),
+    id: z.string(),
+    multiSelect: z.boolean(),
+    options: z.array(pendingInteractionQuestionOptionSchema).optional(),
+    prompt: z.string(),
+    shortLabel: z.string().optional(),
+  })
+  .strict();
+export type PendingInteractionQuestion = z.infer<typeof pendingInteractionQuestionSchema>;
+
+const pendingApprovalMetadataSchema = z
+  .object({
+    availableDecisions: z.array(approvalDecisionSchema),
+    kind: z.literal("approval"),
+  })
+  .strict();
+
+const pendingUserQuestionMetadataSchema = z
+  .object({
+    kind: z.literal("user_question"),
+    questions: z.array(pendingInteractionQuestionSchema),
+  })
+  .strict();
+
+const pendingPluginMetadataSchema = z.object({ kind: z.literal("plugin") }).strict();
+
+export const pendingInteractionMetadataSchema = z.discriminatedUnion("kind", [
+  pendingApprovalMetadataSchema,
+  pendingUserQuestionMetadataSchema,
+  pendingPluginMetadataSchema,
+]);
+export type PendingInteractionMetadata = z.infer<typeof pendingInteractionMetadataSchema>;
+
+const userAnswerResolutionSchema = z
+  .object({
+    answers: z.record(
+      z.string(),
+      z
+        .object({
+          freeText: z.string().optional(),
+          selected: z.array(z.string()),
+        })
+        .strict(),
+    ),
+    kind: z.literal("user_answer"),
+  })
+  .strict();
+
+const approvalResolutionSchema = z
+  .object({
+    decision: approvalDecisionSchema,
+    kind: z.literal("approval"),
+  })
+  .strict();
+
+export const bbInteractionResolutionSchema = z.discriminatedUnion("kind", [
+  userAnswerResolutionSchema,
+  approvalResolutionSchema,
+]);
+export type BbInteractionResolution = z.infer<typeof bbInteractionResolutionSchema>;
+
 const bbInteractionAnswerActionSchema = z
   .object({
     kind: z.literal("answer-question"),
     source: z.literal("bb-interaction"),
     interactionId: nonEmptyString,
-    value: jsonValueSchema,
+    resolution: bbInteractionResolutionSchema,
   })
   .strict();
 const approveQueueActionSchema = z
@@ -645,20 +710,41 @@ export const healthProjectionSchema = z
   .strict();
 export type HealthProjection = z.infer<typeof healthProjectionSchema>;
 
-export const pendingInteractionSchema = z
-  .object({
-    source: z.literal("bb-interaction"),
-    interactionId: nonEmptyString,
-    threadId: nonEmptyString,
-    turnId: nonEmptyString.nullable(),
-    status: z.literal("pending"),
-    kind: z.enum(["approval", "user-question", "plugin"]),
-    title: nonEmptyString,
-    prompt: nonEmptyString.nullable(),
-    createdAt: isoTimestamp,
-    expiresAt: isoTimestamp.nullable(),
-  })
-  .strict();
+const pendingInteractionFields = {
+  source: z.literal("bb-interaction"),
+  interactionId: nonEmptyString,
+  threadId: nonEmptyString,
+  turnId: nonEmptyString.nullable(),
+  status: z.literal("pending"),
+  title: nonEmptyString,
+  prompt: nonEmptyString.nullable(),
+  createdAt: isoTimestamp,
+  expiresAt: isoTimestamp.nullable(),
+};
+
+export const pendingInteractionSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      ...pendingInteractionFields,
+      kind: z.literal("approval"),
+      metadata: pendingApprovalMetadataSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...pendingInteractionFields,
+      kind: z.literal("user-question"),
+      metadata: pendingUserQuestionMetadataSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...pendingInteractionFields,
+      kind: z.literal("plugin"),
+      metadata: pendingPluginMetadataSchema,
+    })
+    .strict(),
+]);
 export type PendingInteraction = z.infer<typeof pendingInteractionSchema>;
 
 export const pendingInteractionsProjectionSchema = z

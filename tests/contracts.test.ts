@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  bbInteractionResolutionSchema,
   bbInteractionActionRequestSchema,
   factoryActionRequestSchema,
   factoryActionResultSchema,
@@ -13,6 +14,7 @@ import {
   operationalRunListInputSchema,
   operationalRunListProjectionSchema,
   pendingInteractionsProjectionSchema,
+  pendingInteractionMetadataSchema,
   questionSchema,
   queueStatusSchema,
   repositorySelectionInputSchema,
@@ -239,6 +241,20 @@ describe("Phase 0 wire contracts", () => {
       turnId: "turn-1",
       status: "pending",
       kind: "user-question",
+      metadata: {
+        kind: "user_question",
+        questions: [{
+          id: "provider",
+          prompt: "Which provider should run?",
+          shortLabel: "Provider",
+          allowFreeText: false,
+          multiSelect: false,
+          options: [
+            { value: "provider-codex", label: "Codex" },
+            { value: "provider-claude", label: "Claude" },
+          ],
+        }],
+      },
       title: "Choose a provider",
       prompt: "Which provider should run?",
       createdAt: "2026-09-10T00:00:00Z",
@@ -258,7 +274,17 @@ describe("Phase 0 wire contracts", () => {
 
     const interactionAnswer = {
       repositoryKey: "monorepo",
-      action: { kind: "answer-question", source: "bb-interaction", interactionId: "interaction-1", value: { selected: "codex" } },
+      action: {
+        kind: "answer-question",
+        source: "bb-interaction",
+        interactionId: "interaction-1",
+        resolution: {
+          kind: "user_answer",
+          answers: {
+            provider: { selected: ["provider-codex"] },
+          },
+        },
+      },
       idempotencyKey: "bbf:v1:monorepo:answer-question:223e4567-e89b-12d3-a456-426614174000",
       expectedRevision: repositoryRevision,
     };
@@ -325,5 +351,153 @@ describe("Phase 0 wire contracts", () => {
         action: { ...interactionAnswer.action, interactionId: "" },
       }),
     ).toThrow();
+  });
+
+  it("preserves native question metadata and uses option values, not labels", () => {
+    const metadata = {
+      kind: "user_question",
+      questions: [{
+        id: "deployment-target",
+        prompt: "Where should this deploy?",
+        shortLabel: "Target",
+        allowFreeText: true,
+        multiSelect: true,
+        options: [
+          { label: "Production Europe", value: "prod-eu", description: "EU production" },
+          { label: "Production US", value: "prod-us", description: "US production" },
+        ],
+      }],
+    };
+    expect(pendingInteractionMetadataSchema.parse(metadata)).toEqual(metadata);
+
+    const resolution = {
+      kind: "user_answer",
+      answers: {
+        "deployment-target": {
+          selected: ["prod-eu", "prod-us"],
+          freeText: "include the canary account",
+        },
+        "another-question": { selected: ["staging"] },
+      },
+    };
+    expect(bbInteractionResolutionSchema.parse(resolution)).toEqual(resolution);
+    expect(() => pendingInteractionMetadataSchema.parse({
+      ...metadata,
+      questions: [{ ...metadata.questions[0], options: [{ label: "Production Europe" }] }],
+    })).toThrow();
+    expect(resolution.answers["deployment-target"].selected).toEqual(["prod-eu", "prod-us"]);
+    expect(resolution.answers["deployment-target"].selected).not.toContain("Production Europe");
+    expect(() => bbInteractionResolutionSchema.parse({
+      ...resolution,
+      answers: { "deployment-target": { selected: ["prod-eu"], freeText: 42 } },
+    })).toThrow();
+  });
+
+  it("normalizes namespaced provider custom requests without exposing data", () => {
+    const sdkProviderCustomRequest = {
+      kind: "acme/factory-checkpoint",
+      title: "Factory checkpoint",
+      data: { secret: "do-not-return-this", grant: { token: "hidden" } },
+    };
+    const normalized = {
+      source: "bb-interaction",
+      interactionId: "interaction-plugin",
+      threadId: "thread-1",
+      turnId: null,
+      status: "pending",
+      kind: "plugin",
+      metadata: { kind: "plugin" },
+      title: sdkProviderCustomRequest.title,
+      prompt: null,
+      createdAt: "2026-09-10T00:00:00Z",
+      expiresAt: null,
+    };
+
+    const parsed = pendingInteractionsProjectionSchema.parse({ repositoryKey: "monorepo", interactions: [normalized] });
+    expect(parsed.interactions[0]).toEqual(normalized);
+    expect(JSON.stringify(parsed)).not.toContain("do-not-return-this");
+    expect(() => pendingInteractionsProjectionSchema.parse({
+      repositoryKey: "monorepo",
+      interactions: [{ ...normalized, kind: sdkProviderCustomRequest.kind, data: sdkProviderCustomRequest.data }],
+    })).toThrow();
+    expect(() => pendingInteractionMetadataSchema.parse({ kind: "plugin", data: sdkProviderCustomRequest.data })).toThrow();
+  });
+
+  it("correlates the normalized top-level kind with metadata.kind", () => {
+    const common = {
+      source: "bb-interaction",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      status: "pending",
+      prompt: null,
+      createdAt: "2026-09-10T00:00:00Z",
+      expiresAt: null,
+    };
+    const approval = {
+      ...common,
+      interactionId: "interaction-approval",
+      kind: "approval",
+      metadata: { kind: "approval", availableDecisions: ["allow_once", "deny"] },
+      title: "BB approval required",
+    };
+    const userQuestion = {
+      ...common,
+      interactionId: "interaction-question",
+      kind: "user-question",
+      metadata: {
+        kind: "user_question",
+        questions: [{
+          id: "provider",
+          prompt: "Which provider should run?",
+          allowFreeText: false,
+          multiSelect: false,
+          options: [{ label: "Codex", value: "provider-codex" }],
+        }],
+      },
+      title: "Provider",
+    };
+    const plugin = {
+      ...common,
+      interactionId: "interaction-plugin",
+      turnId: null,
+      kind: "plugin",
+      metadata: { kind: "plugin" },
+      title: "Factory checkpoint",
+    };
+
+    expect(
+      pendingInteractionsProjectionSchema.parse({
+        repositoryKey: "monorepo",
+        interactions: [approval, userQuestion, plugin],
+      }).interactions,
+    ).toHaveLength(3);
+
+    const mismatchedPairs = [
+      { ...approval, metadata: userQuestion.metadata },
+      { ...approval, metadata: plugin.metadata },
+      { ...userQuestion, metadata: approval.metadata },
+      { ...userQuestion, metadata: plugin.metadata },
+      { ...plugin, metadata: approval.metadata },
+      { ...plugin, metadata: userQuestion.metadata },
+    ];
+    for (const interaction of mismatchedPairs) {
+      expect(() => pendingInteractionsProjectionSchema.parse({
+        repositoryKey: "monorepo",
+        interactions: [interaction],
+      })).toThrow();
+    }
+  });
+
+  it("accepts only the bounded native approval decisions", () => {
+    for (const decision of ["allow_once", "allow_for_session", "deny"] as const) {
+      expect(bbInteractionResolutionSchema.parse({ kind: "approval", decision })).toEqual({ kind: "approval", decision });
+      expect(pendingInteractionMetadataSchema.parse({ kind: "approval", availableDecisions: [decision] })).toEqual({
+        kind: "approval",
+        availableDecisions: [decision],
+      });
+    }
+    expect(() => bbInteractionResolutionSchema.parse({ kind: "approval", decision: "allow" })).toThrow();
+    expect(() => bbInteractionResolutionSchema.parse({ kind: "approval", decision: "deny", grantedPermissions: null })).toThrow();
+    expect(() => bbInteractionResolutionSchema.parse({ kind: "request_answer", value: { arbitrary: true } })).toThrow();
   });
 });
