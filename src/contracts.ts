@@ -1,0 +1,784 @@
+import { z } from "zod";
+import type { JsonValue } from "@get-bb/plugin-sdk";
+
+const nonEmptyString = z.string().trim().min(1);
+const isoTimestamp = z.string().datetime({ offset: true });
+const sha256 = z.string().regex(/^[a-f0-9]{64}$/, "must be a lowercase SHA-256 digest");
+const absolutePath = z.string().regex(/^(?:\/|[A-Za-z]:[\\/])/, "must be an absolute path");
+const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
+  z.union([
+    z.string(),
+    z.number(),
+    z.boolean(),
+    z.null(),
+    z.array(jsonValueSchema),
+    z.record(z.string(), jsonValueSchema),
+  ]),
+);
+
+export const repositoryKeySchema = z
+  .string()
+  .regex(/^[a-z0-9][a-z0-9._-]{0,63}$/, "must be a lowercase repository key");
+export type RepositoryKey = z.infer<typeof repositoryKeySchema>;
+
+export const providerPreferenceSchema = z.enum(["alternate", "codex", "claude-code"]);
+export type ProviderPreference = z.infer<typeof providerPreferenceSchema>;
+
+export const providerIdSchema = nonEmptyString.regex(
+  /^[a-z0-9][a-z0-9._-]{0,63}$/,
+  "must be a lowercase provider id",
+);
+export type ProviderId = z.infer<typeof providerIdSchema>;
+
+export const reasoningLevelSchema = z.enum([
+  "none",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+  "ultracode",
+]);
+export type ReasoningLevel = z.infer<typeof reasoningLevelSchema>;
+
+export const repositoryRevisionSchema = z
+  .object({
+    gitCommit: z.string().regex(/^[0-9a-f]{7,64}$/).nullable(),
+    protocolDigest: sha256,
+    fileDigests: z.record(z.string(), sha256),
+  })
+  .strict();
+export type RepositoryRevision = z.infer<typeof repositoryRevisionSchema>;
+
+export const repositoryConfigurationSchema = z
+  .object({
+    repositoryKey: repositoryKeySchema,
+    repositoryRoot: absolutePath,
+    connectedHostId: nonEmptyString,
+    checkoutPath: absolutePath,
+    factoryBranch: z.literal("factory"),
+    mainRef: z.string().min(1).default("origin/main"),
+  })
+  .strict();
+export type RepositoryConfiguration = z.infer<typeof repositoryConfigurationSchema>;
+
+export const scheduleSettingsSchema = z
+  .object({
+    cron: nonEmptyString,
+    timeZone: nonEmptyString.default("server-local"),
+    nightWindowEndHour: z.number().int().min(0).max(23).default(6),
+    minimumStartGapSeconds: z.number().int().min(3600).default(3600),
+  })
+  .strict();
+export type ScheduleSettings = z.infer<typeof scheduleSettingsSchema>;
+
+export const factorySettingsSchema = z
+  .object({
+    repositoryKey: repositoryKeySchema.optional(),
+    repositoryRoot: absolutePath.optional(),
+    connectedHostId: nonEmptyString.optional(),
+    checkoutPath: absolutePath.optional(),
+    scheduleCron: nonEmptyString.optional(),
+    timeZone: nonEmptyString.default("server-local"),
+    nightWindowEndHour: z.number().int().min(0).max(23).default(6),
+    runtimeCapSeconds: z.number().int().positive().default(10_800),
+    providerPreference: providerPreferenceSchema.optional(),
+    minimumStartGapSeconds: z.number().int().min(3600).default(3600),
+    concurrencyLimit: z.number().int().positive().default(1),
+    dispatchMode: z.enum(["enabled", "paused"]).default("paused"),
+  })
+  .strict();
+export type FactorySettings = z.infer<typeof factorySettingsSchema>;
+
+export const foremanTemplateSourceSchema = z
+  .object({
+    authority: z.literal("repository-protocol"),
+    relativePath: z.literal("plans/factory/foreman.md"),
+    contentSha256: sha256,
+    repositoryRevision: repositoryRevisionSchema,
+  })
+  .strict();
+export type ForemanTemplateSource = z.infer<typeof foremanTemplateSourceSchema>;
+
+export const queueStatusSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("ready") }).strict(),
+  z.object({ kind: z.literal("in-progress"), detail: nonEmptyString }).strict(),
+  z.object({ kind: z.literal("done"), detail: nonEmptyString.optional() }).strict(),
+  z
+    .object({ kind: z.literal("blocked-by"), questionId: nonEmptyString, detail: nonEmptyString.optional() })
+    .strict(),
+]);
+export type QueueStatus = z.infer<typeof queueStatusSchema>;
+
+export const queueAuthorizationSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("explicit"),
+      source: z.literal("queue.approved"),
+      text: nonEmptyString,
+    })
+    .strict(),
+  z.object({ kind: z.literal("none"), source: z.literal("none") }).strict(),
+]);
+export type QueueAuthorization = z.infer<typeof queueAuthorizationSchema>;
+
+export const queueEligibilityReasonSchema = z.enum([
+  "not-ready",
+  "unmet-dependency",
+  "blocking-question",
+  "missing-authorization",
+  "high-risk-approval-missing",
+  "repository-policy",
+]);
+export type QueueEligibilityReason = z.infer<typeof queueEligibilityReasonSchema>;
+
+export const queueEntrySchema = z
+  .object({
+    id: nonEmptyString,
+    title: nonEmptyString,
+    status: queueStatusSchema,
+    priority: z.number().int().min(1).max(5),
+    dependsOn: z.array(nonEmptyString),
+    risk: z.enum(["low", "medium", "high"]),
+    planPath: nonEmptyString,
+    approved: queueAuthorizationSchema,
+    acceptance: z.array(nonEmptyString),
+    validate: z.array(nonEmptyString),
+    notes: z.string().nullable(),
+    blockingQuestionIds: z.array(nonEmptyString),
+    eligible: z.boolean(),
+    eligibilityReasons: z.array(queueEligibilityReasonSchema),
+  })
+  .strict();
+export type QueueEntry = z.infer<typeof queueEntrySchema>;
+
+export const questionSchema = z
+  .object({
+    id: nonEmptyString,
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    classification: z.enum(["blocking", "assumption"]),
+    dashboardId: nonEmptyString,
+    question: nonEmptyString,
+    context: nonEmptyString,
+    assumed: z.string().nullable(),
+    recommended: nonEmptyString.nullable().optional(),
+    answer: z.string().nullable(),
+  })
+  .strict();
+export type Question = z.infer<typeof questionSchema>;
+
+export const mergeTaskCommitSchema = z
+  .object({
+    sha: z.string().regex(/^[0-9a-f]{7,64}$/),
+    subject: nonEmptyString,
+  })
+  .strict();
+
+export const dashboardSummarySchema = z
+  .object({
+    canonicalPath: z.literal("plans/README.md"),
+    factoryBranch: z.literal("factory"),
+    mainRef: nonEmptyString,
+    factoryAhead: z.number().int().nonnegative(),
+    mainBehind: z.number().int().nonnegative(),
+    taskCommits: z.array(mergeTaskCommitSchema),
+    safeFastForward: z.boolean(),
+    canonicalDashboardUrl: z.string().url().nullable(),
+  })
+  .strict();
+export type DashboardSummary = z.infer<typeof dashboardSummarySchema>;
+
+export const foremanOutcomeSchema = z.enum(["success", "blocked", "failed-safe", "no-op"]);
+export type ForemanOutcome = z.infer<typeof foremanOutcomeSchema>;
+
+export const currentRunSummarySchema = z
+  .object({
+    state: foremanOutcomeSchema,
+    lastRunAt: isoTimestamp.nullable(),
+    currentPath: z.literal("plans/factory/current.md"),
+    latestRunPath: z.string().nullable(),
+  })
+  .strict();
+export type CurrentRunSummary = z.infer<typeof currentRunSummarySchema>;
+
+export const protocolSnapshotSchema = z
+  .object({
+    repository: repositoryConfigurationSchema,
+    revision: repositoryRevisionSchema,
+    capturedAt: isoTimestamp,
+    foremanTemplate: foremanTemplateSourceSchema,
+    queue: z.array(queueEntrySchema),
+    questions: z.array(questionSchema),
+    dashboard: dashboardSummarySchema,
+    currentRun: currentRunSummarySchema,
+  })
+  .strict();
+export type ProtocolSnapshot = z.infer<typeof protocolSnapshotSchema>;
+
+export const idempotencyKeySchema = z
+  .string()
+  .regex(
+    /^bbf:v1:[a-z0-9][a-z0-9._-]{0,63}:[a-z0-9][a-z0-9._-]{0,63}:[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    "must be bbf:v1:<repository>:<operation>:<UUID>",
+  );
+export type IdempotencyKey = z.infer<typeof idempotencyKeySchema>;
+
+export const runIntentSchema = z
+  .object({
+    runId: nonEmptyString,
+    repositoryKey: repositoryKeySchema,
+    trigger: z.enum(["schedule", "manual", "recovery"]),
+    idempotencyKey: idempotencyKeySchema,
+    requestedAt: isoTimestamp,
+    baseRevision: repositoryRevisionSchema,
+    queueItemIds: z.array(nonEmptyString),
+    authorizationProvenance: z
+      .array(
+        z
+          .object({
+            queueItemId: nonEmptyString,
+            source: z.enum(["queue.approved", "none"]),
+            approvedText: z.string().nullable(),
+          })
+          .strict(),
+      )
+      .refine(
+        (items) => items.every((item) => item.source === "queue.approved" ? item.approvedText !== null : item.approvedText === null),
+        "authorization provenance must match the recorded approval text",
+      ),
+  })
+  .strict();
+export type RunIntent = z.infer<typeof runIntentSchema>;
+
+export const dispatchAttemptSchema = z
+  .object({
+    attemptId: nonEmptyString,
+    runId: nonEmptyString,
+    repositoryKey: repositoryKeySchema,
+    providerId: providerIdSchema,
+    model: nonEmptyString,
+    reasoningLevel: reasoningLevelSchema,
+    workerThreadId: z.string().nullable(),
+    status: z.enum(["pending", "started", "completed", "failed-safe", "blocked", "no-op", "cancel-requested", "reconciliation-required"]),
+    startedAt: isoTimestamp.nullable(),
+    finishedAt: isoTimestamp.nullable(),
+  })
+  .strict();
+export type DispatchAttempt = z.infer<typeof dispatchAttemptSchema>;
+
+export const ownershipLeaseSchema = z
+  .object({
+    leaseId: nonEmptyString,
+    repositoryKey: repositoryKeySchema,
+    runId: nonEmptyString,
+    queueItemIds: z.array(nonEmptyString),
+    workerThreadId: z.string().nullable(),
+    authorizationProvenance: z.array(nonEmptyString),
+    acquiredAt: isoTimestamp,
+    expiresAt: isoTimestamp,
+    status: z.enum(["held", "release-requested", "released", "reconciliation-required"]),
+  })
+  .strict();
+export type OwnershipLease = z.infer<typeof ownershipLeaseSchema>;
+
+export const providerStatusSchema = z
+  .object({
+    providerId: providerIdSchema,
+    model: nonEmptyString,
+    reasoningLevel: reasoningLevelSchema,
+    availability: z.enum(["available", "limited", "unavailable", "unknown"]),
+    limitedUntil: isoTimestamp.nullable(),
+    activeThreadCount: z.number().int().nonnegative(),
+    lastError: z.string().nullable(),
+  })
+  .strict();
+export type ProviderStatus = z.infer<typeof providerStatusSchema>;
+
+export const hostPreflightSchema = z
+  .object({
+    hostId: nonEmptyString,
+    status: z.enum(["online", "offline", "unknown"]),
+    checkoutExists: z.boolean(),
+    branch: z.string().nullable(),
+    requiredTools: z.record(z.string(), z.boolean()),
+    browserAvailable: z.boolean().nullable(),
+    dbtStudioAvailable: z.boolean().nullable(),
+    ok: z.boolean(),
+    reasons: z.array(nonEmptyString),
+  })
+  .strict();
+export type HostPreflight = z.infer<typeof hostPreflightSchema>;
+
+export const factoryErrorCategorySchema = z.enum([
+  "invalid-input",
+  "not-found",
+  "conflict",
+  "stale-revision",
+  "authorization-required",
+  "dependency-unsatisfied",
+  "blocked-by-question",
+  "host-unavailable",
+  "checkout-invalid",
+  "provider-unavailable",
+  "paused",
+  "idempotency-conflict",
+  "unsupported",
+  "internal",
+]);
+export type FactoryErrorCategory = z.infer<typeof factoryErrorCategorySchema>;
+
+const staleRevisionErrorSchema = z
+  .object({
+    category: z.literal("stale-revision"),
+    message: nonEmptyString,
+    fieldErrors: z.record(z.string(), z.array(nonEmptyString)).optional(),
+    expectedRevision: repositoryRevisionSchema,
+    actualRevision: repositoryRevisionSchema,
+    idempotencyKey: idempotencyKeySchema.optional(),
+  })
+  .strict();
+
+const nonStaleFactoryErrorSchema = z
+  .object({
+    category: z.enum([
+      "invalid-input",
+      "not-found",
+      "conflict",
+      "authorization-required",
+      "dependency-unsatisfied",
+      "blocked-by-question",
+      "host-unavailable",
+      "checkout-invalid",
+      "provider-unavailable",
+      "paused",
+      "idempotency-conflict",
+      "unsupported",
+      "internal",
+    ]),
+    message: nonEmptyString,
+    fieldErrors: z.record(z.string(), z.array(nonEmptyString)).optional(),
+    idempotencyKey: idempotencyKeySchema.optional(),
+  })
+  .strict();
+
+export const factoryErrorSchema = z.union([staleRevisionErrorSchema, nonStaleFactoryErrorSchema]);
+export const staleRevisionErrorVariantSchema = staleRevisionErrorSchema;
+export type FactoryError = z.infer<typeof factoryErrorSchema>;
+
+export const actionKindSchema = z.enum([
+  "preview",
+  "run-now",
+  "pause",
+  "resume",
+  "answer-question",
+  "approve-queue",
+  "retry",
+  "stop",
+  "integration-report",
+]);
+export type ActionKind = z.infer<typeof actionKindSchema>;
+
+export const revisionFreeActionSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("preview") }).strict(),
+  z.object({ kind: z.literal("integration-report") }).strict(),
+]);
+export type RevisionFreeAction = z.infer<typeof revisionFreeActionSchema>;
+
+const repositoryQuestionAnswerActionSchema = z
+  .object({
+    kind: z.literal("answer-question"),
+    source: z.literal("repository-question"),
+    questionId: nonEmptyString,
+    answer: nonEmptyString,
+  })
+  .strict();
+const bbInteractionAnswerActionSchema = z
+  .object({
+    kind: z.literal("answer-question"),
+    source: z.literal("bb-interaction"),
+    interactionId: nonEmptyString,
+    value: jsonValueSchema,
+  })
+  .strict();
+const approveQueueActionSchema = z
+  .object({ kind: z.literal("approve-queue"), queueItemId: nonEmptyString, approvedText: nonEmptyString })
+  .strict();
+
+export const repositoryActionSchema = z.union([
+  repositoryQuestionAnswerActionSchema,
+  approveQueueActionSchema,
+]);
+export type RepositoryAction = z.infer<typeof repositoryActionSchema>;
+
+export const bbInteractionActionSchema = z.union([
+  z.object({ kind: z.literal("run-now") }).strict(),
+  z.object({ kind: z.literal("pause") }).strict(),
+  z.object({ kind: z.literal("resume") }).strict(),
+  bbInteractionAnswerActionSchema,
+  z.object({ kind: z.literal("retry"), attemptId: nonEmptyString }).strict(),
+  z.object({ kind: z.literal("stop") }).strict(),
+]);
+export type BbInteractionAction = z.infer<typeof bbInteractionActionSchema>;
+
+export const guardedActionSchema = z.union([repositoryActionSchema, bbInteractionActionSchema]);
+export type GuardedAction = z.infer<typeof guardedActionSchema>;
+
+export const factoryActionSchema = z.union([revisionFreeActionSchema, guardedActionSchema]);
+export type FactoryAction = z.infer<typeof factoryActionSchema>;
+
+function validateIdempotencyBinding(
+  value: { repositoryKey: string; action: { kind: string }; idempotencyKey: string },
+  ctx: z.RefinementCtx,
+): void {
+  const [, , keyRepository, keyAction] = value.idempotencyKey.split(":");
+  if (keyRepository !== value.repositoryKey) {
+    ctx.addIssue({ code: "custom", path: ["idempotencyKey"], message: "repository segment must match repositoryKey" });
+  }
+  if (keyAction !== value.action.kind) {
+    ctx.addIssue({ code: "custom", path: ["idempotencyKey"], message: "action segment must match action.kind" });
+  }
+}
+
+export const revisionFreeActionRequestSchema = z
+  .object({
+    repositoryKey: repositoryKeySchema,
+    action: revisionFreeActionSchema,
+    idempotencyKey: idempotencyKeySchema,
+    expectedRevision: z.undefined().optional(),
+  })
+  .strict()
+  .superRefine(validateIdempotencyBinding);
+export type RevisionFreeActionRequest = z.infer<typeof revisionFreeActionRequestSchema>;
+
+export const guardedActionRequestSchema = z
+  .object({
+    repositoryKey: repositoryKeySchema,
+    action: guardedActionSchema,
+    idempotencyKey: idempotencyKeySchema,
+    expectedRevision: repositoryRevisionSchema,
+  })
+  .strict()
+  .superRefine(validateIdempotencyBinding);
+export type GuardedActionRequest = z.infer<typeof guardedActionRequestSchema>;
+
+export const repositoryActionRequestSchema = z
+  .object({
+    repositoryKey: repositoryKeySchema,
+    action: repositoryActionSchema,
+    idempotencyKey: idempotencyKeySchema,
+    expectedRevision: repositoryRevisionSchema,
+  })
+  .strict()
+  .superRefine(validateIdempotencyBinding);
+export type RepositoryActionRequest = z.infer<typeof repositoryActionRequestSchema>;
+
+export const bbInteractionActionRequestSchema = z
+  .object({
+    repositoryKey: repositoryKeySchema,
+    action: bbInteractionActionSchema,
+    idempotencyKey: idempotencyKeySchema,
+    expectedRevision: repositoryRevisionSchema,
+  })
+  .strict()
+  .superRefine(validateIdempotencyBinding);
+export type BbInteractionActionRequest = z.infer<typeof bbInteractionActionRequestSchema>;
+
+export const factoryActionRequestSchema = z.union([
+  revisionFreeActionRequestSchema,
+  repositoryActionRequestSchema,
+  bbInteractionActionRequestSchema,
+]);
+export type FactoryActionRequest = z.infer<typeof factoryActionRequestSchema>;
+
+const actionOutcomeFields = {
+  status: z.enum(["preview", "accepted", "already-applied"]),
+  message: nonEmptyString,
+  revision: repositoryRevisionSchema.nullable(),
+  runId: z.string().nullable(),
+  leaseId: z.string().nullable(),
+  queueItemId: z.string().nullable(),
+};
+
+export const answerQuestionOutcomeSchema = z.discriminatedUnion("source", [
+  z
+    .object({
+      ...actionOutcomeFields,
+      action: z.literal("answer-question"),
+      source: z.literal("bb-interaction"),
+      interactionId: nonEmptyString,
+      questionId: z.null().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      ...actionOutcomeFields,
+      action: z.literal("answer-question"),
+      source: z.literal("repository-question"),
+      questionId: nonEmptyString,
+      interactionId: z.null().optional(),
+    })
+    .strict(),
+]);
+export type AnswerQuestionOutcome = z.infer<typeof answerQuestionOutcomeSchema>;
+
+const nonAnswerActionKindSchema = z.enum([
+  "preview",
+  "run-now",
+  "pause",
+  "resume",
+  "approve-queue",
+  "retry",
+  "stop",
+  "integration-report",
+]);
+
+export const nonAnswerActionOutcomeSchema = z
+  .object({
+    ...actionOutcomeFields,
+    action: nonAnswerActionKindSchema,
+    questionId: z.null().optional(),
+    interactionId: z.null().optional(),
+  })
+  .strict();
+export type NonAnswerActionOutcome = z.infer<typeof nonAnswerActionOutcomeSchema>;
+
+export const actionOutcomeSchema = z.union([
+  answerQuestionOutcomeSchema,
+  nonAnswerActionOutcomeSchema,
+]);
+export type ActionOutcome = z.infer<typeof actionOutcomeSchema>;
+
+export interface ActionResult<T> {
+  readonly ok: true;
+  readonly result: T;
+  readonly revision: RepositoryRevision | null;
+}
+
+export interface FailedActionResult {
+  readonly ok: false;
+  readonly error: FactoryError;
+}
+
+export type FactoryActionResult = ActionResult<ActionOutcome> | FailedActionResult;
+
+export const factoryActionResultSchema = z.discriminatedUnion("ok", [
+  z.object({ ok: z.literal(true), result: actionOutcomeSchema, revision: repositoryRevisionSchema.nullable() }).strict(),
+  z.object({ ok: z.literal(false), error: factoryErrorSchema }).strict(),
+]);
+
+export const invalidationEventSchema = z
+  .object({
+    channel: z.literal("factory"),
+    kind: z.enum(["repository.changed", "run.changed", "lease.changed", "settings.changed", "host.changed"]),
+    repositoryKey: repositoryKeySchema.nullable(),
+    revision: repositoryRevisionSchema.nullable(),
+    reason: nonEmptyString,
+    durableReloadRequired: z.literal(true),
+  })
+  .strict();
+export type InvalidationEvent = z.infer<typeof invalidationEventSchema>;
+
+export const repositorySelectionInputSchema = z
+  .object({
+    selectedRepositoryKey: repositoryKeySchema.nullable().optional(),
+  })
+  .strict();
+export type RepositorySelectionInput = z.infer<typeof repositorySelectionInputSchema>;
+
+export const repositorySelectionSchema = z
+  .object({
+    configuration: repositoryConfigurationSchema,
+    selected: z.boolean(),
+    available: z.boolean(),
+    reasons: z.array(nonEmptyString),
+  })
+  .strict();
+export type RepositorySelection = z.infer<typeof repositorySelectionSchema>;
+
+export const repositorySelectionProjectionSchema = z
+  .object({
+    repositories: z.array(repositorySelectionSchema),
+    selectedRepositoryKey: repositoryKeySchema.nullable(),
+  })
+  .strict();
+export type RepositorySelectionProjection = z.infer<typeof repositorySelectionProjectionSchema>;
+
+export const repositoryReadInputSchema = z
+  .object({ repositoryKey: repositoryKeySchema })
+  .strict();
+export type RepositoryReadInput = z.infer<typeof repositoryReadInputSchema>;
+
+export const settingsValidationSchema = z
+  .object({
+    valid: z.boolean(),
+    fieldErrors: z.record(z.string(), z.array(nonEmptyString)),
+  })
+  .strict();
+export type SettingsValidation = z.infer<typeof settingsValidationSchema>;
+
+export const dispatchStatusSchema = z
+  .object({
+    mode: z.enum(["enabled", "paused"]),
+    acceptingNewRuns: z.boolean(),
+    activeRunCount: z.number().int().nonnegative(),
+    reason: nonEmptyString.nullable(),
+  })
+  .strict();
+export type DispatchStatus = z.infer<typeof dispatchStatusSchema>;
+
+export const settingsProjectionSchema = z
+  .object({
+    settings: factorySettingsSchema,
+    validation: settingsValidationSchema,
+    dispatch: dispatchStatusSchema,
+  })
+  .strict();
+export type SettingsProjection = z.infer<typeof settingsProjectionSchema>;
+
+export const healthProjectionSchema = z
+  .object({
+    repositoryKey: repositoryKeySchema,
+    providers: z.array(providerStatusSchema),
+    host: hostPreflightSchema,
+  })
+  .strict();
+export type HealthProjection = z.infer<typeof healthProjectionSchema>;
+
+export const pendingInteractionSchema = z
+  .object({
+    source: z.literal("bb-interaction"),
+    interactionId: nonEmptyString,
+    threadId: nonEmptyString,
+    turnId: nonEmptyString.nullable(),
+    status: z.literal("pending"),
+    kind: z.enum(["approval", "user-question", "plugin"]),
+    title: nonEmptyString,
+    prompt: nonEmptyString.nullable(),
+    createdAt: isoTimestamp,
+    expiresAt: isoTimestamp.nullable(),
+  })
+  .strict();
+export type PendingInteraction = z.infer<typeof pendingInteractionSchema>;
+
+export const pendingInteractionsProjectionSchema = z
+  .object({
+    repositoryKey: repositoryKeySchema,
+    interactions: z.array(pendingInteractionSchema),
+  })
+  .strict();
+export type PendingInteractionsProjection = z.infer<typeof pendingInteractionsProjectionSchema>;
+
+export const operationalRunListInputSchema = z
+  .object({
+    repositoryKey: repositoryKeySchema,
+    cursor: nonEmptyString.optional(),
+    limit: z.number().int().min(1).max(100).default(50),
+  })
+  .strict();
+export type OperationalRunListInput = z.infer<typeof operationalRunListInputSchema>;
+
+export const operationalRunDetailInputSchema = z
+  .object({
+    repositoryKey: repositoryKeySchema,
+    runId: nonEmptyString,
+  })
+  .strict();
+export type OperationalRunDetailInput = z.infer<typeof operationalRunDetailInputSchema>;
+
+export const canonicalFileRecordLinkSchema = z
+  .object({
+    relativePath: nonEmptyString,
+    recordType: z.enum([
+      "queue-entry",
+      "question",
+      "dashboard",
+      "current-run",
+      "immutable-run",
+      "foreman-template",
+    ]),
+    recordId: nonEmptyString,
+    repositoryRevision: repositoryRevisionSchema,
+  })
+  .strict();
+export type CanonicalFileRecordLink = z.infer<typeof canonicalFileRecordLinkSchema>;
+
+export const operationalRunStatusSchema = z.enum([
+  "pending",
+  "started",
+  "completed",
+  "failed-safe",
+  "blocked",
+  "no-op",
+  "cancel-requested",
+  "reconciliation-required",
+]);
+export type OperationalRunStatus = z.infer<typeof operationalRunStatusSchema>;
+
+const operationalRunSummaryFields = {
+  runId: nonEmptyString,
+  repositoryKey: repositoryKeySchema,
+  requestedAt: isoTimestamp,
+  startedAt: isoTimestamp.nullable(),
+  finishedAt: isoTimestamp.nullable(),
+  providerId: providerIdSchema.nullable(),
+  workerThreadId: z.string().nullable(),
+  projectId: nonEmptyString.nullable(),
+  environmentId: nonEmptyString.nullable(),
+  queueItemIds: z.array(nonEmptyString),
+  repositoryRevision: repositoryRevisionSchema,
+  canonicalRecords: z.array(canonicalFileRecordLinkSchema),
+};
+
+const preDispatchOperationalRunSummarySchema = z
+  .object({
+    ...operationalRunSummaryFields,
+    status: z.literal("pending"),
+  })
+  .strict();
+
+const dispatchedOperationalRunSummarySchema = z
+  .object({
+    ...operationalRunSummaryFields,
+    status: z.enum([
+      "started",
+      "completed",
+      "failed-safe",
+      "blocked",
+      "no-op",
+      "cancel-requested",
+      "reconciliation-required",
+    ]),
+    projectId: nonEmptyString,
+    environmentId: nonEmptyString,
+  })
+  .strict();
+
+export const operationalRunSummarySchema = z.union([
+  preDispatchOperationalRunSummarySchema,
+  dispatchedOperationalRunSummarySchema,
+]);
+export type OperationalRunSummary = z.infer<typeof operationalRunSummarySchema>;
+
+export const operationalRunListProjectionSchema = z
+  .object({
+    runs: z.array(operationalRunSummarySchema),
+    nextCursor: nonEmptyString.nullable(),
+  })
+  .strict();
+export type OperationalRunListProjection = z.infer<typeof operationalRunListProjectionSchema>;
+
+export const operationalRunDetailSchema = z
+  .object({
+    summary: operationalRunSummarySchema,
+    intent: runIntentSchema,
+    attempts: z.array(dispatchAttemptSchema),
+    lease: ownershipLeaseSchema.nullable(),
+  })
+  .strict();
+export type OperationalRunDetail = z.infer<typeof operationalRunDetailSchema>;
+
+export const operationalRunDetailProjectionSchema = z
+  .object({ run: operationalRunDetailSchema.nullable() })
+  .strict();
+export type OperationalRunDetailProjection = z.infer<typeof operationalRunDetailProjectionSchema>;

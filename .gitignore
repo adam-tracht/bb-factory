@@ -31,3 +31,4 @@ coverage/
 build/
 out/
 dist/
+*.tsbuildinfo

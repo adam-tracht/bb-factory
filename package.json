@@ -1,0 +1,54 @@
+{
+  "name": "bb-factory",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "bb": ">=0.42",
+    "bbPluginSdk": ">=0.4.47"
+  },
+  "bb": {
+    "name": "Factory",
+    "description": "Native control surface for the existing BB factory protocol.",
+    "branding": {
+      "icon": "Factory"
+    },
+    "server": "./server.ts"
+  },
+  "files": [
+    "dist",
+    "server.ts",
+    "src",
+    "tests",
+    "docs",
+    "README.md",
+    "CLAUDE.md",
+    "PLAN.md",
+    "architecture-notes.md"
+  ],
+  "scripts": {
+    "build": "bb plugin build .",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.0",
+    "@get-bb/plugin-sdk": "0.4.47",
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "better-sqlite3": "^12.0.0",
+    "eslint": "^10.0.0",
+    "hono": "^4.11.9",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.0.0",
+    "vitest": "^4.1.1"
+  }
+}

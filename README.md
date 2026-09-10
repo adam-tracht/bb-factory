@@ -1,6 +1,6 @@
 # bb-factory
 
-**Status: planned, not implemented.** See the [implementation plan](PLAN.md).
+**Status: Phase 0 bootstrap complete and frozen; downstream phases remain unimplemented.** See the [implementation plan](PLAN.md) and the [Phase 0 contract](docs/phase-0-contract.md).
 
 `bb-factory` is intended to replace the current nightly factory dispatcher with a purpose-built BB plugin. The planned UI has overview, queue, questions, runs, and settings views. It must preserve the operating contracts that already work in the repository factory repos.
 
@@ -71,4 +71,4 @@ A human adds acceptance criteria and validation commands to a queue entry, marks
 
 ## Development status
 
-This bootstrap intentionally contains documentation only. There is no package or code scaffold yet. When implementation begins, use `pnpm` for local development; current BB Git installs use `npm`. Revisit whether `dist/` should remain ignored when npm distribution is designed.
+The documentation-only baseline has been augmented with the Phase 0 package, typed contracts, settings boundary, RPC/error/idempotency/revision/invalidation contracts, and startup/disposal skeleton. No scheduler, worker, live RPC handler, repository write, cutover, or legacy dispatcher change is included. Use `pnpm` for local development; current BB Git installs use `npm`. Revisit whether `dist/` should remain ignored when npm distribution is designed.

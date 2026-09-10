@@ -1,8 +1,10 @@
 # bb-factory instructions
 
-This repository is **planned, not implemented**. Read [PLAN.md](PLAN.md) before implementation. Keep the build efficient and avoid speculative scaffolding.
+This repository began as **planned, not implemented**. Phase 0 bootstrap is now complete and frozen; downstream phases remain unimplemented. Read [PLAN.md](PLAN.md) before implementation. Keep the build efficient and avoid speculative scaffolding.
 
 ## Factory protocol
+
+This repository is the factory plugin source, not yet a factory-managed target repository. It has no `plans/factory/` protocol or queue. The managed-repository protocol below applies when operating a target checkout; Phase 0 bootstrap work here uses [PLAN.md](PLAN.md) and must not fabricate queue, lock, current, question, or run records.
 
 For work in a factory-managed repository:
 
@@ -29,11 +31,13 @@ The planned plugin provides purpose-built overview, queue, questions, runs, and 
 
 Use native `bb thread spawn` for subagents. Run independent tasks in parallel when their interfaces do not depend on one another. Use Luna at xhigh reasoning for most implementation, debugging, and broad technical work. Use Sol at low reasoning for judgment, prioritization, and concise review. Keep prompts self-contained and send each task through the repository protocol.
 
+For the current approved Phase 0 assignment, use Luna Extra High for the implementation worker and separate Sol Medium reviews for compliance followed by code quality. Root coordinates those reviews and freezes the phase only after both pass.
+
 Review after each task: check protocol and acceptance criteria first, then check reuse, simplicity, and maintainability. Do not overengineer or add tests that do not protect a stated behavior.
 
 ## Local development
 
-There is no package or code scaffold yet. When implementation starts, use `pnpm` for local development. BB Git installs currently use `npm`; do not describe pnpm as the BB installation mechanism. Keep `PLAN.md`, lockfiles, manifests, and `.env.example` trackable.
+At the documentation-only baseline there was no package or code scaffold. Phase 0 adds the minimal package and uses `pnpm` for local development. BB Git installs currently use `npm`; do not describe pnpm as the BB installation mechanism. Keep `PLAN.md`, lockfiles, manifests, and `.env.example` trackable.
 
 ## Permanent repository rules
 

@@ -1,6 +1,6 @@
 # BB Factory Architecture Notes
 
-Temporary planning input. This document defines boundaries and a phased migration plan. It does not authorize implementation, repository policy changes, commits, or remote publishing.
+Planning input for downstream phases. Phase 0 bootstrap is frozen in [docs/phase-0-contract.md](docs/phase-0-contract.md). This document defines boundaries and a phased migration plan. It does not authorize downstream implementation, repository policy changes, commits, or remote publishing.
 
 ## Architecture decision
 
