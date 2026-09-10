@@ -1,6 +1,6 @@
 # bb-factory instructions
 
-This repository began as **planned, not implemented**. Phase 0 bootstrap is now complete and frozen; downstream phases remain unimplemented. Read [PLAN.md](PLAN.md) before implementation. Keep the build efficient and avoid speculative scaffolding.
+This repository began as **planned, not implemented**. Phase 0 bootstrap is complete and frozen at contract `v1.1`; the reviewed Phase 1 storage and read-only UI components are complete, while overall Phase 1 remains open pending the protocol parser, BB interaction reader, read integration, and product acceptance. Phases 2 through 5 remain open. Read [PLAN.md](PLAN.md) before implementation. Keep the build efficient and avoid speculative scaffolding.
 
 ## Factory protocol
 

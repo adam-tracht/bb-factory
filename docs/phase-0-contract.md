@@ -1,6 +1,6 @@
 # Phase 0 contract and bootstrap
 
-Status: Phase 0 bootstrap complete and frozen. Downstream phases remain open.
+Status: Phase 0 bootstrap complete and frozen at contract `v1.1`. Phase 1 storage and read-only UI components are reviewed complete; overall Phase 1 remains open awaiting the protocol parser, BB interaction reader, read integration, and product acceptance. Phases 2 through 5 remain open.
 
 ## Frozen handoff
 
@@ -8,16 +8,22 @@ Frozen contract version: `v1`, encoded by the idempotency-key shape `bbf:v1:<rep
 
 Implementation thread `thr_za7y2tw5vq` passed separate Sol Medium compliance review `thr_xrnpijf4nt` and code-quality review `thr_84bhqsym63`. Full validation on the final schema version passed typecheck, 10 tests, lint, SDK freshness, build, and diff checks. Interface-only health separation was rechecked with typecheck, lint, build, and diff.
 
-Frozen source fingerprints, SHA-256, verified 2026-09-10:
+The approved v1.1 interaction amendment passed compliance review `thr_vme9e859th` and code-quality review `thr_5ei85kmian`. The amended schemas are now frozen for Phase 1 consumers.
+
+Frozen v1.1 source fingerprints, SHA-256, verified 2026-09-10:
 
 | Path | SHA-256 |
 | --- | --- |
-| `src/contracts.ts` | `e8be6828f31797c7bf85fa9e39d9875e21b1e7540561acda8f593ab56e7b3e80` |
+| `src/contracts.ts` | `c27125525d60e2cfd071de6cf98f8fa11dc4271992458e7ffab05b617d9a1dd2` |
 | `src/settings.ts` | `e1cd6f9a57129836c31c588f6b5ff423da4c6e71c8db8730b589ba84126c7af6` |
 | `src/rpc.ts` | `f05fb373f81ddafc9b7ce014a54ba41b23e889f6c390a8c3d9f0ab09a9124e25` |
 | `src/ports.ts` | `690676ae621e8428a0d5cba608dc91399bcce1fc3e058d67436a33493d2e6923` |
 
-No queue, lock, current report, question, run record, or protocol approval record was created in this source repository. Phase 1 may start from this frozen boundary, but each P1 component output must pass its own compliance and code-quality reviews before P1 composition begins.
+For provenance, the pre-amendment v1 `src/contracts.ts` fingerprint was `e8be6828f31797c7bf85fa9e39d9875e21b1e7540561acda8f593ab56e7b3e80`.
+
+No queue, lock, current report, question, run record, or protocol approval record was created in this source repository. Phase 1 storage passed compliance review `thr_xb9qqm6u9f` and code-quality review `thr_q2mvicbwdb`; Phase 1 read-only UI passed compliance review `thr_939nn9nneh` and code-quality review `thr_t7zf4u47hr`. The protocol parser, BB interaction reader, read integration, and product acceptance remain open before Phase 1 composition is accepted.
+
+The hosting gate remains pending as recorded in [docs/hosting-decision.md](hosting-decision.md): no always-on non-personal host is verified, dispatch remains disabled, and no host is selected or provisioned. Data-platform work requiring Mac-local Aside/browser or dbt Studio remains gated.
 
 ## Scope
 
@@ -37,6 +43,33 @@ The scaffold is pinned to the current public SDK observed on 2026-09-10:
 - Build: `bb plugin build .`; SDK refresh check: `bb plugin types --check`.
 
 The source of truth for these names is the installed SDK declaration package and the generated scaffold from `bb plugin new`, not a generic repository convention.
+
+## Interaction contract, v1.1
+
+Approved and frozen contract delta: `v1.1`. Compliance review `thr_vme9e859th` and code-quality review `thr_5ei85kmian` passed. The prior v1 boundary and provenance remain recorded above.
+
+The installed public SDK declarations for `@get-bb/plugin-sdk@0.4.47` define these interaction shapes:
+
+- User-question payloads contain `id`, `prompt`, optional `shortLabel`, `allowFreeText`, `multiSelect`, and optional options containing `label`, `value`, and optional `description`.
+- Native user answers use `kind: "user_answer"` and an `answers` record keyed by question ID. Each answer has `selected: string[]` and optional `freeText`.
+- Native approval decisions are exactly `allow_once`, `allow_for_session`, and `deny`.
+- Provider-custom payloads use a namespaced kind such as `vendor/request`, a title, and arbitrary data. The factory DTO normalizes these to `kind: "plugin"` with the display title and omits the data.
+
+The frozen v1.1 DTO delta adds required correlated discriminated branches for `PendingInteraction.kind` and `PendingInteraction.metadata.kind` while retaining the display fields and stable `interactionId`, `threadId`, and `turnId`. The schema accepts only `approval` with `approval`, `user-question` with `user_question`, or `plugin` with `plugin`:
+
+- `approval`: `availableDecisions` with only the three SDK decision tokens.
+- `user_question`: every SDK question and option field listed above, including IDs and option values. Labels remain display text; answer submissions use values.
+- `plugin`: no provider-custom payload data, grants, or secrets.
+
+The BB interaction answer action changes from arbitrary `value` JSON to typed `resolution` metadata. It supports the bounded native forms `user_answer` and `approval`, preserving multiple question IDs, multiple selected values, optional free text, and exact approval decisions. The action continues to carry `interactionId` and resolves the identified interaction in Phase 2; opening the native thread remains a navigation affordance, not the answer implementation. Opaque provider-custom `request_answer` values are not exposed by this contract. If a later provider needs an answer for that surface, it requires a separately reviewed bounded schema rather than an arbitrary JSON escape hatch.
+
+Required downstream adaptation for v1.1:
+
+- The P1 reader copies the SDK question and approval metadata, normalizes namespaced provider kinds to `plugin`, preserves IDs and values, and omits raw `data`, grants, and secrets.
+- The UI renders labels and descriptions but submits question IDs and option values. It enables free-text and multi-select controls from the metadata and offers only the advertised approval decisions.
+- The P2 action adapter validates each answer against the pending metadata, including question ID, option value, `allowFreeText`, and `multiSelect`, then maps the typed resolution to the SDK interaction resolver. It does not fall back to an opaque value or to opening the thread.
+
+No change was made to `src/ports.ts` or `src/rpc.ts`; their existing typed projections and action request flow consume the frozen schemas. The v1.1 amendment is limited to `src/contracts.ts`, `tests/contracts.test.ts`, and these contract documents. Phase 1 consumers may now adapt against this frozen boundary.
 
 ## Canonical foreman template rule
 

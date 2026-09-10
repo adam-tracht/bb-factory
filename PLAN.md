@@ -6,11 +6,15 @@ For the currently authorized Phase 0 bootstrap, the implementation worker is Lun
 
 ## 1. Purpose and current state
 
-`bb-factory` began as a planning-only repository; its Phase 0 bootstrap is now complete and frozen, and the downstream phases remain unimplemented. The active factory is still the shell tooling under `~/.bb/factory/`: `dispatch.sh`, `redeploy.sh`, `merge-state.sh`, and `templates/foreman.md`. The plugin described here replaces the dispatcher and adds a native BB control surface without replacing the repository factory protocol.
+`bb-factory` began as a planning-only repository; its Phase 0 bootstrap is now complete and frozen at contract `v1.1`. The reviewed Phase 1 operational-storage and read-only UI component deliverables are complete, while overall Phase 1 remains open pending the protocol parser, BB interaction reader, read integration, and product acceptance. Phases 2 through 5 remain open. The active factory is still the shell tooling under `~/.bb/factory/`: `dispatch.sh`, `redeploy.sh`, `merge-state.sh`, and `templates/foreman.md`. The plugin described here replaces the dispatcher and adds a native BB control surface without replacing the repository factory protocol.
 
 ### Phase 0 checkpoint
 
-Phase 0 is complete and frozen. Implementation thread `thr_za7y2tw5vq` passed separate Sol Medium compliance review `thr_xrnpijf4nt` and code-quality review `thr_84bhqsym63`. Full validation on the final schema version passed typecheck, 10 tests, lint, SDK freshness, build, and diff checks. Interface-only health separation was rechecked with typecheck, lint, build, and diff. Phases 1 through 5 remain open; no later phase is complete.
+Phase 0 is complete and frozen at contract `v1.1`. Implementation thread `thr_za7y2tw5vq` passed separate Sol Medium compliance review `thr_xrnpijf4nt` and code-quality review `thr_84bhqsym63`. The approved v1.1 interaction amendment passed compliance review `thr_vme9e859th` and code-quality review `thr_5ei85kmian`. Full validation on the final schema version passed typecheck, 10 tests, lint, SDK freshness, build, and diff checks. Interface-only health separation was rechecked with typecheck, lint, build, and diff.
+
+Phase 1 checkpoint: operational storage passed compliance review `thr_xb9qqm6u9f` and code-quality review `thr_q2mvicbwdb`; the read-only UI passed compliance review `thr_939nn9nneh` and code-quality review `thr_t7zf4u47hr`. Focused prior evidence passed for 5 storage tests and 8 UI tests. These component completions do not close Phase 1, which remains open awaiting the protocol parser, BB interaction reader, read integration, and cross-surface product acceptance. Phases 2 through 5 remain open.
+
+Hosting gate: [docs/hosting-decision.md](docs/hosting-decision.md) remains pending. No always-on non-personal BB server and execution host is verified, so dispatch remains disabled and no host is selected or provisioned. Data-platform work requiring Mac-local Aside/browser or dbt Studio remains gated; a general-work Linux pilot still requires separate approval and host preflight.
 
 The implementation must preserve the behavior already encoded in the dispatcher and in the two managed repositories. Current behavior includes:
 

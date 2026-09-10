@@ -4,9 +4,39 @@ This map is the Phase 0 handoff contract. Each task has exactly one implementati
 
 The current approved implementation assignment is Luna Extra High. The current approved review assignment is Sol Medium. This is the current model assignment for downstream task work and does not authorize downstream work.
 
+## Current checkpoint
+
+- Phase 0 is complete and frozen at contract `v1.1`. The approved interaction amendment passed compliance review `thr_vme9e859th` and code-quality review `thr_5ei85kmian`.
+- Phase 1 operational storage is reviewed complete: compliance `thr_xb9qqm6u9f`, code quality `thr_q2mvicbwdb`, and focused evidence of 5 storage tests passing.
+- Phase 1 read-only UI is reviewed complete: compliance `thr_939nn9nneh`, code quality `thr_t7zf4u47hr`, and focused evidence of 8 UI tests passing.
+- Overall Phase 1 remains open awaiting the protocol parser, BB interaction reader, read integration, and product acceptance. Phases 2 through 5 remain open.
+- The hosting gate in [docs/hosting-decision.md](hosting-decision.md) remains pending. No always-on non-personal host is verified, dispatch remains disabled, and no host is selected or provisioned. Data-platform work requiring Mac-local Aside/browser or dbt Studio remains gated.
+
+## Phase 0 interaction amendment, v1.1, approved and frozen
+
+The compliance finding in `thr_c8zj6b48mk` identified a response-critical loss in the v1 BB interaction DTO: question IDs, free-text and multi-select flags, option values, and exact approval decision tokens were discarded. The approved v1.1 amendment passed compliance review `thr_vme9e859th` and code-quality review `thr_5ei85kmian`. The v1.1 schemas and fingerprint are now frozen; Phase 1 consumers may adapt in parallel against this boundary.
+
+The bounded change is:
+
+- `src/contracts.ts` adds correlated top-level pending-interaction branches: `approval` with `approval` metadata, `user-question` with `user_question` metadata, and `plugin` with `plugin` metadata. It preserves display text separately from question IDs and option values, and exposes no provider-custom data, grants, or secrets.
+- The BB answer action replaces arbitrary `value` JSON with typed `resolution` metadata for SDK-shaped `user_answer` and approval decisions. The action remains keyed by `interactionId` and resolves the identified interaction; opening a thread is not a substitute.
+- `tests/contracts.test.ts` covers SDK-shaped question and approval fixtures, non-equivalent labels and values, missing response-critical fields, namespaced custom requests, raw-data rejection, exact decision-token validation, and all six mismatched top-level/metadata kind pairs.
+- `src/ports.ts` and `src/rpc.ts` require no edits because their existing ports and RPC methods use the shared schemas.
+
+Affected owners adapt as follows:
+
+| Owner | Required adaptation |
+| --- | --- |
+| P1 BB interaction reader, `src/interactions/read.ts` | Copy the question and approval metadata into the DTO; normalize namespaced provider kinds to `plugin`; preserve stable interaction, thread, and turn IDs; omit raw custom data, grants, and secrets. |
+| P1 UI, `src/ui/` | Render display labels and descriptions, but submit question IDs and option values. Use `allowFreeText`, `multiSelect`, and `availableDecisions` to constrain controls. Keep thread opening as navigation only. |
+| P2 BB interaction actions, `src/actions/interactions.ts` | Accept typed resolution metadata, validate it against the pending interaction, and map it to the current SDK native resolver. Do not reintroduce arbitrary JSON or answer by merely opening a native thread. |
+| P2 action integration, `src/rpc/action-router.ts`, `src/services/action-composition.ts`, `src/ui/action-entry.tsx` | Route the amended action unchanged through the existing source-discriminated request flow and preserve exactly-once behavior by `interactionId` and idempotency key. |
+
+Provider-custom `request_answer` values remain intentionally outside this bounded public schema because the SDK defines them as arbitrary JSON. Supporting one later requires a provider-specific contract review, not a raw `data` or `value` passthrough. Root owns that decision if a later provider requires it.
+
 | Task | One worker | Owned paths | Consumes | Predecessor review | Integration owner |
 | --- | --- | --- | --- | --- | --- |
-| P0 contract/bootstrap | Luna Extra High, current phase owner | `package.json`, `pnpm-lock.yaml`, `tsconfig.json`, `eslint.config.mjs`, `vitest.config.ts`, `server.ts`, `src/contracts.ts`, `src/settings.ts`, `src/rpc.ts`, `src/ports.ts`, `tests/contracts.test.ts`, `docs/phase-0-contract.md`, this map | Current `@get-bb/plugin-sdk` declarations, shell migration inputs, PLAN boundaries | None; compliance `thr_xrnpijf4nt` and quality `thr_84bhqsym63` passed | Root thread |
+| P0 contract/bootstrap | Luna Extra High, current phase owner | `package.json`, `pnpm-lock.yaml`, `tsconfig.json`, `eslint.config.mjs`, `vitest.config.ts`, `server.ts`, `src/contracts.ts`, `src/settings.ts`, `src/rpc.ts`, `src/ports.ts`, `tests/contracts.test.ts`, `docs/phase-0-contract.md`, this map | Current `@get-bb/plugin-sdk` declarations, shell migration inputs, PLAN boundaries | None; v1 compliance `thr_xrnpijf4nt`, v1 quality `thr_84bhqsym63`, v1.1 compliance `thr_vme9e859th`, and v1.1 quality `thr_5ei85kmian` passed | Root thread |
 | P1 protocol adapter | Luna Extra High | `src/protocol/`, protocol-focused tests | Implements reviewed `ProtocolReader.loadSnapshot`, plus `RepositoryConfiguration`, `ProtocolSnapshot`, `QueueEntry`, `Question`, `DashboardSummary`, `ForemanTemplateSource`, `RepositoryRevision` | P0 quality review | Named Phase 1 protocol task owner |
 | P1 operational state | Luna Extra High | `src/storage/`, storage-focused tests | Implements reviewed `OperationalStateReader.listRuns` and `getRun`, including required BB project/environment linkage, plus `RunIntent`, `DispatchAttempt`, `OwnershipLease`, `RepositoryRevision`, idempotency result shape | P0 quality review | Named Phase 1 state task owner |
 | P1 live health adapter | Luna Extra High, Phase 1 read integration owner | `src/services/live-health.ts`, health-focused tests | Implements reviewed `FactoryHealthReader.listProviderStatus` and `getHostPreflight` from live BB and host state | P0 quality review | P1 read integration and UI wiring owner |
