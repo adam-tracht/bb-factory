@@ -39,6 +39,8 @@ Review after each task: check protocol and acceptance criteria first, then check
 
 At the documentation-only baseline there was no package or code scaffold. Phase 0 adds the minimal package and uses `pnpm` for local development. BB Git installs currently use `npm`; do not describe pnpm as the BB installation mechanism. Keep `PLAN.md`, lockfiles, manifests, and `.env.example` trackable.
 
+Run verification through `pnpm test` / `pnpm typecheck` / `pnpm lint` (pnpm is pinned to Node 20). Invoking `node_modules/.bin/vitest` or `tsc` under the machine-default Node 24 fails on the better-sqlite3 native module; if it was rebuilt for a different Node, `pnpm rebuild better-sqlite3` restores it.
+
 ## Permanent repository rules
 
 - Never open pull requests. This is a solo repository; use the approved branch workflow directly.

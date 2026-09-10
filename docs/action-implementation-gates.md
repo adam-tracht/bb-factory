@@ -19,6 +19,11 @@ installed `@get-bb/plugin-sdk@0.4.47` on 2026-09-10.
 - Current answer rows store only the repository, source, target, request
   fingerprint, nullable result, and timestamps. They have no typed intent or
   lifecycle status (`src/storage/index.ts:99-117`, `src/storage/index.ts:150-213`).
+- The durable action-intent amendment below is now implemented as the
+  `pending_action_intents` table with typed request, target, expected
+  revision, single-file change, entry point, one-shot, lifecycle status,
+  result, and reconciliation metadata (`src/storage/index.ts:196-216`,
+  `src/storage/index.ts:747-1136`). No executor consumes it yet.
 - The queue schema can represent `ready` and explicit `queue.approved`
   provenance, but that is a data shape, not enforcement of who made the first
   `ready` transition (`src/contracts.ts:283-313`).
@@ -139,8 +144,10 @@ with these exact fields from the audit:
 The claim transaction persists the complete intent. BB resolution occurs
 outside SQLite. Completion occurs in a second transaction. Any pending or
 resolving row is reconciled through `interactions.get` before another resolve
-call. These are future requirements; the current table does not implement
-them.
+call. The reviewed replacement table option is now implemented:
+`pending_action_intents` persists the complete intent, enforces atomic
+pending-to-resolving consumption and one-shot expiry, and records observed BB
+state for reconciliation. Executor wiring that consumes it remains future P2.
 
 ## Normative plan basis
 

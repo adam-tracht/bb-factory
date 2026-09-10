@@ -13,6 +13,7 @@ import {
 import type { ProtocolReader } from "../ports.js";
 import { ProtocolError } from "./errors.js";
 import { parseQualifiedDependency, parseRepositoryPolicy } from "./dependencies.js";
+import { PROTOCOL_PATHS } from "./paths.js";
 import {
   confinedPath,
   digestText,
@@ -42,17 +43,6 @@ import type {
   ProtocolRepositoryPolicy,
   ProtocolReaderOptions,
 } from "./types.js";
-
-const PROTOCOL_PATHS = {
-  foreman: "plans/factory/foreman.md",
-  repo: "plans/factory/repo.md",
-  queue: "plans/factory/queue.md",
-  questions: "plans/factory/questions.md",
-  current: "plans/factory/current.md",
-  dashboard: "plans/README.md",
-  runs: "plans/factory/runs",
-  lock: "plans/factory/lock",
-} as const;
 
 function protocolDigest(files: readonly TextFile[]): string {
   const digests = files

@@ -1,9 +1,14 @@
 import type { PluginStorage, JsonValue } from "@get-bb/plugin-sdk";
 import Database from "better-sqlite3";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import type {
+  ActionKind,
+  BbInteractionActionRequest,
+  BbInteractionResolution,
   CanonicalFileRecordLink,
   DispatchAttempt,
+  FactoryActionResult,
   IdempotencyKey,
   OperationalRunDetail,
   OperationalRunDetailInput,
@@ -14,12 +19,17 @@ import type {
   OperationalRunSummary,
   OwnershipLease,
   RepositoryKey,
+  RepositoryActionRequest,
   RepositoryRevision,
   RunIntent,
 } from "../contracts.js";
 import {
+  actionKindSchema,
+  bbInteractionActionRequestSchema,
+  bbInteractionResolutionSchema,
   canonicalFileRecordLinkSchema,
   dispatchAttemptSchema,
+  factoryActionResultSchema,
   idempotencyKeySchema,
   operationalRunDetailInputSchema,
   operationalRunDetailProjectionSchema,
@@ -27,11 +37,13 @@ import {
   operationalRunListProjectionSchema,
   operationalRunSummarySchema,
   ownershipLeaseSchema,
+  repositoryActionRequestSchema,
   repositoryKeySchema,
   repositoryRevisionSchema,
   runIntentSchema,
 } from "../contracts.js";
 import type { OperationalStateReader } from "../ports.js";
+import { PROTOCOL_PATHS } from "../protocol/paths.js";
 
 type SqliteDatabase = Database.Database;
 
@@ -45,6 +57,68 @@ const dispatchedRunStatusSchema = z.enum([
   "cancel-requested",
   "reconciliation-required",
 ]);
+
+const pendingActionRequestSchema = z.union([
+  repositoryActionRequestSchema,
+  bbInteractionActionRequestSchema,
+]);
+const isoTimestampSchema = z.string().datetime({ offset: true });
+const pendingActionIntentStatusSchema = z.enum([
+  "pending",
+  "resolving",
+  "completed",
+  "reconciliation-required",
+]);
+const pendingActionIntentEntryPointSchema = z.enum(["action-executor", "native-ui-initial-ready"]);
+const pendingActionObservedStatusSchema = z.enum([
+  "pending",
+  "resolving",
+  "resolved",
+  "interrupted",
+  "written",
+  "conflict",
+  "verified",
+]);
+const sha256DigestSchema = z.string().regex(/^[a-f0-9]{64}$/, "must be a lowercase SHA-256 digest");
+const relativePathSchema = z.string().min(1).refine(
+  (value) => !value.startsWith("/")
+    && !/^[A-Za-z]:[\\/]/.test(value)
+    && !value.includes("\\")
+    && !value.split("/").some((part) => part === "" || part === "." || part === ".."),
+  "must be a normalized repository-relative path",
+);
+const pendingActionIntentTargetSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("repository") }).strict(),
+  z.object({ kind: z.literal("repository-question"), questionId: z.string().trim().min(1) }).strict(),
+  z.object({ kind: z.literal("queue-item"), queueItemId: z.string().trim().min(1) }).strict(),
+  z
+    .object({
+      kind: z.literal("bb-interaction"),
+      interactionId: z.string().trim().min(1),
+      threadId: z.string().trim().min(1),
+      turnId: z.string().trim().min(1).nullable(),
+    })
+    .strict(),
+  z.object({ kind: z.literal("attempt"), attemptId: z.string().trim().min(1) }).strict(),
+]);
+const pendingActionFileChangeSchema = z
+  .object({
+    relativePath: relativePathSchema,
+    expectedSha256: sha256DigestSchema,
+    intendedSha256: sha256DigestSchema,
+    intendedContent: z.string(),
+  })
+  .strict()
+  .superRefine((change, context) => {
+    const actualSha256 = createSha256(change.intendedContent);
+    if (actualSha256 !== change.intendedSha256) {
+      context.addIssue({
+        code: "custom",
+        path: ["intendedSha256"],
+        message: "intendedSha256 must match intendedContent",
+      });
+    }
+  });
 
 /**
  * Each entry is one immutable migration slot. Append new SQL only at the end.
@@ -119,6 +193,27 @@ export const OPERATIONAL_STORAGE_MIGRATIONS = [
   `CREATE UNIQUE INDEX ownership_one_active_per_repository
     ON ownership_leases(repository_key)
     WHERE status IN ('held', 'release-requested', 'reconciliation-required')`,
+  `CREATE TABLE pending_action_intents (
+    idempotency_key TEXT PRIMARY KEY,
+    repository_key TEXT NOT NULL,
+    action_kind TEXT NOT NULL CHECK (action_kind IN ('run-now', 'pause', 'resume', 'answer-question', 'approve-queue', 'retry', 'stop')),
+    request_fingerprint TEXT NOT NULL,
+    request_json TEXT NOT NULL,
+    expected_revision_json TEXT NOT NULL,
+    target_json TEXT NOT NULL,
+    file_change_json TEXT,
+    entry_point TEXT NOT NULL CHECK (entry_point IN ('action-executor', 'native-ui-initial-ready')),
+    one_shot INTEGER NOT NULL CHECK (one_shot IN (0, 1)),
+    status TEXT NOT NULL CHECK (status IN ('pending', 'resolving', 'completed', 'reconciliation-required')),
+    submitted_at TEXT NOT NULL,
+    expires_at TEXT,
+    last_attempt_at TEXT,
+    completed_at TEXT,
+    result_json TEXT,
+    observed_status TEXT CHECK (observed_status IS NULL OR observed_status IN ('pending', 'resolving', 'resolved', 'interrupted', 'written', 'conflict', 'verified')),
+    observed_resolution_json TEXT,
+    last_error TEXT
+  )`,
 ] as const;
 
 export interface CreateRunIntentInput {
@@ -182,6 +277,93 @@ export interface IdempotencyClaim<T> {
   readonly record: T;
 }
 
+export type PendingActionIntentRequest = RepositoryActionRequest | BbInteractionActionRequest;
+export type PendingActionIntentStatus = z.infer<typeof pendingActionIntentStatusSchema>;
+export type PendingActionIntentEntryPoint = z.infer<typeof pendingActionIntentEntryPointSchema>;
+export type PendingActionObservedStatus = z.infer<typeof pendingActionObservedStatusSchema>;
+export type PendingActionIntentTarget = z.infer<typeof pendingActionIntentTargetSchema>;
+
+export interface PendingActionFileChange {
+  /** Canonical text for the one authoritative repository file being reconciled. */
+  readonly relativePath: string;
+  readonly expectedSha256: string;
+  readonly intendedSha256: string;
+  readonly intendedContent: string;
+}
+
+export interface PendingActionIntentInput {
+  readonly request: PendingActionIntentRequest;
+  readonly target: PendingActionIntentTarget;
+  /** Required for repository actions, absent for BB interaction actions. */
+  readonly fileChange?: PendingActionFileChange | null;
+  readonly submittedAt?: string;
+  readonly expiresAt?: string | null;
+}
+
+export interface InitialReadyIntentInput {
+  readonly request: RepositoryActionRequest;
+  readonly queueItemId: string;
+  readonly intendedChange: PendingActionFileChange;
+  readonly submittedAt?: string;
+  readonly expiresAt: string;
+}
+
+export type PendingActionIntentConsumeReason =
+  | "already-submitted"
+  | "already-confirmed"
+  | "reconciliation-required";
+
+export interface PendingActionIntentConsumption {
+  /** Only true authorizes the caller to perform the external side effect. */
+  readonly consumed: boolean;
+  readonly record: PendingActionIntentRecord;
+  readonly reason?: PendingActionIntentConsumeReason;
+}
+
+export interface OperationalStorageOptions {
+  /** Injectable execution clock for expiry checks; production defaults to the system clock. */
+  readonly now?: () => string;
+}
+
+export interface PendingActionIntentRecord {
+  readonly repositoryKey: RepositoryKey;
+  readonly actionKind: ActionKind;
+  readonly idempotencyKey: IdempotencyKey;
+  readonly requestFingerprint: string;
+  readonly request: PendingActionIntentRequest;
+  readonly expectedRevision: RepositoryRevision;
+  readonly target: PendingActionIntentTarget;
+  readonly fileChange: PendingActionFileChange | null;
+  readonly entryPoint: PendingActionIntentEntryPoint;
+  readonly oneShot: boolean;
+  readonly status: PendingActionIntentStatus;
+  readonly submittedAt: string;
+  readonly expiresAt: string | null;
+  readonly lastAttemptAt: string | null;
+  readonly completedAt: string | null;
+  readonly result: FactoryActionResult | null;
+  readonly observedStatus: PendingActionObservedStatus | null;
+  readonly observedResolution: BbInteractionResolution | null;
+  readonly lastError: string | null;
+}
+
+export interface PendingActionIntentUpdate {
+  readonly idempotencyKey: IdempotencyKey;
+  readonly status: Exclude<PendingActionIntentStatus, "pending">;
+  readonly lastAttemptAt?: string | null;
+  readonly completedAt?: string | null;
+  readonly result?: FactoryActionResult | null;
+  readonly observedStatus?: PendingActionObservedStatus | null;
+  readonly observedResolution?: BbInteractionResolution | null;
+  /** Sanitized operational text only, never a copied request or provider payload. */
+  readonly lastError?: string | null;
+}
+
+export interface PendingActionIntentListInput {
+  readonly repositoryKey?: RepositoryKey;
+  readonly status?: PendingActionIntentStatus;
+}
+
 export interface OperationalTransaction {
   createRunIntent(input: CreateRunIntentInput): CreateRunIntentResult;
   updateRunDispatch(input: RunDispatchUpdate): void;
@@ -193,6 +375,10 @@ export interface OperationalTransaction {
   completeQuestionAnswer(idempotencyKey: IdempotencyKey, result: JsonValue, completedAt?: string): void;
   claimRepositoryWrite(input: RepositoryWriteAction): IdempotencyClaim<RepositoryWriteActionRecord>;
   completeRepositoryWrite(idempotencyKey: IdempotencyKey, result: JsonValue, completedAt?: string): void;
+  claimPendingActionIntent(input: PendingActionIntentInput): IdempotencyClaim<PendingActionIntentRecord>;
+  claimInitialReadyIntent(input: InitialReadyIntentInput): IdempotencyClaim<PendingActionIntentRecord>;
+  consumePendingActionIntent(idempotencyKey: IdempotencyKey): PendingActionIntentConsumption;
+  updatePendingActionIntent(input: PendingActionIntentUpdate): PendingActionIntentRecord;
 }
 
 export interface OperationalStateStore extends OperationalStateReader {
@@ -211,6 +397,12 @@ export interface OperationalStateStore extends OperationalStateReader {
   claimRepositoryWrite(input: RepositoryWriteAction): IdempotencyClaim<RepositoryWriteActionRecord>;
   completeRepositoryWrite(idempotencyKey: IdempotencyKey, result: JsonValue, completedAt?: string): void;
   getRepositoryWrite(idempotencyKey: IdempotencyKey): RepositoryWriteActionRecord | null;
+  claimPendingActionIntent(input: PendingActionIntentInput): IdempotencyClaim<PendingActionIntentRecord>;
+  claimInitialReadyIntent(input: InitialReadyIntentInput): IdempotencyClaim<PendingActionIntentRecord>;
+  consumePendingActionIntent(idempotencyKey: IdempotencyKey): PendingActionIntentConsumption;
+  getPendingActionIntent(idempotencyKey: IdempotencyKey): PendingActionIntentRecord | null;
+  listPendingActionIntents(input?: PendingActionIntentListInput): PendingActionIntentRecord[];
+  updatePendingActionIntent(input: PendingActionIntentUpdate): PendingActionIntentRecord;
 }
 
 interface RunRow {
@@ -284,6 +476,28 @@ interface RepositoryWriteRow {
   completed_at: string | null;
 }
 
+interface PendingActionIntentRow {
+  idempotency_key: string;
+  repository_key: string;
+  action_kind: string;
+  request_fingerprint: string;
+  request_json: string;
+  expected_revision_json: string;
+  target_json: string;
+  file_change_json: string | null;
+  entry_point: string;
+  one_shot: number;
+  status: string;
+  submitted_at: string;
+  expires_at: string | null;
+  last_attempt_at: string | null;
+  completed_at: string | null;
+  result_json: string | null;
+  observed_status: string | null;
+  observed_resolution_json: string | null;
+  last_error: string | null;
+}
+
 class IdempotencyConflictError extends Error {
   readonly code = "idempotency-conflict";
 
@@ -295,10 +509,21 @@ class IdempotencyConflictError extends Error {
 
 export { IdempotencyConflictError };
 
+class PendingActionIntentExpiredError extends Error {
+  readonly code = "pending-action-expired";
+
+  constructor(idempotencyKey: string) {
+    super(`pending action intent is expired and cannot be consumed: ${idempotencyKey}`);
+    this.name = "PendingActionIntentExpiredError";
+  }
+}
+
+export { PendingActionIntentExpiredError };
+
 class OperationalSqliteStore implements OperationalStateStore {
   readonly transactionApi: OperationalTransaction;
 
-  constructor(readonly db: SqliteDatabase) {
+  constructor(readonly db: SqliteDatabase, private readonly executionNow: () => string = now) {
     db.pragma("foreign_keys = ON");
     this.transactionApi = this.createTransactionApi();
   }
@@ -354,6 +579,45 @@ class OperationalSqliteStore implements OperationalStateStore {
 
   getRepositoryWrite(idempotencyKey: IdempotencyKey): RepositoryWriteActionRecord | null {
     return readRepositoryWrite(this.db, idempotencyKey);
+  }
+
+  claimPendingActionIntent(input: PendingActionIntentInput): IdempotencyClaim<PendingActionIntentRecord> {
+    return this.withTransaction((transaction) => transaction.claimPendingActionIntent(input));
+  }
+
+  claimInitialReadyIntent(input: InitialReadyIntentInput): IdempotencyClaim<PendingActionIntentRecord> {
+    return this.withTransaction((transaction) => transaction.claimInitialReadyIntent(input));
+  }
+
+  consumePendingActionIntent(idempotencyKey: IdempotencyKey): PendingActionIntentConsumption {
+    return this.withTransaction((transaction) => transaction.consumePendingActionIntent(idempotencyKey));
+  }
+
+  getPendingActionIntent(idempotencyKey: IdempotencyKey): PendingActionIntentRecord | null {
+    return readPendingActionIntent(this.db, idempotencyKey);
+  }
+
+  listPendingActionIntents(input: PendingActionIntentListInput = {}): PendingActionIntentRecord[] {
+    const repositoryKey = input.repositoryKey === undefined ? undefined : repositoryKeySchema.parse(input.repositoryKey);
+    const status = input.status === undefined ? undefined : pendingActionIntentStatusSchema.parse(input.status);
+    const rows = this.db
+      .prepare<unknown[], PendingActionIntentRow>(
+        `SELECT idempotency_key, repository_key, action_kind, request_fingerprint,
+                request_json, expected_revision_json, target_json, file_change_json,
+                entry_point, one_shot, status, submitted_at, expires_at,
+                last_attempt_at, completed_at, result_json, observed_status,
+                observed_resolution_json, last_error
+           FROM pending_action_intents
+          WHERE (? IS NULL OR repository_key = ?)
+            AND (? IS NULL OR status = ?)
+          ORDER BY submitted_at ASC, idempotency_key ASC`,
+      )
+      .all(repositoryKey ?? null, repositoryKey ?? null, status ?? null, status ?? null);
+    return rows.map(pendingActionIntentFromRow);
+  }
+
+  updatePendingActionIntent(input: PendingActionIntentUpdate): PendingActionIntentRecord {
+    return this.withTransaction((transaction) => transaction.updatePendingActionIntent(input));
   }
 
   getCurrentOwnership(repositoryKey: RepositoryKey): OwnershipLease | null {
@@ -452,17 +716,424 @@ class OperationalSqliteStore implements OperationalStateStore {
       completeQuestionAnswer: (idempotencyKey, result, completedAt) => completeQuestionAnswer(this.db, idempotencyKey, result, completedAt),
       claimRepositoryWrite: (input) => claimRepositoryWrite(this.db, input),
       completeRepositoryWrite: (idempotencyKey, result, completedAt) => completeRepositoryWrite(this.db, idempotencyKey, result, completedAt),
+      claimPendingActionIntent: (input) => claimPendingActionIntent(this.db, input, this.executionNow),
+      claimInitialReadyIntent: (input) => claimInitialReadyIntent(this.db, input, this.executionNow),
+      consumePendingActionIntent: (idempotencyKey) => consumePendingActionIntent(this.db, idempotencyKey, this.executionNow),
+      updatePendingActionIntent: (input) => updatePendingActionIntent(this.db, input, this.executionNow),
     };
   }
 }
 
-export function initializeOperationalStorage(storage: PluginStorage): OperationalStateStore {
+export function initializeOperationalStorage(
+  storage: PluginStorage,
+  options: OperationalStorageOptions = {},
+): OperationalStateStore {
   const db = storage.database();
   storage.migrate(db, [...OPERATIONAL_STORAGE_MIGRATIONS]);
-  return new OperationalSqliteStore(db);
+  return new OperationalSqliteStore(db, options.now ?? now);
 }
 
 export const createOperationalStateStore = initializeOperationalStorage;
+
+interface NormalizedPendingActionIntent {
+  readonly request: PendingActionIntentRequest;
+  readonly expectedRevision: RepositoryRevision;
+  readonly target: PendingActionIntentTarget;
+  readonly fileChange: PendingActionFileChange | null;
+  readonly submittedAt: string;
+  readonly expiresAt: string | null;
+}
+
+function claimPendingActionIntent(
+  db: SqliteDatabase,
+  input: PendingActionIntentInput,
+  executionNow: () => string,
+): IdempotencyClaim<PendingActionIntentRecord> {
+  const normalized = normalizePendingActionIntentInput(input, false, executionNow);
+  return insertPendingActionIntent(db, normalized, "action-executor", false, executionNow);
+}
+
+function claimInitialReadyIntent(
+  db: SqliteDatabase,
+  input: InitialReadyIntentInput,
+  executionNow: () => string,
+): IdempotencyClaim<PendingActionIntentRecord> {
+  const request = repositoryActionRequestSchema.parse(input.request);
+  if (request.action.kind !== "approve-queue") {
+    throw new Error("initial-ready intent requires an approve-queue request");
+  }
+  const queueItemId = z.string().trim().min(1).parse(input.queueItemId);
+  if (request.action.queueItemId !== queueItemId) {
+    throw new Error("initial-ready queue item does not match the action request");
+  }
+  const normalized = normalizePendingActionIntentInput({
+    request,
+    target: { kind: "queue-item", queueItemId },
+    fileChange: input.intendedChange,
+    submittedAt: input.submittedAt,
+    expiresAt: input.expiresAt,
+  }, true, executionNow);
+  return insertPendingActionIntent(db, normalized, "native-ui-initial-ready", true, executionNow);
+}
+
+function normalizePendingActionIntentInput(
+  input: PendingActionIntentInput,
+  allowInitialReady: boolean,
+  executionNow: () => string,
+): NormalizedPendingActionIntent {
+  const request = pendingActionRequestSchema.parse(input.request);
+  const expectedRevision = repositoryRevisionSchema.parse(request.expectedRevision);
+  const target = pendingActionIntentTargetSchema.parse(input.target);
+  const submittedAt = isoTimestampSchema.parse(input.submittedAt ?? executionTimestamp(executionNow));
+  const expiresAt = input.expiresAt === undefined || input.expiresAt === null
+    ? null
+    : isoTimestampSchema.parse(input.expiresAt);
+  if (expiresAt !== null && Date.parse(expiresAt) <= Date.parse(submittedAt)) {
+    throw new Error("pending action intent expiresAt must be after submittedAt");
+  }
+
+  const repositoryRequest = repositoryActionRequestSchema.safeParse(request);
+  const fileChange = input.fileChange === undefined || input.fileChange === null
+    ? null
+    : pendingActionFileChangeSchema.parse(input.fileChange);
+  if (repositoryRequest.success) {
+    if (repositoryRequest.data.action.kind === "approve-queue" && !allowInitialReady) {
+      throw new Error("approve-queue requires the native-ui initial-ready claim");
+    }
+    if (fileChange === null) {
+      throw new Error("repository action intent requires an exact single-file change");
+    }
+    const expectedPath = repositoryActionFilePath(repositoryRequest.data.action);
+    if (fileChange.relativePath !== expectedPath) {
+      throw new Error(`repository action file must be ${expectedPath}`);
+    }
+    const expectedTargetSha256 = expectedRevision.fileDigests[expectedPath];
+    if (expectedTargetSha256 !== fileChange.expectedSha256) {
+      throw new Error("single-file change hash does not match the expected repository revision");
+    }
+  } else if (fileChange !== null) {
+    throw new Error("BB interaction action intent cannot contain a repository file change");
+  }
+
+  assertPendingActionTarget(request, target);
+  return { request, expectedRevision, target, fileChange, submittedAt, expiresAt };
+}
+
+function repositoryActionFilePath(action: RepositoryActionRequest["action"]): string {
+  return action.kind === "answer-question" ? PROTOCOL_PATHS.questions : PROTOCOL_PATHS.queue;
+}
+
+function assertPendingActionTarget(
+  request: PendingActionIntentRequest,
+  target: PendingActionIntentTarget,
+): void {
+  const repositoryRequest = repositoryActionRequestSchema.safeParse(request);
+  if (repositoryRequest.success) {
+    const action = repositoryRequest.data.action;
+    if (action.kind === "answer-question") {
+      if (target.kind !== "repository-question" || target.questionId !== action.questionId) {
+        throw new Error("repository-question target does not match the action request");
+      }
+      return;
+    }
+    if (target.kind !== "queue-item" || target.queueItemId !== action.queueItemId) {
+      throw new Error("queue-item target does not match the action request");
+    }
+    return;
+  }
+
+  const action = (request as BbInteractionActionRequest).action;
+  if (action.kind === "answer-question") {
+    if (target.kind !== "bb-interaction" || target.interactionId !== action.interactionId) {
+      throw new Error("BB interaction target does not match the action request");
+    }
+    return;
+  }
+  if (action.kind === "retry") {
+    if (target.kind !== "attempt" || target.attemptId !== action.attemptId) {
+      throw new Error("attempt target does not match the action request");
+    }
+    return;
+  }
+  if (target.kind !== "repository") {
+    throw new Error("repository target does not match the action request");
+  }
+}
+
+function insertPendingActionIntent(
+  db: SqliteDatabase,
+  normalized: NormalizedPendingActionIntent,
+  entryPoint: PendingActionIntentEntryPoint,
+  oneShot: boolean,
+  executionNow: () => string,
+): IdempotencyClaim<PendingActionIntentRecord> {
+  const actionKind = actionKindSchema.parse(normalized.request.action.kind);
+  const requestFingerprint = createSha256(stableJson({
+    request: normalized.request,
+    expectedRevision: normalized.expectedRevision,
+    target: normalized.target,
+    fileChange: normalized.fileChange,
+    entryPoint,
+    oneShot,
+    expiresAt: normalized.expiresAt,
+  }));
+  const existingBeforeInsert = readPendingActionIntent(db, normalized.request.idempotencyKey);
+  if (existingBeforeInsert !== null) {
+    if (existingBeforeInsert.requestFingerprint !== requestFingerprint) {
+      throw new IdempotencyConflictError(normalized.request.idempotencyKey);
+    }
+    return { created: false, record: existingBeforeInsert };
+  }
+  if (oneShot && normalized.expiresAt === null) {
+    throw new Error(`one-shot pending action intent requires an expiry: ${normalized.request.idempotencyKey}`);
+  }
+  if (normalized.expiresAt !== null && !isAfter(normalized.expiresAt, executionTimestamp(executionNow))) {
+    throw new PendingActionIntentExpiredError(normalized.request.idempotencyKey);
+  }
+  const inserted = db.prepare(
+    `INSERT INTO pending_action_intents (
+       idempotency_key, repository_key, action_kind, request_fingerprint,
+       request_json, expected_revision_json, target_json, file_change_json,
+       entry_point, one_shot, status, submitted_at, expires_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+     ON CONFLICT (idempotency_key) DO NOTHING`,
+  ).run(
+    normalized.request.idempotencyKey,
+    normalized.request.repositoryKey,
+    actionKind,
+    requestFingerprint,
+    stableJson(persistedRequestPayload(normalized.request)),
+    stableJson(normalized.expectedRevision),
+    stableJson(normalized.target),
+    normalized.fileChange === null ? null : stableJson(normalized.fileChange),
+    entryPoint,
+    oneShot ? 1 : 0,
+    normalized.submittedAt,
+    normalized.expiresAt,
+  );
+  const record = readPendingActionIntent(db, normalized.request.idempotencyKey);
+  if (record === null) {
+    throw new Error(`pending action intent was not persisted: ${normalized.request.idempotencyKey}`);
+  }
+  if (inserted.changes === 0) {
+    if (record.requestFingerprint !== requestFingerprint) {
+      throw new IdempotencyConflictError(normalized.request.idempotencyKey);
+    }
+    return { created: false, record };
+  }
+  return { created: true, record };
+}
+
+function consumePendingActionIntent(
+  db: SqliteDatabase,
+  idempotencyKey: IdempotencyKey,
+  executionNow: () => string,
+): PendingActionIntentConsumption {
+  const key = idempotencyKeySchema.parse(idempotencyKey);
+  const consumedAt = executionTimestamp(executionNow);
+  const update = db.prepare(
+    `UPDATE pending_action_intents
+        SET status = 'resolving', last_attempt_at = ?
+      WHERE idempotency_key = ?
+        AND status = 'pending'
+        AND (one_shot = 0 OR expires_at IS NOT NULL)
+        AND (expires_at IS NULL OR expires_at > ?)`,
+  ).run(consumedAt, key, consumedAt);
+  if (update.changes === 1) {
+    const record = readPendingActionIntent(db, key);
+    if (record === null) {
+      throw new Error(`consumed pending action intent disappeared: ${key}`);
+    }
+    return { consumed: true, record };
+  }
+
+  const existing = readPendingActionIntent(db, key);
+  if (existing === null) {
+    throw new Error(`cannot consume missing pending action intent: ${key}`);
+  }
+  if (existing.status === "pending") {
+    if (existing.expiresAt !== null && !isAfter(existing.expiresAt, consumedAt)) {
+      throw new PendingActionIntentExpiredError(key);
+    }
+    throw new Error(`pending action intent cannot be consumed: ${key}`);
+  }
+  if (existing.status === "resolving") {
+    return { consumed: false, record: existing, reason: "already-submitted" };
+  }
+  if (existing.status === "completed") {
+    return { consumed: false, record: existing, reason: "already-confirmed" };
+  }
+  return { consumed: false, record: existing, reason: "reconciliation-required" };
+}
+
+function updatePendingActionIntent(
+  db: SqliteDatabase,
+  input: PendingActionIntentUpdate,
+  executionNow: () => string,
+): PendingActionIntentRecord {
+  const idempotencyKey = idempotencyKeySchema.parse(input.idempotencyKey);
+  const existing = readPendingActionIntent(db, idempotencyKey);
+  if (existing === null) {
+    throw new Error(`cannot update missing pending action intent: ${idempotencyKey}`);
+  }
+  const status = pendingActionIntentStatusSchema.parse(input.status);
+  if (existing.status === "completed" || existing.status === "reconciliation-required") {
+    throw new Error(`cannot transition terminal pending action intent: ${idempotencyKey}`);
+  }
+  if (status === "pending") {
+    throw new Error(`pending action intent cannot transition back to pending: ${idempotencyKey}`);
+  }
+  if (status === "resolving" && existing.status !== "resolving") {
+    throw new Error(`pending action intent must be atomically consumed before resolving: ${idempotencyKey}`);
+  }
+  if (existing.oneShot && existing.status === "pending" && status === "completed") {
+    throw new Error(`one-shot pending action intent must be consumed before completion: ${idempotencyKey}`);
+  }
+
+  const currentTime = executionTimestamp(executionNow);
+  const lastAttemptAt = input.lastAttemptAt === undefined
+    ? existing.lastAttemptAt ?? currentTime
+    : nullableIsoTimestamp(input.lastAttemptAt, "lastAttemptAt");
+  const observedStatus = input.observedStatus === undefined
+    ? existing.observedStatus
+    : input.observedStatus === null
+      ? null
+      : pendingActionObservedStatusSchema.parse(input.observedStatus);
+  const observedResolution = input.observedResolution === undefined
+    ? existing.observedResolution
+    : input.observedResolution === null
+      ? null
+      : bbInteractionResolutionSchema.parse(input.observedResolution);
+  if (observedResolution !== null && existing.target.kind !== "bb-interaction") {
+    throw new Error("observed BB resolution requires a BB interaction target");
+  }
+  const lastError = input.lastError === undefined
+    ? existing.lastError
+    : input.lastError === null
+      ? null
+      : z.string().trim().min(1).max(4096).parse(input.lastError);
+  if (status === "reconciliation-required" && observedStatus === null && observedResolution === null && lastError === null) {
+    throw new Error("reconciliation-required intent needs reconciliation metadata");
+  }
+
+  const result = input.result === undefined
+    ? existing.result
+    : input.result === null
+      ? null
+      : factoryActionResultSchema.parse(input.result);
+  const completedAt = status === "completed"
+    ? input.completedAt === undefined
+      ? existing.completedAt ?? currentTime
+      : isoTimestampSchema.parse(input.completedAt)
+    : input.completedAt === undefined
+      ? existing.completedAt
+      : nullableIsoTimestamp(input.completedAt, "completedAt");
+  if (status === "completed" && result === null) {
+    throw new Error("completed pending action intent requires an action result");
+  }
+  if (status === "completed" && existing.expiresAt !== null && !isAfter(existing.expiresAt, currentTime)) {
+    throw new PendingActionIntentExpiredError(idempotencyKey);
+  }
+  if (status === "reconciliation-required" && result !== null) {
+    throw new Error("reconciliation-required intent cannot have a confirmed result");
+  }
+
+  db.prepare(
+    `UPDATE pending_action_intents
+        SET status = ?, last_attempt_at = ?, completed_at = ?, result_json = ?,
+            observed_status = ?, observed_resolution_json = ?, last_error = ?
+      WHERE idempotency_key = ?`,
+  ).run(
+    status,
+    lastAttemptAt,
+    completedAt,
+    result === null ? null : stableJson(result),
+    observedStatus,
+    observedResolution === null ? null : stableJson(observedResolution),
+    lastError,
+    idempotencyKey,
+  );
+  return readPendingActionIntent(db, idempotencyKey)!;
+}
+
+function readPendingActionIntent(
+  db: SqliteDatabase,
+  idempotencyKey: IdempotencyKey,
+): PendingActionIntentRecord | null {
+  const key = idempotencyKeySchema.parse(idempotencyKey);
+  const row = db
+    .prepare<unknown[], PendingActionIntentRow>(
+      `SELECT idempotency_key, repository_key, action_kind, request_fingerprint,
+              request_json, expected_revision_json, target_json, file_change_json,
+              entry_point, one_shot, status, submitted_at, expires_at,
+              last_attempt_at, completed_at, result_json, observed_status,
+              observed_resolution_json, last_error
+         FROM pending_action_intents
+        WHERE idempotency_key = ?`,
+    )
+    .get(key);
+  return row === undefined ? null : pendingActionIntentFromRow(row);
+}
+
+function pendingActionIntentFromRow(row: PendingActionIntentRow): PendingActionIntentRecord {
+  const expectedRevision = repositoryRevisionSchema.parse(parseJson(row.expected_revision_json));
+  const target = pendingActionIntentTargetSchema.parse(parseJson(row.target_json));
+  const request = target.kind === "bb-interaction" && row.action_kind === "answer-question"
+    ? bbInteractionActionRequestSchema.parse({
+      repositoryKey: row.repository_key,
+      action: {
+        kind: "answer-question",
+        source: "bb-interaction",
+        interactionId: target.interactionId,
+        resolution: bbInteractionResolutionSchema.parse(parseJson(row.request_json)),
+      },
+      idempotencyKey: row.idempotency_key,
+      expectedRevision,
+    })
+    : pendingActionRequestSchema.parse(parseJson(row.request_json));
+  if (request.repositoryKey !== row.repository_key || request.idempotencyKey !== row.idempotency_key) {
+    throw new Error("pending action intent request binding is invalid");
+  }
+  if (stableJson(request.expectedRevision) !== stableJson(expectedRevision)) {
+    throw new Error("pending action intent revision binding is invalid");
+  }
+  const fileChange = row.file_change_json === null
+    ? null
+    : pendingActionFileChangeSchema.parse(parseJson(row.file_change_json));
+  const result = row.result_json === null ? null : factoryActionResultSchema.parse(parseJson(row.result_json));
+  const observedResolution = row.observed_resolution_json === null
+    ? null
+    : bbInteractionResolutionSchema.parse(parseJson(row.observed_resolution_json));
+  return {
+    repositoryKey: repositoryKeySchema.parse(row.repository_key),
+    actionKind: actionKindSchema.parse(row.action_kind),
+    idempotencyKey: idempotencyKeySchema.parse(row.idempotency_key),
+    requestFingerprint: z.string().trim().min(1).parse(row.request_fingerprint),
+    request,
+    expectedRevision,
+    target,
+    fileChange,
+    entryPoint: pendingActionIntentEntryPointSchema.parse(row.entry_point),
+    oneShot: row.one_shot === 1,
+    status: pendingActionIntentStatusSchema.parse(row.status),
+    submittedAt: isoTimestampSchema.parse(row.submitted_at),
+    expiresAt: row.expires_at === null ? null : isoTimestampSchema.parse(row.expires_at),
+    lastAttemptAt: row.last_attempt_at === null ? null : isoTimestampSchema.parse(row.last_attempt_at),
+    completedAt: row.completed_at === null ? null : isoTimestampSchema.parse(row.completed_at),
+    result,
+    observedStatus: row.observed_status === null ? null : pendingActionObservedStatusSchema.parse(row.observed_status),
+    observedResolution,
+    lastError: row.last_error,
+  };
+}
+
+function persistedRequestPayload(request: PendingActionIntentRequest): unknown {
+  const bbRequest = bbInteractionActionRequestSchema.safeParse(request);
+  if (bbRequest.success && bbRequest.data.action.kind === "answer-question") {
+    return bbRequest.data.action.resolution;
+  }
+  return request;
+}
 
 function insertRunIntent(db: SqliteDatabase, input: CreateRunIntentInput): CreateRunIntentResult {
   const intent = runIntentSchema.parse(input.intent);
@@ -958,6 +1629,33 @@ function stableJson(value: unknown): string {
     throw new Error("operational storage cannot encode undefined JSON");
   }
   return encoded;
+}
+
+function createSha256(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function executionTimestamp(clock: () => string): string {
+  try {
+    return isoTimestampSchema.parse(clock());
+  } catch {
+    throw new Error("operational storage clock must return an ISO timestamp");
+  }
+}
+
+function isAfter(left: string, right: string): boolean {
+  return Date.parse(left) > Date.parse(right);
+}
+
+function nullableIsoTimestamp(value: string | null, field: string): string | null {
+  if (value === null) {
+    return null;
+  }
+  try {
+    return isoTimestampSchema.parse(value);
+  } catch {
+    throw new Error(`${field} must be an ISO timestamp`);
+  }
 }
 
 function now(): string {

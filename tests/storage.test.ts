@@ -5,12 +5,22 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { DispatchAttempt, OwnershipLease, RepositoryRevision, RunIntent } from "../src/contracts.js";
+import type {
+  BbInteractionActionRequest,
+  DispatchAttempt,
+  OwnershipLease,
+  RepositoryActionRequest,
+  RepositoryRevision,
+  RunIntent,
+} from "../src/contracts.js";
 import {
   IdempotencyConflictError,
+  PendingActionIntentExpiredError,
   initializeOperationalStorage,
+  type PendingActionFileChange,
   type OperationalStateStore,
 } from "../src/storage/index.js";
+import { PROTOCOL_PATHS } from "../src/protocol/paths.js";
 
 interface TestStorage extends PluginStorage {
   readonly db: Database.Database;
@@ -122,6 +132,7 @@ describe("operational SQLite storage", () => {
       "dispatch_attempts",
       "operational_runs",
       "ownership_leases",
+      "pending_action_intents",
       "question_answer_submissions",
       "repository_write_actions",
     ]);
@@ -201,10 +212,238 @@ describe("operational SQLite storage", () => {
     expect(store.db.prepare<[], { count: number }>(`SELECT COUNT(*) AS count FROM dispatch_attempts`).get()).toEqual({ count: 0 });
     expect(store.db.prepare<[], { count: number }>(`SELECT COUNT(*) AS count FROM ownership_leases`).get()).toEqual({ count: 0 });
   });
+
+  it("persists an exact repository action intent across reload and rejects same-key payload changes", async () => {
+    const storage = makeStorage();
+    const store = initializeOperationalStorage(storage);
+    const request = makeRepositoryAnswerRequest();
+    const target = { kind: "repository-question" as const, questionId: "Q6" };
+    const fileChange = makeFileChange("answer: yes\n", PROTOCOL_PATHS.questions);
+    const input = { request, target, fileChange, submittedAt: "2026-09-10T00:03:00Z" };
+
+    expect(store.claimPendingActionIntent(input)).toMatchObject({
+      created: true,
+      record: {
+        repositoryKey: "monorepo",
+        actionKind: "answer-question",
+        idempotencyKey: request.idempotencyKey,
+        request,
+        expectedRevision: request.expectedRevision,
+        target,
+        fileChange,
+        entryPoint: "action-executor",
+        oneShot: false,
+        status: "pending",
+        submittedAt: "2026-09-10T00:03:00Z",
+        expiresAt: null,
+      },
+    });
+
+    const directory = storage.directory;
+    storage.close();
+    const reloadedStorage = makeStorage(directory);
+    const reloadedStore = initializeOperationalStorage(reloadedStorage);
+    expect(reloadedStore.getPendingActionIntent(request.idempotencyKey)).toMatchObject({ request, target, fileChange });
+    expect(reloadedStore.claimPendingActionIntent(input)).toMatchObject({ created: false, record: { status: "pending" } });
+    expect(() => reloadedStore.claimPendingActionIntent({
+      ...input,
+      request: {
+        ...request,
+        action: { kind: "answer-question", source: "repository-question", questionId: "Q6", answer: "no" },
+      },
+    })).toThrow(IdempotencyConflictError);
+    expect(() => reloadedStore.claimPendingActionIntent({
+      ...input,
+      fileChange: { ...fileChange, expectedSha256: "c".repeat(64) },
+    })).toThrow("does not match the expected repository revision");
+    expect(() => reloadedStore.claimPendingActionIntent({
+      ...input,
+      fileChange: makeFileChange("answer: yes\n"),
+    })).toThrow(`repository action file must be ${PROTOCOL_PATHS.questions}`);
+
+    const raw = reloadedStore.db
+      .prepare<[string], { request_json: string; file_change_json: string | null }>(
+        `SELECT request_json, file_change_json FROM pending_action_intents WHERE idempotency_key = ?`,
+      )
+      .get(request.idempotencyKey)!;
+    expect(raw.request_json).not.toContain("prompt");
+    expect(JSON.parse(raw.file_change_json!)).toEqual(fileChange);
+  });
+
+  it("atomically claims a native-UI initial-ready intent once", () => {
+    const store = newStore("2026-09-10T00:04:30Z");
+    const request = makeApproveQueueRequest();
+    const input = {
+      request,
+      queueItemId: "Q1",
+      intendedChange: makeFileChange("status: ready\napproved: yes\n"),
+      submittedAt: "2026-09-10T00:04:00Z",
+      expiresAt: "2026-09-10T00:05:00Z",
+    };
+
+    expect(store.claimInitialReadyIntent(input)).toMatchObject({
+      created: true,
+      record: {
+        entryPoint: "native-ui-initial-ready",
+        oneShot: true,
+        target: { kind: "queue-item", queueItemId: "Q1" },
+        status: "pending",
+        expiresAt: input.expiresAt,
+      },
+    });
+    expect(store.claimInitialReadyIntent(input)).toMatchObject({ created: false, record: { oneShot: true } });
+    expect(() => store.updatePendingActionIntent({
+      idempotencyKey: request.idempotencyKey,
+      status: "resolving",
+    })).toThrow("atomically consumed");
+    expect(store.consumePendingActionIntent(request.idempotencyKey)).toMatchObject({
+      consumed: true,
+      record: { status: "resolving", oneShot: true, lastAttemptAt: "2026-09-10T00:04:30Z" },
+    });
+    expect(store.consumePendingActionIntent(request.idempotencyKey)).toMatchObject({
+      consumed: false,
+      reason: "already-submitted",
+      record: { status: "resolving", oneShot: true },
+    });
+    expect(store.listPendingActionIntents({ repositoryKey: "monorepo" })).toHaveLength(1);
+    expect(store.db.prepare<[], { count: number }>(`SELECT COUNT(*) AS count FROM pending_action_intents`).get()).toEqual({ count: 1 });
+    expect(() => store.claimPendingActionIntent({
+      request,
+      target: { kind: "queue-item", queueItemId: "Q1" },
+      fileChange: input.intendedChange,
+    })).toThrow("native-ui initial-ready claim");
+  });
+
+  it("rejects expired one-shot consumption and completion, including concurrent reuse", () => {
+    const clock = { value: "2026-09-10T00:04:30Z" };
+    const storage = makeStorage();
+    const firstStore = initializeOperationalStorage(storage, { now: () => clock.value });
+    const secondStore = initializeOperationalStorage(makeStorage(storage.directory), { now: () => clock.value });
+    const request = makeApproveQueueRequest();
+    const input = {
+      request,
+      queueItemId: "Q1",
+      intendedChange: makeFileChange("status: ready\napproved: yes\n"),
+      submittedAt: "2026-09-10T00:04:00Z",
+      expiresAt: "2026-09-10T00:05:00Z",
+    };
+    firstStore.claimInitialReadyIntent(input);
+
+    clock.value = "2026-09-10T00:05:00Z";
+    expect(() => firstStore.consumePendingActionIntent(request.idempotencyKey)).toThrow(PendingActionIntentExpiredError);
+    expect(firstStore.getPendingActionIntent(request.idempotencyKey)).toMatchObject({ status: "pending", oneShot: true });
+
+    clock.value = "2026-09-10T00:04:30Z";
+    expect(firstStore.consumePendingActionIntent(request.idempotencyKey)).toMatchObject({ consumed: true, record: { status: "resolving" } });
+    expect(secondStore.consumePendingActionIntent(request.idempotencyKey)).toMatchObject({
+      consumed: false,
+      reason: "already-submitted",
+      record: { status: "resolving", oneShot: true },
+    });
+
+    clock.value = "2026-09-10T00:05:30Z";
+    expect(() => firstStore.updatePendingActionIntent({
+      idempotencyKey: request.idempotencyKey,
+      status: "completed",
+      completedAt: "2026-09-10T00:04:45Z",
+      result: makeApproveQueueResult(),
+    })).toThrow(PendingActionIntentExpiredError);
+    expect(firstStore.getPendingActionIntent(request.idempotencyKey)).toMatchObject({ status: "resolving", oneShot: true });
+  });
+
+  it("records BB submission, confirmation, and ambiguous reconciliation metadata without duplicate claims", () => {
+    const store = newStore();
+    const request = makeBbInteractionRequest();
+    const target = {
+      kind: "bb-interaction" as const,
+      interactionId: "interaction-1",
+      threadId: "thread-1",
+      turnId: "turn-1",
+    };
+    const input = { request, target, submittedAt: "2026-09-10T00:06:00Z" };
+    expect(store.claimPendingActionIntent(input)).toMatchObject({ created: true, record: { status: "pending" } });
+    expect(() => store.updatePendingActionIntent({ idempotencyKey: request.idempotencyKey, status: "resolving" })).toThrow("atomically consumed");
+    expect(store.consumePendingActionIntent(request.idempotencyKey)).toMatchObject({ consumed: true, record: { status: "resolving" } });
+    const resolution = request.action.kind === "answer-question" ? request.action.resolution : null;
+    const persistedResolution = store.db
+      .prepare<[string], { request_json: string }>(`SELECT request_json FROM pending_action_intents WHERE idempotency_key = ?`)
+      .get(request.idempotencyKey)!;
+    expect(JSON.parse(persistedResolution.request_json)).toEqual(resolution);
+
+    expect(store.updatePendingActionIntent({
+      idempotencyKey: request.idempotencyKey,
+      status: "resolving",
+      lastAttemptAt: "2026-09-10T00:06:30Z",
+      observedStatus: "resolving",
+    })).toMatchObject({
+      status: "resolving",
+      lastAttemptAt: "2026-09-10T00:06:30Z",
+      observedStatus: "resolving",
+    });
+
+    expect(resolution).not.toBeNull();
+    const result = {
+      ok: true as const,
+      result: {
+        status: "accepted" as const,
+        message: "BB interaction resolved",
+        revision: null,
+        runId: null,
+        leaseId: null,
+        queueItemId: null,
+        action: "answer-question" as const,
+        source: "bb-interaction" as const,
+        interactionId: "interaction-1",
+        questionId: null,
+      },
+      revision: null,
+    };
+    expect(store.updatePendingActionIntent({
+      idempotencyKey: request.idempotencyKey,
+      status: "completed",
+      completedAt: "2026-09-10T00:07:00Z",
+      observedStatus: "resolved",
+      observedResolution: resolution!,
+      result,
+    })).toMatchObject({
+      status: "completed",
+      completedAt: "2026-09-10T00:07:00Z",
+      observedStatus: "resolved",
+      observedResolution: resolution,
+      result,
+    });
+    expect(store.claimPendingActionIntent(input)).toMatchObject({ created: false, record: { status: "completed", result } });
+    expect(() => store.updatePendingActionIntent({ idempotencyKey: request.idempotencyKey, status: "resolving" })).toThrow("terminal");
+
+    const ambiguousRequest = makeBbInteractionRequest("223e4567-e89b-12d3-a456-426614174000");
+    const ambiguousInput = {
+      request: ambiguousRequest,
+      target: { ...target, interactionId: "interaction-2" },
+      submittedAt: "2026-09-10T00:08:00Z",
+    };
+    store.claimPendingActionIntent(ambiguousInput);
+    expect(store.updatePendingActionIntent({
+      idempotencyKey: ambiguousRequest.idempotencyKey,
+      status: "reconciliation-required",
+      lastAttemptAt: "2026-09-10T00:08:30Z",
+      observedStatus: "interrupted",
+      lastError: "BB interaction did not resolve",
+    })).toMatchObject({
+      status: "reconciliation-required",
+      observedStatus: "interrupted",
+      lastError: "BB interaction did not resolve",
+    });
+    expect(() => store.updatePendingActionIntent({ idempotencyKey: ambiguousRequest.idempotencyKey, status: "completed", result })).toThrow("terminal");
+  });
 });
 
-function newStore(): OperationalStateStore {
-  return initializeOperationalStorage(makeStorage());
+function newStore(executionNow?: string | (() => string)): OperationalStateStore {
+  const now = typeof executionNow === "function"
+    ? executionNow
+    : executionNow === undefined
+      ? undefined
+      : () => executionNow;
+  return initializeOperationalStorage(makeStorage(), now === undefined ? {} : { now });
 }
 
 function makeStorage(directory = mkdtempSync(join(tmpdir(), "bb-factory-storage-"))): TestStorage {
@@ -257,11 +496,68 @@ function makeStorage(directory = mkdtempSync(join(tmpdir(), "bb-factory-storage-
   return storage;
 }
 
-function makeRevision(): RepositoryRevision {
+function makeRevision(relativePath: string = PROTOCOL_PATHS.queue): RepositoryRevision {
   return {
     gitCommit: "abcdef1",
     protocolDigest: "a".repeat(64),
-    fileDigests: { "plans/factory/queue.md": "b".repeat(64) },
+    fileDigests: { [relativePath]: "b".repeat(64) },
+  };
+}
+
+function makeRepositoryAnswerRequest(answer = "yes"): RepositoryActionRequest {
+  return {
+    repositoryKey: "monorepo",
+    action: { kind: "answer-question", source: "repository-question", questionId: "Q6", answer },
+    idempotencyKey: "bbf:v1:monorepo:answer-question:423e4567-e89b-12d3-a456-426614174000",
+    expectedRevision: makeRevision(PROTOCOL_PATHS.questions),
+  };
+}
+
+function makeApproveQueueRequest(): RepositoryActionRequest {
+  return {
+    repositoryKey: "monorepo",
+    action: { kind: "approve-queue", queueItemId: "Q1", approvedText: "approved by Adam" },
+    idempotencyKey: "bbf:v1:monorepo:approve-queue:523e4567-e89b-12d3-a456-426614174000",
+    expectedRevision: makeRevision(),
+  };
+}
+
+function makeBbInteractionRequest(uuid = "623e4567-e89b-12d3-a456-426614174000"): BbInteractionActionRequest {
+  return {
+    repositoryKey: "monorepo",
+    action: {
+      kind: "answer-question",
+      source: "bb-interaction",
+      interactionId: uuid === "623e4567-e89b-12d3-a456-426614174000" ? "interaction-1" : "interaction-2",
+      resolution: { kind: "user_answer", answers: { confirm: { selected: ["yes"] } } },
+    },
+    idempotencyKey: `bbf:v1:monorepo:answer-question:${uuid}`,
+    expectedRevision: makeRevision(),
+  };
+}
+
+function makeFileChange(intendedContent: string, relativePath: string = PROTOCOL_PATHS.queue): PendingActionFileChange {
+  return {
+    relativePath,
+    expectedSha256: "b".repeat(64),
+    intendedSha256: createHash("sha256").update(intendedContent).digest("hex"),
+    intendedContent,
+  };
+}
+
+function makeApproveQueueResult() {
+  return {
+    ok: true as const,
+    result: {
+      status: "accepted" as const,
+      message: "queue item approved",
+      revision: null,
+      runId: null,
+      leaseId: null,
+      queueItemId: "Q1",
+      action: "approve-queue" as const,
+    },
+    revision: null,
   };
 }
 
