@@ -1,0 +1,146 @@
+# BB Factory implementation plan
+
+## 1. Purpose and current state
+
+`bb-factory` is a planning-only repository. The active factory is still the shell tooling under `~/.bb/factory/`: `dispatch.sh`, `redeploy.sh`, `merge-state.sh`, and `templates/foreman.md`. The plugin described here replaces the dispatcher and adds a native BB control surface without replacing the repository factory protocol.
+
+The implementation must preserve the behavior already encoded in the dispatcher and in the two managed repositories. Current behavior includes:
+
+- One unattended foreman per repository during the night window, working on `factory`, never merging or switching to `main`.
+- Human authorization for the initial queue transition to `ready`, satisfied dependencies, and no open blocking question before work can start.
+- Repository-specific `plans/factory/foreman.md` and `repo.md` rules, queue entries, current state, immutable run records, questions, lock files, checks, dashboards, and integration policies.
+- A runtime cap that defaults to 10,800 seconds, provider retry and failover behavior, and a default one-hour minimum gap between foreman starts. The spacing must be configurable, with the current one-hour behavior as the default and the rolling-hour safety guard preserved.
+- Dispatcher state containing active thread and provider, start times, provider limits, last foreman state, failure and no-op counts, and the current night key. `noopCount` resets on a night-key change, not after a successful run.
+- Foreman outcomes limited to `success`, `blocked`, `failed-safe`, and `no-op`.
+- Merge reporting that compares `factory` with `origin/main`, identifies unmerged task commits, excludes claim, release, and run-record commits, and reports whether a safe fast-forward is possible.
+
+The plugin must not silently correct existing shell inconsistencies. For example, the dispatcher header says it exits zero in all cases, while missing `REPO_KEY` or `jq` currently exits one. Such behavior is a migration input to record and either preserve or intentionally change at a documented acceptance gate.
+
+## 2. Boundaries and source of truth
+
+The first implementation checkpoint freezes these boundaries before parallel work begins:
+
+- **BB core:** projects, environments, threads, messages, queued messages, pending interactions, provider state, and thread lifecycle.
+- **Plugin:** factory dispatch policy, scheduling, run orchestration, operational state, and UI projections.
+- **Repository:** business and workflow policy, queue and question state, canonical dashboard, current report, immutable run records, and Git audit history.
+- **Plugin SQLite:** durable operational metadata only, such as run intents, dispatch attempts, ownership leases, idempotency keys, and links. It must not mirror task status or become a second queue/question database.
+- **KV:** only small cursors and links, never durable queue or run state.
+- **Secrets:** server-side settings only. Frontend settings expose no credentials or secret values.
+
+Queue and Questions views read repository-backed `plans/factory/queue.md` and `questions.md`, plus BB pending interactions where applicable. They do not create independent plugin queue or question records. The plugin may keep an idempotency result for an answer or write operation, but the question itself remains in its authoritative source.
+
+Repository writes are narrow, root-confined to the configured checkout, serialized, and compare-and-swap guarded. A stale or changed file is rejected with a conflict; the plugin must not overwrite unrelated text or attempt an implicit merge. Existing claim commits, completion commits, dashboard rows, and repository-specific integration rules remain intact.
+
+The plugin provides Overview, Queue, Questions, Runs, and Settings surfaces. Overview may also be exposed as a small homepage section, but it must not replace BB's native homepage, header, side-panel chrome, thread behavior, navigation, or deletion confirmations.
+
+## 3. Target module and ownership layout
+
+The repository has no package or source scaffold. Implementation should establish a small TypeScript package using `pnpm` for local development. BB Git installation remains an `npm` concern and must not be described as a pnpm installation path.
+
+The following ownership boundaries prevent parallel edits from colliding:
+
+- `src/protocol/`: repository discovery, root confinement, Markdown parsing, protocol models, queue eligibility, question extraction, dashboard and merge-state projection. Owned by the protocol adapter task.
+- `src/storage/`: SQLite schema, append-only migrations, transactions, uniqueness constraints, and operational records. Owned by the state task.
+- `src/dispatch/ownership.ts`, `preflight.ts`, and `start.ts`: ownership lease, host checks, provider selection, durable intent, and BB thread creation. Owned by the ownership and dispatch task.
+- `src/dispatch/lifecycle.ts`, `recovery.ts`, `cancel.ts`, and `retry.ts`: worker lifecycle, reconciliation, cancellation, and bounded retry. Owned by the lifecycle and recovery task.
+- `src/schedule/`: one plugin-owned scheduler, configured spacing and night-window behavior, duplicate wakeup handling, and pause behavior. Owned by the scheduling task, then integrated with dispatch only after the three contracts pass review.
+- `src/ui/`: native plugin panels and action forms for the five surfaces. Owned by the UI task; it consumes typed projections and calls validated RPCs rather than reading files directly.
+- `src/settings/`: declarative operational settings and server-side validation. Owned by the settings task.
+- `src/lifecycle/`: startup reconciliation, reload disposal, and shutdown behavior. Owned by the dispatch/state integration task.
+- `tests/`: focused parser, policy, idempotency, stale-write, scheduler, and recovery tests. Each task adds only tests that protect a stated behavior.
+- `docs/`: migration and rollback instructions, hosting prerequisite, and operator runbook. Documentation is updated after implementation, not used as a second policy source.
+
+No task may edit another task's owned module without first updating the interface contract. Reviews happen after each task: first protocol and acceptance compliance, then reuse, simplicity, and maintainability.
+
+## 4. Phased implementation
+
+### Phase 0: Interface contract and bootstrap
+
+**Dependency:** none. This is sequential and blocks all implementation work.
+
+**Deliverables:**
+
+1. Freeze typed interfaces for repository configuration, protocol snapshots, queue entries, questions, dashboard summary, run intent, dispatch attempt, ownership lease, provider status, host preflight, and action results.
+2. Define the plugin settings boundary: repository key and root, connected host, checkout path, schedule/night-window settings, runtime cap, provider preference or alternation, configurable spacing, concurrency limit, and dispatch enabled/paused state.
+3. Decide how the current `templates/foreman.md` is made available to the plugin without changing its protocol text or silently creating a second version. Record its source and versioning rule.
+4. Define RPC validation, error categories, idempotency-key shape, stale revision representation, and UI invalidation events. Realtime events are invalidation signals only; every client reloads durable state after a signal or reconnect.
+5. Bootstrap the package, manifest, build/typecheck/lint commands, plugin entry point, and test runner. Keep the initial scaffold limited to the agreed interfaces and startup/shutdown skeleton.
+6. Record one dependency map naming each task's owned paths, consumed interfaces, required predecessor review, and integration owner. Freeze the interfaces before parallel tasks start; interface changes return to this phase for review rather than crossing ownership boundaries informally.
+
+**Ownership and agents:** first use one Luna xhigh task to verify BB extension points and draft the contract and minimal bootstrap. Then use one Sol low task to review scope, action wording, protocol-versus-setting boundaries, and dispatcher migration inputs. The phase owner incorporates that review and freezes the contract. No later task starts until both reviews pass.
+
+### Phase 1: Protocol adapters and read-only surfaces
+
+**Dependency:** Phase 0 interfaces.
+
+Run these tasks in parallel with separate file ownership:
+
+- **Luna xhigh, protocol adapter:** implement repository discovery and root confinement; parse both repositories' `plans/factory/` files; expose queue eligibility, dependencies, blocking questions, current state, immutable run records, dashboard rows, and merge-state projections. Preserve Markdown customizations rather than normalizing them into a generic policy language. Parse enough structure to explain why an item is or is not eligible, including authorization provenance when present.
+- **Luna xhigh, operational state:** implement SQLite initialization, append-only migrations, read models for run history and current ownership, and transaction helpers. Add uniqueness constraints for run creation, dispatch attempts, question answers, and repository writes. Do not persist queue or question copies.
+- **Luna xhigh, UI:** implement read-only Overview, Queue, Questions, Runs, and Settings panels using typed projections. Overview shows repository health, current foreman state, spacing/window status, host prerequisites, and the canonical dashboard link. Runs link every execution to stable BB thread, project, environment, provider, and repository revision identifiers. Settings show validation and status without returning secrets.
+After each Luna task, run a separate Sol low review in this order: first check the frozen contract, repository protocol, and acceptance criteria; then check reuse, simplicity, and maintainability. The task owner fixes concrete review findings before its output becomes a dependency. Finish with one Sol low product review across the assembled read-only surfaces, including whether main-branch integration is presented only as a report.
+
+**Acceptance checks:** both repositories load without writes; queue and question text remains repository-backed; canonical `plans/README.md` is linked and not copied as a plugin dashboard; no scheduler or worker starts; a disconnected host and malformed protocol produce actionable read-only errors.
+
+### Phase 2: Guarded repository actions
+
+**Dependency:** Phase 1 projections and the frozen write/RPC interfaces.
+
+- **Luna xhigh, repository actions:** implement narrow actions for queue approval, queue updates allowed by the repository protocol, and question updates or resolution where the authoritative source permits it. Every action validates the target path, expected content or revision, authorization provenance, dependencies, blocking-question state, and repository-specific policy before writing.
+- **Luna xhigh, BB interaction actions:** implement Answer question, Approve queue, Retry, Pause, and Stop request plumbing. Answer resolves one identified BB interaction once and repeated submissions return the prior outcome. Retry references a failed attempt and uses bounded retry policy; it must not duplicate the original user message. Stop requests cancellation and preserves history, repository records, and user-authored queue items.
+Each Luna task receives its own Sol low review before integration: spec and authorization compliance first, then reuse, simplicity, and maintainability. The policy review must cover edge cases where a generic action would violate either repository's `repo.md`, especially main-branch, deployment, migration, dbt, and non-dbt integration rules. The UI must state the active rule at the action point and reject, rather than broaden, permissions.
+
+**Acceptance checks:** stale content is rejected without mutation; a changed file is never overwritten; unauthorized or ambiguous `ready` transitions are rejected; agents cannot perform the first transition to `ready`; successful writes preserve unrelated Markdown and required dashboard or claim boundaries; duplicate action submissions do not duplicate queue changes, answers, or messages.
+
+### Phase 3: Exclusive dispatch engine and scheduler
+
+**Dependency:** Phase 2 action and state interfaces. This phase is the first that can create work.
+
+Run the engine tasks in parallel, then integrate them in one sequential wiring task:
+
+- **Luna xhigh, ownership and dispatch:** acquire one durable ownership record before any repository mutation or worker spawn. Include repository, queue item, run, worker thread, lease timestamp, and authorization provenance. Serialize transitions. Preflight the connected host, checkout, branch, required tools, and data-platform browser/dbt prerequisites where relevant. Create the durable run intent before dispatch, then start at most one BB worker thread for it.
+- **Luna xhigh, worker lifecycle and recovery:** track active, completed, failed-safe, blocked, no-op, cancellation-requested, and reconciliation-required states. Do not clear ownership on a cancellation request until worker termination is confirmed. On startup or lease expiry, reconcile BB thread state, repository lock, queue claim, current report, Git revision, and plugin records before requeueing. Preserve substantial work, both-provider participation when required by protocol, plain-English accomplishments, and questions.
+- **Luna xhigh, scheduler:** implement exactly one plugin-owned scheduler. Make the normal spacing configurable while defaulting to the current one-hour minimum and never allowing a duplicate wakeup, reload, or recovery path to bypass the rolling-hour safety guard. Preserve night-window behavior and pause semantics: pause prevents new dispatch but leaves active work and queued intent intact. Scheduling is at-least-once, not exactly-once.
+- **Luna xhigh, lifecycle integration:** reconcile durable state on startup, dispose timers, sockets, listeners, database handles, and worker subscriptions on reload, and make repeated initialization safe. Hosting must be always-on for reliable scheduling; the plugin must report when BB or the configured host is unavailable. This is a prerequisite, not a new hosting migration project. A Mac-local browser or dbt Studio dependency remains a visible prerequisite for data-platform work.
+Review each engine task separately with Sol low before integration: protocol and acceptance compliance first, then reuse, simplicity, and maintainability. A final Sol low dispatch review checks provider preference, alternation, retry/failover, no-op stopping, and the meaning of “substantial” against the existing dispatcher and repository protocols. Do not alter provider or integration policy merely to simplify implementation.
+
+**Focused tests:** duplicate Run now calls with one idempotency key; cron replay after restart; spacing at the configured boundary; paused dispatch; unavailable host; stale checkout; cancellation followed by worker termination; interrupted worker requiring reconciliation; retry after a failed attempt; and ownership uniqueness under concurrent starts. Use deterministic boundary tests and one integration smoke path; do not build a broad scheduler matrix or duplicate parser fixtures.
+
+### Phase 4: Controlled cutover and acceptance
+
+**Dependency:** Phase 3 passes focused tests and one integrated smoke run.
+
+Use one dispatcher-owner cutover, while enabling repositories one at a time behind it. The order is selected after comparing protocol fixtures, not assumed from repository name. The sequence is:
+
+1. Put plugin dispatch in cutover-disabled mode for every repository and verify the always-on BB host, persistent plugin storage, restart behavior, and operator access.
+2. Disable every legacy dispatcher trigger across all managed repositories in one controlled maintenance window.
+3. Snapshot and reconcile shell state, live workers, queue claims, locks, and repository revisions for every repository.
+4. Drain or explicitly adopt each live run into plugin ownership, then confirm no legacy process can dispatch anywhere.
+5. Enable the plugin scheduler globally with all repository dispatch flags still disabled.
+6. Enable one repository and verify one complete dispatch plus one recovery or reconciliation cycle.
+7. Confirm its canonical dashboard, queue, questions, immutable repository run records, and merge reporting remain correct.
+8. Enable remaining repositories individually. Never restore a legacy trigger for one repository while the plugin scheduler can dispatch that repository.
+
+Keep rollback explicit and global at the ownership boundary: disable plugin dispatch for all repositories, reconcile every active ownership record, stop the plugin scheduler, confirm it cannot dispatch, then restore selected legacy triggers. Never run both dispatcher owners concurrently, even for different repositories. Rollback must not delete plugin history, repository records, or user-authored queue entries.
+
+### Phase 5: Legacy removal after stable operation
+
+**Dependency:** repository-by-repository rollout acceptance, not merely a successful build.
+
+Remove obsolete dispatcher scheduling and dead integration paths only after stable operation is documented. Retain migration-relevant references to the former shell configuration, defaults, and rollback procedure. Do not remove `plans/factory/` protocol files, canonical dashboards, merge-state policy, or immutable run records. Verify that `dispatch.sh`, `redeploy.sh`, and `merge-state.sh` are no longer active owners before deleting or archiving any replacement path.
+
+## 5. Rollout acceptance, separate from implementation
+
+A rollout is accepted only when all of these are demonstrated for each repository:
+
+- The plugin runs on an always-on BB host and reports the connected checkout and any host-local browser or dbt prerequisite accurately.
+- Exactly one dispatch owner exists. A restart, reconnect, cron replay, double-click, or recovery attempt cannot create a duplicate run.
+- The configured spacing and night window behave as displayed, while the rolling-hour safety rule remains enforced.
+- Initial queue authorization is human-only. Dependencies and blocking questions gate dispatch, and authorization provenance is visible.
+- Queue and Questions views reflect repository files and BB pending interactions, not a plugin task or question database.
+- Preview performs no dispatch, write, branch, or schedule mutation. Run now creates one durable intent. Pause, Stop, Approve, Answer, Retry, and Integration follow their defined semantics.
+- A stale repository write fails safely. A cancellation, host outage, provider limit, and interrupted worker leave enough durable state for reconciliation.
+- Both repository protocols, their custom checks, canonical dashboards, existing integration policies, and `factory` versus `main` merge reporting remain unchanged.
+- A successful run and a recovery run produce concise plugin operational history linked to BB and repository identifiers, while the repository's own current and immutable run records remain authoritative.
+
+The final smoke check should use a controlled checkout and test BB threads, exercise one normal path and one recovery path, and inspect user-visible panels. Do not add broad coverage targets or redundant test matrices. The priority is enforcing ownership, authorization, safe writes, repository-specific rules, and recoverability before enabling unattended dispatch.

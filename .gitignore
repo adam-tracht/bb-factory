@@ -1,0 +1,33 @@
+# Dependencies and package-manager state
+node_modules/
+.pnpm-store/
+.npm/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+.secrets/
+*.pem
+*.key
+
+# Operating-system and editor files
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs and test coverage
+*.log
+logs/
+coverage/
+.nyc_output/
+
+# Caches and build output
+.cache/
+.turbo/
+.next/
+build/
+out/
+dist/
