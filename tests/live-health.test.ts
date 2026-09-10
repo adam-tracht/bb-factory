@@ -22,6 +22,20 @@ function sdkFixture() {
         { id: "codex", available: true },
         { id: "claude-code", available: false },
       ]),
+      models: vi.fn(({ providerId }: { providerId: string }) => Promise.resolve(
+        providerId === "codex"
+          ? {
+              modelLoadError: null,
+              providers: [{ id: "codex", available: true }],
+              models: [
+                { routeProviderId: "codex", model: "gpt-5", defaultReasoningEffort: "medium", isDefault: true },
+              ],
+              selectedOnlyModels: [
+                { routeProviderId: "codex", model: "gpt-5", defaultReasoningEffort: "medium", isDefault: true },
+              ],
+            }
+          : { modelLoadError: null, providers: [], models: [], selectedOnlyModels: [] },
+      )),
     },
     threads: {
       count: vi.fn(({ status }: { status: "starting" | "active" }) => Promise.resolve(
@@ -47,19 +61,6 @@ function sdkFixture() {
       }),
     },
     system: {
-      executionOptions: vi.fn().mockResolvedValue({
-        modelLoadError: null,
-        providers: [
-          { id: "codex", available: true },
-          { id: "claude-code", available: false },
-        ],
-        models: [
-          { routeProviderId: "codex", model: "gpt-5", defaultReasoningEffort: "medium", isDefault: true },
-        ],
-        selectedOnlyModels: [
-          { routeProviderId: "codex", model: "gpt-5", defaultReasoningEffort: "medium", isDefault: true },
-        ],
-      }),
       providerStates: vi.fn().mockResolvedValue({
         providers: [
           { providerId: "codex", status: "ready", statusMessage: null },

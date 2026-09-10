@@ -12,7 +12,8 @@ import { errorMessage } from "../errors.js";
 import { normalizeAbsolutePath } from "../protocol/files.js";
 
 type BbSdk = BbPluginApi["sdk"];
-type ExecutionOptions = Awaited<ReturnType<BbSdk["system"]["executionOptions"]>>;
+type ProviderModelsResult = Awaited<ReturnType<BbSdk["providers"]["models"]>>;
+type ExecutionOptions = ProviderModelsResult;
 type ProviderInfo = Awaited<ReturnType<BbSdk["providers"]["list"]>>[number];
 type ProviderModel = ExecutionOptions["models"][number];
 type ProviderState = Awaited<ReturnType<BbSdk["system"]["providerStates"]>>["providers"][number];
@@ -58,8 +59,9 @@ export async function validateConfiguredEnvironment(
 }
 
 function currentModel(executionOptions: ExecutionOptions, providerId: string): ProviderModel | null {
-  const selected = executionOptions.selectedOnlyModels.filter((model) => model.routeProviderId === providerId);
-  const catalog = executionOptions.models.filter((model) => model.routeProviderId === providerId);
+  const scoped = (model: ProviderModel) => model.routeProviderId === undefined || model.routeProviderId === providerId;
+  const selected = executionOptions.selectedOnlyModels.filter(scoped);
+  const catalog = executionOptions.models.filter(scoped);
   return selected.find((model) => model.isDefault)
     ?? (selected.length === 1 ? selected[0] : null)
     ?? catalog.find((model) => model.isDefault)
@@ -93,17 +95,19 @@ function usageError(usage: ProviderUsage | undefined): string | null {
 function providerStatus(
   providerId: string,
   provider: ProviderInfo | undefined,
-  executionOptions: ExecutionOptions,
+  catalog: ProviderModelsResult | null,
   providerState: ProviderState | undefined,
   usage: ProviderUsage | undefined,
   activeThreadCounts: ReadonlyMap<string, number>,
 ): ProviderStatus {
   const parsedProviderId = providerIdSchema.parse(providerId);
-  const model = currentModel(executionOptions, providerId);
+  const model = catalog ? currentModel(catalog, providerId) : null;
   const reasoningLevel = reasoningLevelSchema.safeParse(model?.defaultReasoningEffort);
-  const modelLoadError = executionOptions.modelLoadError?.providerId === providerId
-    ? `Could not load the configured model (${executionOptions.modelLoadError.code}).`
-    : null;
+  const modelLoadError = catalog === null
+    ? "Could not load the provider model catalog."
+    : catalog.modelLoadError !== null
+      ? `Could not load the configured model (${catalog.modelLoadError.code}).`
+      : null;
   const stateError = providerState?.statusMessage
     ?? (providerState && providerState.status !== "ready" ? `Provider state is ${providerState.status}.` : null);
   const lastError = modelLoadError ?? stateError ?? usageError(usage);
@@ -230,9 +234,8 @@ export function createLiveHealthReader(options: LiveHealthOptions): FactoryHealt
       const configuration = entry.configuration;
 
       try {
-        const [providers, executionOptions, providerStates, usageLimits, activeThreadCounts] = await Promise.all([
+        const [providers, providerStates, usageLimits, activeThreadCounts] = await Promise.all([
           options.sdk.providers.list({ hostId: configuration.connectedHostId }),
-          options.sdk.system.executionOptions({ hostId: configuration.connectedHostId }),
           options.sdk.system.providerStates({ hostId: configuration.connectedHostId }),
           options.sdk.system.usageLimits({ hostId: configuration.connectedHostId }),
           readActiveThreadCounts(options.sdk, configuration.connectedHostId),
@@ -240,15 +243,23 @@ export function createLiveHealthReader(options: LiveHealthOptions): FactoryHealt
         const states = new Map(providerStates.providers.map((state) => [state.providerId, state]));
         const providerIds = new Set([
           ...providers.map((provider) => provider.id),
-          ...executionOptions.providers.map((provider) => provider.id),
           ...providerStates.providers.map((state) => state.providerId),
           ...Object.keys(usageLimits),
-          ...(executionOptions.modelLoadError ? [executionOptions.modelLoadError.providerId] : []),
         ]);
+        const modelCatalogs = await Promise.all(
+          [...providerIds].map(async (providerId) => [
+            providerId,
+            await options.sdk.providers.models({
+              hostId: configuration.connectedHostId,
+              providerId,
+            }).catch(() => null),
+          ] as const),
+        );
+        const catalogByProvider = new Map(modelCatalogs);
         return [...providerIds].map((providerId) => providerStatus(
           providerId,
           providers.find((provider) => provider.id === providerId),
-          executionOptions,
+          catalogByProvider.get(providerId) ?? null,
           states.get(providerId),
           usageLimits[providerId],
           activeThreadCounts,

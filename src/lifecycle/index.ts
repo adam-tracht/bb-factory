@@ -33,7 +33,14 @@ export function registerFactoryLifecycle(
           bb.log.error(`periodic reconciliation failed: ${errorMessage(error)}`);
         });
       }, RECONCILE_INTERVAL_MS);
-      signal.addEventListener("abort", () => clearInterval(timer));
+      // start() must stay pending until the abort signal; resolving early
+      // marks the service stopped and the interval may be torn down.
+      await new Promise<void>((resolve) => {
+        signal.addEventListener("abort", () => {
+          clearInterval(timer);
+          resolve();
+        });
+      });
     },
   });
 }
