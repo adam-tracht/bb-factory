@@ -9,7 +9,10 @@ The current approved implementation assignment is Luna Extra High. The current a
 - Phase 0 is complete and frozen at contract `v1.2`. The approved interaction amendment and settings registry amendment passed compliance review `thr_vme9e859th` and code-quality review `thr_5ei85kmian`.
 - Phase 1 operational storage is reviewed complete: compliance `thr_xb9qqm6u9f`, code quality `thr_q2mvicbwdb`, and focused evidence of 5 storage tests passing.
 - Phase 1 read-only UI is reviewed complete: compliance `thr_939nn9nneh`, code quality `thr_t7zf4u47hr`, and focused evidence of 8 UI tests passing.
-- Overall Phase 1 remains open awaiting the protocol parser, BB interaction reader, read integration, and product acceptance. Phases 2 through 5 remain open.
+- Phase 1 protocol adapter passed compliance `thr_8cqgbbbyrz` and quality `thr_ubqkmmuven`; the BB interaction reader passed compliance `thr_c8zj6b48mk` and quality `thr_xu24zbyexn`.
+- Phase 1 read integration passed compliance `thr_svi2xp58ik` and quality `thr_u33f6jdjdi`; final product review `thr_pu2xm632jc` passed against checkpoint `414f40a`.
+- Phase 1 local read acceptance is complete. [docs/phase-1-acceptance.md](phase-1-acceptance.md) records both repository reads, reload, all five UI surfaces, repository switching, settings, Done status, capability wording, canonical links, and the enabled, paused, no-service, no-schedule state.
+- The separate Phase 1 rollout gate remains open for the pending always-on hosting decision, the remote Connect owner-session mismatch, and a live `run_detail` path. Both run lists were empty during local acceptance, so run detail was not exercised live; unit coverage passed. Phases 2 through 5 remain open.
 - The hosting gate in [docs/hosting-decision.md](hosting-decision.md) remains pending. No always-on non-personal host is verified, dispatch remains disabled, and no host is selected or provisioned. Data-platform work requiring Mac-local Aside/browser or dbt Studio remains gated.
 
 ## Phase 0 interaction amendment, v1.1, approved and frozen

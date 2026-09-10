@@ -1,6 +1,6 @@
 # bb-factory instructions
 
-This repository began as **planned, not implemented**. Phase 0 bootstrap is complete and frozen at contract `v1.1`; the reviewed Phase 1 storage and read-only UI components are complete, while overall Phase 1 remains open pending the protocol parser, BB interaction reader, read integration, and product acceptance. Phases 2 through 5 remain open. Read [PLAN.md](PLAN.md) before implementation. Keep the build efficient and avoid speculative scaffolding.
+This repository began as **planned, not implemented**. Phase 0 bootstrap is complete and frozen at contract `v1.2`; the reviewed Phase 1 protocol, storage, interaction, read integration, and native UI surfaces have passed local read acceptance. The separate Phase 1 rollout gate remains open for an always-on host, the remote Connect owner-session route, and a live `run_detail` path when a run exists. Phases 2 through 5 remain open. Read [PLAN.md](PLAN.md), [docs/phase-1-acceptance.md](docs/phase-1-acceptance.md), and [docs/action-implementation-gates.md](docs/action-implementation-gates.md) before implementation. Keep the build efficient and avoid speculative scaffolding.
 
 ## Factory protocol
 
@@ -25,7 +25,7 @@ Preserve each repository's custom checks, dashboards, queue authorization, and i
 
 ## Plugin scope
 
-The planned plugin provides purpose-built overview, queue, questions, runs, and settings views over the existing factory protocol. It is a presentation and control surface, not a replacement task tracker. The current shell sources under `~/.bb/factory/` remain active until an implemented migration supersedes them.
+The reviewed Phase 1 plugin provides purpose-built read-only overview, queue, questions, runs, and settings views over the existing factory protocol. It is a presentation and control surface, not a replacement task tracker. The current shell sources under `~/.bb/factory/` remain active until an implemented migration supersedes them.
 
 ## Delegation and models
 

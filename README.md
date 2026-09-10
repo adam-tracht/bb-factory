@@ -1,8 +1,8 @@
 # bb-factory
 
-**Status: Phase 0 bootstrap complete and frozen; downstream phases remain unimplemented.** See the [implementation plan](PLAN.md) and the [Phase 0 contract](docs/phase-0-contract.md).
+**Status: Phase 0 bootstrap complete and frozen at contract `v1.2`; Phase 1 local read acceptance is complete, with rollout gates still open.** See the [implementation plan](PLAN.md), [Phase 1 acceptance](docs/phase-1-acceptance.md), and [Phase 0 contract](docs/phase-0-contract.md).
 
-`bb-factory` is intended to replace the current nightly factory dispatcher with a purpose-built BB plugin. The planned UI has overview, queue, questions, runs, and settings views. It must preserve the operating contracts that already work in the repository factory repos.
+`bb-factory` is intended to replace the current nightly factory dispatcher with a purpose-built BB plugin. The reviewed Phase 1 read-only UI provides overview, queue, questions, runs, and settings views. It must preserve the operating contracts that already work in the repository factory repos.
 
 Until migration is complete, the active system is the shell tooling under `~/.bb/factory/`:
 
@@ -71,4 +71,4 @@ A human adds acceptance criteria and validation commands to a queue entry, marks
 
 ## Development status
 
-The documentation-only baseline has been augmented with the Phase 0 package, typed contracts, settings boundary, RPC/error/idempotency/revision/invalidation contracts, and startup/disposal skeleton. No scheduler, worker, live RPC handler, repository write, cutover, or legacy dispatcher change is included. Use `pnpm` for local development; current BB Git installs use `npm`. Revisit whether `dist/` should remain ignored when npm distribution is designed.
+The documentation-only baseline has been augmented with the Phase 0 package, typed contracts, settings boundary, RPC/error/idempotency/revision/invalidation contracts, startup/disposal skeleton, and reviewed Phase 1 read-only protocol, storage, health, interaction, RPC, and native UI surfaces. Local acceptance is recorded in [docs/phase-1-acceptance.md](docs/phase-1-acceptance.md); the remote Connect and always-on hosting gates remain open. No scheduler, worker, repository write, cutover, or legacy dispatcher change is included. Future P2 action constraints are in [docs/action-implementation-gates.md](docs/action-implementation-gates.md). Use `pnpm` for local development; current BB Git installs use `npm`. Revisit whether `dist/` should remain ignored when npm distribution is designed.
