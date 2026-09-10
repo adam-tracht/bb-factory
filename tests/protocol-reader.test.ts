@@ -112,7 +112,13 @@ answer: yes
 | TASK-blocked | Needs a question | blocked | Answer Q1 | [question](plans/factory/questions.md#q1) |
 `,
       "plans/factory/runs/20260910T053015Z-run-a.md": "# Immutable run record\nstate: blocked\nOriginal run content.\n",
-    });
+    }, {
+      ok: false,
+      error: {
+        code: "handler_error",
+        message: `HTTP 404: Path does not exist: ${checkoutPath}/plans/factory/lock`,
+      },
+    }, "plans/factory/lock");
     const reader = new RepositoryProtocolReader(files, {
       mergeReader: staticMergeReader(mergeProjection),
       now: () => new Date("2026-09-10T06:00:00Z"),
@@ -170,6 +176,9 @@ answer: yes
       content: "# Immutable run record\nstate: blocked\nOriginal run content.\n",
     });
     expect(projection.lock).toBeNull();
+    expect(files.readCalls).toContainEqual(
+      expect.objectContaining({ path: `${checkoutPath}/plans/factory/lock` }),
+    );
 
     expect(files.readCalls.every((call) => call.hostId === "host-mac" && call.rootPath === checkoutPath)).toBe(true);
     expect(files.listCalls).toEqual([
@@ -198,6 +207,38 @@ answer: yes
       code: "host-unavailable",
       repositoryKey: "monorepo",
       path: "plans/factory/foreman.md",
+    });
+
+    const permissionFiles = makeFiles({}, {
+      ok: false,
+      error: {
+        code: "handler_error",
+        message: `HTTP 404: Permission denied: ${checkoutPath}/plans/factory/lock`,
+      },
+    }, "plans/factory/lock");
+    await expect(readTextFile(permissionFiles, {
+      hostId: "host-mac",
+      rootPath: checkoutPath,
+      relativePath: "plans/factory/lock",
+    })).rejects.toMatchObject({
+      code: "invalid-file-response",
+      path: "plans/factory/lock",
+    });
+
+    const permissionPathNotFoundFiles = makeFiles({}, {
+      ok: false,
+      error: {
+        code: "permission_denied",
+        message: "path_not_found",
+      },
+    }, "plans/factory/lock");
+    await expect(readTextFile(permissionPathNotFoundFiles, {
+      hostId: "host-mac",
+      rootPath: checkoutPath,
+      relativePath: "plans/factory/lock",
+    })).rejects.toMatchObject({
+      code: "invalid-file-response",
+      path: "plans/factory/lock",
     });
   });
 
@@ -240,15 +281,17 @@ class MemoryProtocolFiles implements ProtocolFiles {
 
   constructor(
     private readonly source: Readonly<Record<string, string>>,
-    private readonly readFailure?: string,
+    private readonly readFailure?: unknown,
+    private readonly readFailurePath?: string,
   ) {}
 
   async read(args: ProtocolFileReadArgs) {
     this.readCalls.push(args);
-    if (this.readFailure) {
-      throw new Error(this.readFailure);
-    }
     const relativePath = posix.relative(args.rootPath ?? checkoutPath, args.path);
+    if (this.readFailure !== undefined &&
+      (this.readFailurePath === undefined || relativePath === this.readFailurePath)) {
+      throw typeof this.readFailure === "string" ? new Error(this.readFailure) : this.readFailure;
+    }
     const content = this.source[relativePath];
     if (content === undefined) {
       throw new Error("ENOENT: no such file or directory");
@@ -276,6 +319,10 @@ class MemoryProtocolFiles implements ProtocolFiles {
   }
 }
 
-function makeFiles(source: Readonly<Record<string, string>>, readFailure?: string): MemoryProtocolFiles {
-  return new MemoryProtocolFiles(source, readFailure);
+function makeFiles(
+  source: Readonly<Record<string, string>>,
+  readFailure?: unknown,
+  readFailurePath?: string,
+): MemoryProtocolFiles {
+  return new MemoryProtocolFiles(source, readFailure, readFailurePath);
 }

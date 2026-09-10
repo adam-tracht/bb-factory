@@ -149,9 +149,23 @@ async function countActiveRuns(
   return count;
 }
 
+function omitUndefinedObjectFields(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(omitUndefinedObjectFields);
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([, child]) => child !== undefined)
+        .map(([key, child]) => [key, omitUndefinedObjectFields(child)]),
+    );
+  }
+  return value;
+}
+
 function settingsProjection(settings: FactorySettings, activeRunCount: number): SettingsProjection {
   return {
-    settings,
+    settings: omitUndefinedObjectFields(settings) as FactorySettings,
     validation: { valid: true, fieldErrors: {} },
     dispatch: {
       mode: settings.dispatchMode,

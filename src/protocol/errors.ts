@@ -31,6 +31,26 @@ export class ProtocolError extends Error {
   }
 }
 
+interface RpcFailure {
+  readonly code: string;
+  readonly message: string;
+}
+
+function rpcFailure(error: unknown): RpcFailure | null {
+  if (typeof error !== "object" || error === null) {
+    return null;
+  }
+  const envelope = error as { readonly ok?: unknown; readonly error?: unknown };
+  if (envelope.ok !== false || typeof envelope.error !== "object" || envelope.error === null) {
+    return null;
+  }
+  const detail = envelope.error as { readonly code?: unknown; readonly message?: unknown };
+  if (typeof detail.code !== "string" || typeof detail.message !== "string") {
+    return null;
+  }
+  return { code: detail.code, message: detail.message };
+}
+
 export function asProtocolError(
   error: unknown,
   context: { readonly path?: string; readonly repositoryKey?: string } = {},
@@ -39,10 +59,15 @@ export function asProtocolError(
     return error;
   }
 
-  const message = error instanceof Error ? error.message : String(error);
+  const rpcError = rpcFailure(error);
+  const message = rpcError?.message ?? (error instanceof Error ? error.message : String(error));
   const normalized = message.toLowerCase();
   let code: ProtocolErrorCode = "invalid-file-response";
-  if (
+  if (rpcError) {
+    if (rpcError.code === "handler_error" && /^http\s+404\s*:\s*path does not exist:\s*\S.*$/iu.test(message)) {
+      code = "file-not-found";
+    }
+  } else if (
     normalized.includes("offline") ||
     normalized.includes("disconnected") ||
     normalized.includes("unavailable") ||
