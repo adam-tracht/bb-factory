@@ -1,8 +1,26 @@
 import { z } from "zod";
 import type { PluginSettingDescriptors } from "@get-bb/plugin-sdk";
+import { repositoryRegistrySchema } from "./contracts.js";
 
 const repositoryKey = z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/);
 const absolutePath = z.string().regex(/^(?:\/|[A-Za-z]:[\\/])/);
+
+export const repositoryRegistrySettingSchema = z.string().superRefine((value, context) => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    context.addIssue({ code: "custom", message: "must be valid repository registry JSON" });
+    return;
+  }
+  const result = repositoryRegistrySchema.safeParse(parsed);
+  if (!result.success) {
+    context.addIssue({
+      code: "custom",
+      message: `invalid repository registry: ${result.error.issues[0]?.message ?? "schema mismatch"}`,
+    });
+  }
+});
 
 export const factorySettingDescriptors = {
   repositoryKey: {
@@ -27,6 +45,23 @@ export const factorySettingDescriptors = {
     label: "Checkout path",
     description: "Factory worktree path on the connected host.",
     experimental_schema: absolutePath,
+  },
+  projectId: {
+    type: "string",
+    label: "BB project",
+    description: "Required BB project scope for this repository's threads and interactions.",
+  },
+  environmentId: {
+    type: "string",
+    label: "BB environment",
+    description: "Required BB environment scope for this repository's threads and interactions.",
+  },
+  repositoryRegistry: {
+    type: "string",
+    label: "Repository registry",
+    description: "Validated JSON registry of configured repositories. Use an empty registry to keep the factory disabled.",
+    experimental_multiline: true,
+    experimental_schema: repositoryRegistrySettingSchema,
   },
   scheduleCron: {
     type: "string",

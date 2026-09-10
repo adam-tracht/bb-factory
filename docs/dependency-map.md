@@ -6,7 +6,7 @@ The current approved implementation assignment is Luna Extra High. The current a
 
 ## Current checkpoint
 
-- Phase 0 is complete and frozen at contract `v1.1`. The approved interaction amendment passed compliance review `thr_vme9e859th` and code-quality review `thr_5ei85kmian`.
+- Phase 0 is complete and frozen at contract `v1.2`. The approved interaction amendment and settings registry amendment passed compliance review `thr_vme9e859th` and code-quality review `thr_5ei85kmian`.
 - Phase 1 operational storage is reviewed complete: compliance `thr_xb9qqm6u9f`, code quality `thr_q2mvicbwdb`, and focused evidence of 5 storage tests passing.
 - Phase 1 read-only UI is reviewed complete: compliance `thr_939nn9nneh`, code quality `thr_t7zf4u47hr`, and focused evidence of 8 UI tests passing.
 - Overall Phase 1 remains open awaiting the protocol parser, BB interaction reader, read integration, and product acceptance. Phases 2 through 5 remain open.
@@ -34,9 +34,34 @@ Affected owners adapt as follows:
 
 Provider-custom `request_answer` values remain intentionally outside this bounded public schema because the SDK defines them as arbitrary JSON. Supporting one later requires a provider-specific contract review, not a raw `data` or `value` passthrough. Root owns that decision if a later provider requires it.
 
+## Settings registry amendment, v1.2, approved and frozen
+
+The v1.2 settings registry is approved and frozen for P1 integration after compliance review `thr_vme9e859th` and code-quality review `thr_5ei85kmian`. It is an additive amendment to the v1.1 boundary; the prior v1.1 interaction provenance and fingerprints remain recorded above.
+
+Current v1.2 source fingerprints, SHA-256, verified 2026-09-10:
+
+| Path | SHA-256 |
+| --- | --- |
+| `src/contracts.ts` | `1c9a013f2addfb2323151b3b25ce697d8c6acf11628f9f26fd6ec7e6ab2d2114` |
+| `src/settings.ts` | `1953623c8df0d04b597291661e70b3b7c330b8503dc4765e8d253099f5a016bb` |
+| `src/rpc.ts` | `f05fb373f81ddafc9b7ce014a54ba41b23e889f6c390a8c3d9f0ab09a9124e25` |
+| `src/ports.ts` | `690676ae621e8428a0d5cba608dc91399bcce1fc3e058d67436a33493d2e6923` |
+
+The SDK settings descriptor surface accepts only primitive stored values. `src/settings.ts` therefore defines `repositoryRegistry` as a multiline string with a bounded JSON Standard Schema validator. `src/contracts.ts` parses the same value into these exact typed shapes:
+
+- `RepositoryRegistryEntry`: `{ configuration: RepositoryConfiguration, projectId, environmentId }`, with all three associated BB/project/environment values required and the existing host/root/checkout validation retained inside `configuration`.
+- `RepositoryRegistry`: `{ repositories, defaultRepositoryKey }`, with unique stable repository keys. A nonempty registry must select one of its keys; an empty registry selects `null`.
+- `RepositoryRegistryResolution`: either `configured` with all entries and `selectedRepositoryKey`, or `disabled` with an empty list and an explicit `not-configured`, `legacy-incomplete`, or `explicitly-empty` reason.
+
+Selection is compatible with the current UI: `FactorySettings.repositoryKey` remains the selected-key override. The resolver uses that override when present, otherwise the registry default. A selected override not present in the registry is rejected. The registry is typed settings-derived data, not a second discovery system; P1 can adapt each `configuration` to the existing `ProtocolRepositoryRegistry` and use each entry's project/environment pair for the existing BB scope lookup.
+
+Migration is deterministic and non-destructive. The registry descriptor has no stored default, so absent `repositoryRegistry` leaves legacy settings eligible for migration. A complete legacy single-repository setting, including the newly required project and environment values, becomes one registry entry with `factory` and `origin/main`. Legacy values missing any required field resolve to disabled `legacy-incomplete`, without synthesized paths or IDs. An explicitly supplied empty registry takes precedence over legacy fields and resolves to disabled `explicitly-empty`. No legacy fields resolve to disabled `not-configured`. The default remains paused, provider preference remains unset, provider pins are unchanged, and no dispatch or live write is enabled.
+
+The focused contract evidence is 18 passing tests, typecheck, and lint. Tests cover two repositories, duplicate keys, invalid default and selected keys, strict-field rejection, effective descriptor defaults merged with legacy settings, explicit-empty disable precedence, complete and incomplete legacy migration, and disabled defaults. The frozen v1.2 amendment changes only `src/contracts.ts`, `src/settings.ts`, `tests/contracts.test.ts`, and the two contract documents; `src/ports.ts`, `src/rpc.ts`, reader/UI files, runtime workers, and package files remain untouched.
+
 | Task | One worker | Owned paths | Consumes | Predecessor review | Integration owner |
 | --- | --- | --- | --- | --- | --- |
-| P0 contract/bootstrap | Luna Extra High, current phase owner | `package.json`, `pnpm-lock.yaml`, `tsconfig.json`, `eslint.config.mjs`, `vitest.config.ts`, `server.ts`, `src/contracts.ts`, `src/settings.ts`, `src/rpc.ts`, `src/ports.ts`, `tests/contracts.test.ts`, `docs/phase-0-contract.md`, this map | Current `@get-bb/plugin-sdk` declarations, shell migration inputs, PLAN boundaries | None; v1 compliance `thr_xrnpijf4nt`, v1 quality `thr_84bhqsym63`, v1.1 compliance `thr_vme9e859th`, and v1.1 quality `thr_5ei85kmian` passed | Root thread |
+| P0 contract/bootstrap | Luna Extra High, current phase owner | `package.json`, `pnpm-lock.yaml`, `tsconfig.json`, `eslint.config.mjs`, `vitest.config.ts`, `server.ts`, `src/contracts.ts`, `src/settings.ts`, `src/rpc.ts`, `src/ports.ts`, `tests/contracts.test.ts`, `docs/phase-0-contract.md`, this map | Current `@get-bb/plugin-sdk` declarations, shell migration inputs, PLAN boundaries | None; v1 compliance `thr_xrnpijf4nt`, v1 quality `thr_84bhqsym63`, v1.1 compliance `thr_vme9e859th`, v1.1 quality `thr_5ei85kmian`, v1.2 compliance `thr_vme9e859th`, and v1.2 quality `thr_5ei85kmian` passed | Root thread |
 | P1 protocol adapter | Luna Extra High | `src/protocol/`, protocol-focused tests | Implements reviewed `ProtocolReader.loadSnapshot`, plus `RepositoryConfiguration`, `ProtocolSnapshot`, `QueueEntry`, `Question`, `DashboardSummary`, `ForemanTemplateSource`, `RepositoryRevision` | P0 quality review | Named Phase 1 protocol task owner |
 | P1 operational state | Luna Extra High | `src/storage/`, storage-focused tests | Implements reviewed `OperationalStateReader.listRuns` and `getRun`, including required BB project/environment linkage, plus `RunIntent`, `DispatchAttempt`, `OwnershipLease`, `RepositoryRevision`, idempotency result shape | P0 quality review | Named Phase 1 state task owner |
 | P1 live health adapter | Luna Extra High, Phase 1 read integration owner | `src/services/live-health.ts`, health-focused tests | Implements reviewed `FactoryHealthReader.listProviderStatus` and `getHostPreflight` from live BB and host state | P0 quality review | P1 read integration and UI wiring owner |

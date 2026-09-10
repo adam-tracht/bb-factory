@@ -1,6 +1,6 @@
 # Phase 0 contract and bootstrap
 
-Status: Phase 0 bootstrap complete and frozen at contract `v1.1`. Phase 1 storage and read-only UI components are reviewed complete; overall Phase 1 remains open awaiting the protocol parser, BB interaction reader, read integration, and product acceptance. Phases 2 through 5 remain open.
+Status: Phase 0 bootstrap complete and frozen at contract `v1.2`. Phase 1 storage and read-only UI components are reviewed complete; overall Phase 1 remains open awaiting the protocol parser, BB interaction reader, read integration, and product acceptance. Phases 2 through 5 remain open.
 
 ## Frozen handoff
 
@@ -10,7 +10,7 @@ Implementation thread `thr_za7y2tw5vq` passed separate Sol Medium compliance rev
 
 The approved v1.1 interaction amendment passed compliance review `thr_vme9e859th` and code-quality review `thr_5ei85kmian`. The amended schemas are now frozen for Phase 1 consumers.
 
-Frozen v1.1 source fingerprints, SHA-256, verified 2026-09-10:
+Prior frozen v1.1 source fingerprints, SHA-256, verified 2026-09-10:
 
 | Path | SHA-256 |
 | --- | --- |
@@ -20,6 +20,17 @@ Frozen v1.1 source fingerprints, SHA-256, verified 2026-09-10:
 | `src/ports.ts` | `690676ae621e8428a0d5cba608dc91399bcce1fc3e058d67436a33493d2e6923` |
 
 For provenance, the pre-amendment v1 `src/contracts.ts` fingerprint was `e8be6828f31797c7bf85fa9e39d9875e21b1e7540561acda8f593ab56e7b3e80`.
+
+The approved v1.2 settings registry amendment passed compliance review `thr_vme9e859th` and code-quality review `thr_5ei85kmian`. It is now frozen for P1 integration. The v1.1 interaction provenance and fingerprints remain recorded above.
+
+Frozen v1.2 source fingerprints, SHA-256, verified 2026-09-10:
+
+| Path | SHA-256 |
+| --- | --- |
+| `src/contracts.ts` | `1c9a013f2addfb2323151b3b25ce697d8c6acf11628f9f26fd6ec7e6ab2d2114` |
+| `src/settings.ts` | `1953623c8df0d04b597291661e70b3b7c330b8503dc4765e8d253099f5a016bb` |
+| `src/rpc.ts` | `f05fb373f81ddafc9b7ce014a54ba41b23e889f6c390a8c3d9f0ab09a9124e25` |
+| `src/ports.ts` | `690676ae621e8428a0d5cba608dc91399bcce1fc3e058d67436a33493d2e6923` |
 
 No queue, lock, current report, question, run record, or protocol approval record was created in this source repository. Phase 1 storage passed compliance review `thr_xb9qqm6u9f` and code-quality review `thr_q2mvicbwdb`; Phase 1 read-only UI passed compliance review `thr_939nn9nneh` and code-quality review `thr_t7zf4u47hr`. The protocol parser, BB interaction reader, read integration, and product acceptance remain open before Phase 1 composition is accepted.
 
@@ -70,6 +81,25 @@ Required downstream adaptation for v1.1:
 - The P2 action adapter validates each answer against the pending metadata, including question ID, option value, `allowFreeText`, and `multiSelect`, then maps the typed resolution to the SDK interaction resolver. It does not fall back to an opaque value or to opening the thread.
 
 No change was made to `src/ports.ts` or `src/rpc.ts`; their existing typed projections and action request flow consume the frozen schemas. The v1.1 amendment is limited to `src/contracts.ts`, `tests/contracts.test.ts`, and these contract documents. Phase 1 consumers may now adapt against this frozen boundary.
+
+## Settings registry amendment, v1.2, approved and frozen
+
+The v1.2 settings amendment is approved and frozen for P1 integration after compliance review `thr_vme9e859th` and code-quality review `thr_5ei85kmian`. It preserves the frozen v1.1 interaction, action, guard, and RPC contracts. The v1.2 fingerprints above are now current.
+
+The installed `@get-bb/plugin-sdk@0.4.47` settings descriptors store only strings, numbers, booleans, and select values. The registry therefore uses one multiline string setting, `repositoryRegistry`, whose synchronous Standard Schema validator parses bounded JSON and rejects unknown fields. It is not a raw JSON escape hatch, secret, path discovery mechanism, or live configuration write.
+
+The approved interfaces are:
+
+- `RepositoryRegistryEntry` contains one existing `RepositoryConfiguration`, plus required `projectId` and `environmentId`. Host, repository root, checkout path, branch, and main ref remain inside the existing configuration and are validated unchanged.
+- `RepositoryRegistry` contains `repositories` and `defaultRepositoryKey`. Keys are lowercase, stable, unique, and must identify an entry. An empty registry must use `defaultRepositoryKey: null`.
+- `FactorySettings.repositoryKey` remains the current UI selection override. When a registry is configured, it must identify one registry entry; resolution chooses this override, otherwise `defaultRepositoryKey`.
+- `RepositoryRegistryResolution` is the typed settings-derived seam. It returns `configured` with all entries and the selected key, or `disabled` with an empty list and one of `not-configured`, `legacy-incomplete`, or `explicitly-empty`.
+
+Compatibility is explicit. The registry descriptor has no stored default, so an absent `repositoryRegistry` value leaves legacy settings eligible for migration. A complete prior single-repository setting, now supplemented with required `projectId` and `environmentId`, migrates deterministically to one registry entry with `factory` and `origin/main`. A prior setting missing any repository, host, project, or environment value remains preserved but resolves to `disabled` with `legacy-incomplete`; no identifier or path is invented. An explicitly supplied empty registry takes precedence over legacy fields and resolves to `disabled` with `explicitly-empty`. No registry and no legacy fields resolve to `disabled` with `not-configured`. The default remains paused and provider preference remains unset.
+
+P1 integration should parse the typed settings, call `resolveRepositoryRegistry`, pass each entry's `configuration` to the protocol repository registry/sibling resolver, and use its project/environment pair for BB thread and interaction scope. It must not fall back to legacy discovery when the configured registry is present. The UI can continue sending its existing `repositoryKey` selection. This amendment does not enable dispatch or change provider pins.
+
+Focused evidence for the amendment: 18 contract tests passed, including two repositories, duplicate keys, invalid defaults and selection overrides, strict registry fields, effective descriptor defaults merged with legacy settings, explicit-empty disable precedence, complete and incomplete legacy migration, and paused disabled defaults. Typecheck and lint passed. Full-suite reader validation remains outside this amendment because the reader owner is adapting separately.
 
 ## Canonical foreman template rule
 

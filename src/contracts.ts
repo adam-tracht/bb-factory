@@ -52,6 +52,93 @@ export const repositoryConfigurationSchema = z
   .strict();
 export type RepositoryConfiguration = z.infer<typeof repositoryConfigurationSchema>;
 
+export const repositoryRegistryEntrySchema = z
+  .object({
+    configuration: repositoryConfigurationSchema,
+    projectId: nonEmptyString,
+    environmentId: nonEmptyString,
+  })
+  .strict();
+export type RepositoryRegistryEntry = z.infer<typeof repositoryRegistryEntrySchema>;
+
+export const repositoryRegistrySchema = z
+  .object({
+    repositories: z.array(repositoryRegistryEntrySchema),
+    defaultRepositoryKey: repositoryKeySchema.nullable(),
+  })
+  .strict()
+  .superRefine((registry, context) => {
+    const seen = new Map<string, number>();
+    for (const [index, entry] of registry.repositories.entries()) {
+      const key = entry.configuration.repositoryKey;
+      const previousIndex = seen.get(key);
+      if (previousIndex !== undefined) {
+        context.addIssue({
+          code: "custom",
+          path: ["repositories", index, "configuration", "repositoryKey"],
+          message: `repository key '${key}' duplicates entry ${previousIndex + 1}`,
+        });
+      } else {
+        seen.set(key, index);
+      }
+    }
+
+    if (registry.repositories.length === 0) {
+      if (registry.defaultRepositoryKey !== null) {
+        context.addIssue({
+          code: "custom",
+          path: ["defaultRepositoryKey"],
+          message: "an empty repository registry must not select a repository",
+        });
+      }
+    } else if (
+      registry.defaultRepositoryKey === null ||
+      !seen.has(registry.defaultRepositoryKey)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["defaultRepositoryKey"],
+        message: "defaultRepositoryKey must identify a configured repository",
+      });
+    }
+  });
+export type RepositoryRegistry = z.infer<typeof repositoryRegistrySchema>;
+
+export const repositoryRegistryResolutionSchema = z.discriminatedUnion("status", [
+  z
+    .object({
+      status: z.literal("configured"),
+      source: z.enum(["registry", "legacy"]),
+      repositories: z.array(repositoryRegistryEntrySchema).min(1),
+      selectedRepositoryKey: repositoryKeySchema,
+    })
+    .strict(),
+  z
+    .object({
+      status: z.literal("disabled"),
+      source: z.enum(["none", "legacy", "registry"]),
+      reason: z.enum(["not-configured", "legacy-incomplete", "explicitly-empty"]),
+      repositories: z.array(repositoryRegistryEntrySchema).length(0),
+      selectedRepositoryKey: z.null(),
+    })
+    .strict(),
+]);
+export type RepositoryRegistryResolution = z.infer<typeof repositoryRegistryResolutionSchema>;
+
+const repositoryRegistrySettingValueSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") {
+      return value;
+    }
+    try {
+      return JSON.parse(value) as unknown;
+    } catch {
+      return value;
+    }
+  },
+  repositoryRegistrySchema,
+);
+
 export const scheduleSettingsSchema = z
   .object({
     cron: nonEmptyString,
@@ -68,6 +155,9 @@ export const factorySettingsSchema = z
     repositoryRoot: absolutePath.optional(),
     connectedHostId: nonEmptyString.optional(),
     checkoutPath: absolutePath.optional(),
+    projectId: nonEmptyString.optional(),
+    environmentId: nonEmptyString.optional(),
+    repositoryRegistry: repositoryRegistrySettingValueSchema.optional(),
     scheduleCron: nonEmptyString.optional(),
     timeZone: nonEmptyString.default("server-local"),
     nightWindowEndHour: z.number().int().min(0).max(23).default(6),
@@ -77,8 +167,108 @@ export const factorySettingsSchema = z
     concurrencyLimit: z.number().int().positive().default(1),
     dispatchMode: z.enum(["enabled", "paused"]).default("paused"),
   })
-  .strict();
+  .strict()
+  .superRefine((settings, context) => {
+    if (!settings.repositoryRegistry || settings.repositoryRegistry.repositories.length === 0 || settings.repositoryKey === undefined) {
+      return;
+    }
+    if (!settings.repositoryRegistry.repositories.some((entry) => entry.configuration.repositoryKey === settings.repositoryKey)) {
+      context.addIssue({
+        code: "custom",
+        path: ["repositoryKey"],
+        message: "repositoryKey must identify a repository in repositoryRegistry",
+      });
+    }
+  });
 export type FactorySettings = z.infer<typeof factorySettingsSchema>;
+
+export function resolveRepositoryRegistry(settings: FactorySettings): RepositoryRegistryResolution {
+  const parsed = factorySettingsSchema.parse(settings);
+  if (parsed.repositoryRegistry) {
+    if (parsed.repositoryRegistry.repositories.length === 0) {
+      return repositoryRegistryResolutionSchema.parse({
+        status: "disabled",
+        source: "registry",
+        reason: "explicitly-empty",
+        repositories: [],
+        selectedRepositoryKey: null,
+      });
+    }
+    const selectedRepositoryKey = parsed.repositoryKey ?? parsed.repositoryRegistry.defaultRepositoryKey;
+    if (selectedRepositoryKey === null || selectedRepositoryKey === undefined) {
+      throw new Error("repositoryRegistry must provide a default repository when configured");
+    }
+    return repositoryRegistryResolutionSchema.parse({
+      status: "configured",
+      source: "registry",
+      repositories: parsed.repositoryRegistry.repositories,
+      selectedRepositoryKey,
+    });
+  }
+
+  const legacyFields = [
+    parsed.repositoryKey,
+    parsed.repositoryRoot,
+    parsed.connectedHostId,
+    parsed.checkoutPath,
+    parsed.projectId,
+    parsed.environmentId,
+  ];
+  const hasLegacyConfiguration = legacyFields.some((value) => value !== undefined);
+  const legacyConfiguration = {
+    repositoryKey: parsed.repositoryKey,
+    repositoryRoot: parsed.repositoryRoot,
+    connectedHostId: parsed.connectedHostId,
+    checkoutPath: parsed.checkoutPath,
+    projectId: parsed.projectId,
+    environmentId: parsed.environmentId,
+  };
+  const requiredLegacyFields = [
+    legacyConfiguration.repositoryKey,
+    legacyConfiguration.repositoryRoot,
+    legacyConfiguration.connectedHostId,
+    legacyConfiguration.checkoutPath,
+    legacyConfiguration.projectId,
+    legacyConfiguration.environmentId,
+  ];
+  if (!hasLegacyConfiguration) {
+    return repositoryRegistryResolutionSchema.parse({
+      status: "disabled",
+      source: "none",
+      reason: "not-configured",
+      repositories: [],
+      selectedRepositoryKey: null,
+    });
+  }
+  if (requiredLegacyFields.some((value) => value === undefined)) {
+    return repositoryRegistryResolutionSchema.parse({
+      status: "disabled",
+      source: "legacy",
+      reason: "legacy-incomplete",
+      repositories: [],
+      selectedRepositoryKey: null,
+    });
+  }
+
+  const migratedEntry = repositoryRegistryEntrySchema.parse({
+    configuration: {
+      repositoryKey: legacyConfiguration.repositoryKey,
+      repositoryRoot: legacyConfiguration.repositoryRoot,
+      connectedHostId: legacyConfiguration.connectedHostId,
+      checkoutPath: legacyConfiguration.checkoutPath,
+      factoryBranch: "factory",
+      mainRef: "origin/main",
+    },
+    projectId: legacyConfiguration.projectId,
+    environmentId: legacyConfiguration.environmentId,
+  });
+  return repositoryRegistryResolutionSchema.parse({
+    status: "configured",
+    source: "legacy",
+    repositories: [migratedEntry],
+    selectedRepositoryKey: migratedEntry.configuration.repositoryKey,
+  });
+}
 
 export const foremanTemplateSourceSchema = z
   .object({

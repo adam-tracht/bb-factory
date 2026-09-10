@@ -19,6 +19,8 @@ import {
   queueStatusSchema,
   repositorySelectionInputSchema,
   repositorySelectionProjectionSchema,
+  repositoryRegistrySchema,
+  resolveRepositoryRegistry,
   repositoryActionRequestSchema,
   scheduleSettingsSchema,
   settingsProjectionSchema,
@@ -32,6 +34,32 @@ const repositoryRevision = {
   fileDigests: {
     "plans/factory/queue.md": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   },
+};
+
+const monorepoRegistryEntry = {
+  configuration: {
+    repositoryKey: "monorepo",
+    repositoryRoot: "/workspace/monorepo",
+    connectedHostId: "host-1",
+    checkoutPath: "/workspace/monorepo/.factory",
+    factoryBranch: "factory",
+    mainRef: "origin/main",
+  },
+  projectId: "project-monorepo",
+  environmentId: "environment-monorepo",
+};
+
+const dataRegistryEntry = {
+  configuration: {
+    repositoryKey: "data-platform",
+    repositoryRoot: "/workspace/data-platform",
+    connectedHostId: "host-1",
+    checkoutPath: "/workspace/data-platform/.factory",
+    factoryBranch: "factory",
+    mainRef: "origin/main",
+  },
+  projectId: "project-data",
+  environmentId: "environment-data",
 };
 
 describe("Phase 0 wire contracts", () => {
@@ -67,6 +95,114 @@ describe("Phase 0 wire contracts", () => {
     expect(factorySettingsSchema.parse({ minimumStartGapSeconds: 3600 }).minimumStartGapSeconds).toBe(3600);
     expect(() => factorySettingDescriptors.minimumStartGapSeconds.experimental_schema.parse(3599)).toThrow();
     expect(factorySettingDescriptors.minimumStartGapSeconds.experimental_schema.parse(3600)).toBe(3600);
+  });
+
+  it("validates a typed multi-repository registry through the SDK JSON setting", () => {
+    const registry = {
+      repositories: [monorepoRegistryEntry, dataRegistryEntry],
+      defaultRepositoryKey: "monorepo",
+    };
+    const encoded = JSON.stringify(registry);
+
+    expect(repositoryRegistrySchema.parse(registry)).toEqual(registry);
+    expect(factorySettingDescriptors.repositoryRegistry.experimental_schema.parse(encoded)).toBe(encoded);
+    expect(() => factorySettingDescriptors.repositoryRegistry.experimental_schema.parse(JSON.stringify({
+      ...registry,
+      secrets: { token: "hidden" },
+    }))).toThrow();
+    expect(factorySettingsSchema.parse({ repositoryRegistry: encoded }).repositoryRegistry).toEqual(registry);
+    expect(resolveRepositoryRegistry(factorySettingsSchema.parse({
+      repositoryRegistry: encoded,
+      repositoryKey: "data-platform",
+    }))).toMatchObject({
+      status: "configured",
+      source: "registry",
+      selectedRepositoryKey: "data-platform",
+      repositories: [monorepoRegistryEntry, dataRegistryEntry],
+    });
+  });
+
+  it("rejects duplicate repository keys and invalid selected keys", () => {
+    const registry = {
+      repositories: [monorepoRegistryEntry, dataRegistryEntry],
+      defaultRepositoryKey: "monorepo",
+    };
+    expect(() => repositoryRegistrySchema.parse({
+      ...registry,
+      repositories: [
+        registry.repositories[0],
+        { ...registry.repositories[1], configuration: { ...registry.repositories[1].configuration, repositoryKey: "monorepo" } },
+      ],
+    })).toThrow();
+    expect(() => repositoryRegistrySchema.parse({ ...registry, defaultRepositoryKey: "missing" })).toThrow();
+    expect(() => factorySettingsSchema.parse({ repositoryRegistry: registry, repositoryKey: "missing" })).toThrow();
+    expect(() => repositoryRegistrySchema.parse({
+      ...registry,
+      repositories: [{ ...registry.repositories[0], projectId: "" }, registry.repositories[1]],
+    })).toThrow();
+  });
+
+  it("migrates a complete single-repository setting and disables incomplete legacy values", () => {
+    const legacyValues = {
+      repositoryKey: "monorepo",
+      repositoryRoot: "/workspace/monorepo",
+      connectedHostId: "host-1",
+      checkoutPath: "/workspace/monorepo/.factory",
+      projectId: "project-monorepo",
+      environmentId: "environment-monorepo",
+    };
+    const descriptorDefaults = {
+      timeZone: factorySettingDescriptors.timeZone.default,
+      nightWindowEndHour: factorySettingDescriptors.nightWindowEndHour.default,
+      runtimeCapSeconds: factorySettingDescriptors.runtimeCapSeconds.default,
+      minimumStartGapSeconds: factorySettingDescriptors.minimumStartGapSeconds.default,
+      concurrencyLimit: factorySettingDescriptors.concurrencyLimit.default,
+      dispatchMode: factorySettingDescriptors.dispatchMode.default,
+    };
+    expect("default" in factorySettingDescriptors.repositoryRegistry).toBe(false);
+    const migrated = resolveRepositoryRegistry(factorySettingsSchema.parse({
+      ...descriptorDefaults,
+      ...legacyValues,
+    }));
+    expect(migrated).toEqual({
+      status: "configured",
+      source: "legacy",
+      repositories: [monorepoRegistryEntry],
+      selectedRepositoryKey: "monorepo",
+    });
+
+    const incomplete = resolveRepositoryRegistry(factorySettingsSchema.parse({
+      repositoryKey: "monorepo",
+      repositoryRoot: "/workspace/monorepo",
+      connectedHostId: "host-1",
+      checkoutPath: "/workspace/monorepo/.factory",
+    }));
+    expect(incomplete).toMatchObject({ status: "disabled", source: "legacy", reason: "legacy-incomplete" });
+
+    const explicitEmpty = resolveRepositoryRegistry(factorySettingsSchema.parse({
+      repositoryRegistry: JSON.stringify({ repositories: [], defaultRepositoryKey: null }),
+      ...legacyValues,
+    }));
+    expect(explicitEmpty).toEqual({
+      status: "disabled",
+      source: "registry",
+      reason: "explicitly-empty",
+      repositories: [],
+      selectedRepositoryKey: null,
+    });
+  });
+
+  it("keeps disabled defaults paused with no provider pin or configured registry", () => {
+    const defaults = factorySettingsSchema.parse({});
+    expect(defaults.dispatchMode).toBe("paused");
+    expect(defaults.providerPreference).toBeUndefined();
+    expect(resolveRepositoryRegistry(defaults)).toEqual({
+      status: "disabled",
+      source: "none",
+      reason: "not-configured",
+      repositories: [],
+      selectedRepositoryKey: null,
+    });
   });
 
   it("requires revisions for guarded actions and scopes revision-free actions", () => {
