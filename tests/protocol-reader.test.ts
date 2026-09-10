@@ -180,8 +180,27 @@ answer: yes
       expect.objectContaining({ path: `${checkoutPath}/plans/factory/lock` }),
     );
 
+    const rawMissingLockFiles: ProtocolFiles = {
+      async read(args) {
+        if (args.path === `${checkoutPath}/plans/factory/lock`) {
+          throw new Error(`HTTP 404: Path does not exist: ${checkoutPath}/plans/factory/lock`);
+        }
+        return files.read(args);
+      },
+      async listPaths(args) {
+        return files.listPaths(args);
+      },
+    };
+    const rawProjection = await new RepositoryProtocolReader(rawMissingLockFiles, {
+      mergeReader: staticMergeReader(mergeProjection),
+      now: () => new Date("2026-09-10T06:00:00Z"),
+    }).loadProjection(configuration);
+    expect(rawProjection.lock).toBeNull();
+
     expect(files.readCalls.every((call) => call.hostId === "host-mac" && call.rootPath === checkoutPath)).toBe(true);
+    expect(files.listCalls).toHaveLength(2);
     expect(files.listCalls).toEqual([
+      expect.objectContaining({ hostId: "host-mac", includeFiles: true, includeDirectories: false }),
       expect.objectContaining({ hostId: "host-mac", includeFiles: true, includeDirectories: false }),
     ]);
   });

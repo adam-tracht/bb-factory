@@ -36,6 +36,8 @@ interface RpcFailure {
   readonly message: string;
 }
 
+const MISSING_PATH_ERROR_RE = /^HTTP\s+404\s*:\s*Path does not exist:\s*\S.*$/iu;
+
 function rpcFailure(error: unknown): RpcFailure | null {
   if (typeof error !== "object" || error === null) {
     return null;
@@ -62,11 +64,14 @@ export function asProtocolError(
   const rpcError = rpcFailure(error);
   const message = rpcError?.message ?? (error instanceof Error ? error.message : String(error));
   const normalized = message.toLowerCase();
+  const rawMissingPathError = error instanceof Error && MISSING_PATH_ERROR_RE.test(message);
   let code: ProtocolErrorCode = "invalid-file-response";
   if (rpcError) {
-    if (rpcError.code === "handler_error" && /^http\s+404\s*:\s*path does not exist:\s*\S.*$/iu.test(message)) {
+    if (rpcError.code === "handler_error" && MISSING_PATH_ERROR_RE.test(message)) {
       code = "file-not-found";
     }
+  } else if (rawMissingPathError) {
+    code = "file-not-found";
   } else if (
     normalized.includes("offline") ||
     normalized.includes("disconnected") ||
