@@ -110,6 +110,12 @@ function readRepositoryKey(values: Record<string, string | number | boolean> | u
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 
+function readSettingsIdentity(values: Record<string, string | number | boolean> | undefined): string {
+  const repositoryKey = readRepositoryKey(values) ?? "";
+  const registry = values?.repositoryRegistry;
+  return `${repositoryKey}\u0000${typeof registry === "string" ? registry : ""}`;
+}
+
 function selectedRepository(projection: RepositorySelectionProjection) {
   return projection.repositories.find((repository) => repository.configuration.repositoryKey === projection.selectedRepositoryKey)
     ?? projection.repositories.find((repository) => repository.selected)
@@ -133,6 +139,7 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
   const routeRunId = route.section === "runs" ? route.runId : null;
   const sdkSettings = useSettings();
   const configuredRepositoryKey = readRepositoryKey(sdkSettings.values);
+  const settingsIdentity = readSettingsIdentity(sdkSettings.values);
   const rpc = useRpc<FactoryRpcContract>();
   const rpcRef = useRef(rpc);
   rpcRef.current = rpc;
@@ -140,8 +147,14 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
   const connectionState = useRealtimeConnectionState();
   const [refreshSequence, setRefreshSequence] = useState(0);
   const [malformedSignal, setMalformedSignal] = useState(false);
+  const [repositoryOverride, setRepositoryOverride] = useState<{ settingsIdentity: string; repositoryKey: string } | null>(null);
   const [data, setData] = useState<FactoryData>(() => initialData(Boolean(routeRunId)));
   const loadToken = useRef(0);
+  const requestedRepositoryKey = repositoryOverride?.settingsIdentity === settingsIdentity ? repositoryOverride.repositoryKey : configuredRepositoryKey;
+
+  useEffect(() => {
+    setRepositoryOverride((current) => current?.settingsIdentity === settingsIdentity ? current : null);
+  }, [settingsIdentity]);
 
   const reload = useCallback(() => {
     setRefreshSequence((current) => current + 1);
@@ -160,6 +173,11 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
     previousConnectionState.current = connectionState;
   }, [connectionState, reload]);
 
+  const onRepositorySelect = useCallback((repositoryKey: string) => {
+    if (repositoryKey === requestedRepositoryKey) return;
+    setRepositoryOverride({ settingsIdentity, repositoryKey });
+  }, [requestedRepositoryKey, settingsIdentity]);
+
   const load = useCallback(async () => {
     const token = ++loadToken.current;
     setData({ ...initialData(Boolean(routeRunId)), repositories: { status: "loading" } });
@@ -167,7 +185,7 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
     try {
       const repositories = parseProjection(
         repositorySelectionProjectionSchema,
-        await rpcRef.current.call("factory_repositories", { selectedRepositoryKey: configuredRepositoryKey ?? null }),
+        await rpcRef.current.call("factory_repositories", { selectedRepositoryKey: requestedRepositoryKey ?? null }),
         "Repository selection",
       );
       if (token !== loadToken.current) return;
@@ -210,7 +228,7 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
     } catch (error) {
       if (token === loadToken.current) setData((current) => ({ ...current, repositories: { status: "error", error: errorText(error) } }));
     }
-  }, [configuredRepositoryKey, routeRunId, refreshSequence]);
+  }, [requestedRepositoryKey, routeRunId, refreshSequence, settingsIdentity]);
 
   useEffect(() => {
     if (sdkSettings.isLoading) {
@@ -274,7 +292,17 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
     content = ready(data.settings) ? h(SettingsView, { projection: ready(data.settings)! }) : data.settings.status === "error" ? h(ErrorNotice, { message: resourceMessage(data.settings, "Settings")!, onRetry }) : h(LoadingNotice, { label: "Loading settings" });
   }
 
-  return h(FactoryShell, { activeSection: route.section === "not-found" ? "overview" : route.section, connectionState, malformedSignal, onNavigate, children: content });
+  return h(FactoryShell, {
+    activeSection: route.section === "not-found" ? "overview" : route.section,
+    connectionState,
+    malformedSignal,
+    onNavigate,
+    repositoryProjection,
+    repositorySelectionKey: requestedRepositoryKey ?? repositoryProjection?.selectedRepositoryKey,
+    repositorySelectionLoading: data.repositories.status === "loading",
+    onRepositorySelect,
+    children: content,
+  });
 }
 
 export default FactoryView;

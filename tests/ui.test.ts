@@ -20,6 +20,10 @@ import {
 
 const h = createElement;
 
+type ControlledSettingsState = { values: Record<string, string | number | boolean> | undefined; isLoading: boolean };
+let controlledSettingsState: ControlledSettingsState = { values: { repositoryKey: "demo" }, isLoading: false };
+const controlledSettingsSubscribers = new Set<() => void>();
+
 const revision = {
   gitCommit: "abcdef1234567",
   protocolDigest: "a".repeat(64),
@@ -146,6 +150,38 @@ const runDetail = {
   },
 };
 
+const monorepoRepository = {
+  ...repository,
+  repositoryKey: "monorepo",
+  repositoryRoot: "/work/monorepo",
+  checkoutPath: "/work/monorepo",
+};
+
+const dataRepository = {
+  ...repository,
+  repositoryKey: "data",
+  repositoryRoot: "/work/data",
+  checkoutPath: "/work/data",
+};
+
+const repositoryForSwitch = (repositoryKey: string) => repositoryKey === "data" ? dataRepository : monorepoRepository;
+const repositorySelectionForSwitch = (requestedRepositoryKey: string | null | undefined) => {
+  const selectedRepositoryKey = requestedRepositoryKey === "data" ? "data" : "monorepo";
+  return {
+    repositories: [monorepoRepository, dataRepository].map((configuration) => ({
+      configuration,
+      selected: configuration.repositoryKey === selectedRepositoryKey,
+      available: true,
+      reasons: [],
+    })),
+    selectedRepositoryKey,
+  };
+};
+const snapshotForSwitch = (repositoryKey: string) => ({ ...snapshot, repository: repositoryForSwitch(repositoryKey) });
+const settingsForSwitch = (repositoryKey: string) => ({ ...settingsProjection, settings: { ...settingsProjection.settings, repositoryKey, repositoryRoot: repositoryForSwitch(repositoryKey).repositoryRoot, checkoutPath: repositoryForSwitch(repositoryKey).checkoutPath } });
+const healthForSwitch = (repositoryKey: string) => ({ ...healthProjection, repositoryKey, host: { ...healthProjection.host, hostId: repositoryForSwitch(repositoryKey).connectedHostId } });
+const runsForSwitch = (repositoryKey: string) => ({ runs: [{ ...runSummary, repositoryKey }], nextCursor: null });
+
 beforeAll(() => {
   installTestPluginRuntime();
 });
@@ -196,6 +232,16 @@ describe("Factory read-only UI helpers", () => {
     expect(runsMarkup).toContain("Canonical records: 0");
   });
 
+  it("shows terminal queue items as done instead of blocked", () => {
+    const completedSnapshot = {
+      ...snapshot,
+      queue: [{ ...snapshot.queue[0]!, status: { kind: "done" as const, detail: "Completed" }, eligible: false, eligibilityReasons: ["not-ready" as const] }],
+    };
+    const markup = renderToStaticMarkup(h(QueueView, { snapshot: completedSnapshot }));
+    expect(markup).toContain(">Done: Completed</span>");
+    expect(markup).not.toContain(">Blocked</span>");
+  });
+
   it("uses host token classes for semantic status badges", () => {
     const markup = renderToStaticMarkup(h(Badge, { label: "Healthy", tone: "success" }));
     expect(markup).toContain("bg-success/10");
@@ -224,19 +270,18 @@ describe("Factory read-only UI helpers", () => {
     };
     if (!runtime.__bbPluginRuntime) throw new Error("The SDK test runtime is unavailable");
 
-    let settingsState: { values: Record<string, string | number | boolean> | undefined; isLoading: boolean } = { values: undefined, isLoading: true };
-    const subscribers = new Set<() => void>();
+    controlledSettingsState = { values: undefined, isLoading: true };
     const originalUseSettings = runtime.__bbPluginRuntime.pluginSdkApp.useSettings;
     runtime.__bbPluginRuntime.pluginSdkApp.useSettings = () => {
       const [, forceRender] = useState(0);
       useEffect(() => {
         const subscriber = () => forceRender((value) => value + 1);
-        subscribers.add(subscriber);
+        controlledSettingsSubscribers.add(subscriber);
         return () => {
-          subscribers.delete(subscriber);
+          controlledSettingsSubscribers.delete(subscriber);
         };
       }, []);
-      return settingsState;
+      return controlledSettingsState;
     };
 
     const { FactoryView } = await import("../src/ui/FactoryView.js");
@@ -258,8 +303,8 @@ describe("Factory read-only UI helpers", () => {
       expect(slot.inspection.rpcCalls).toHaveLength(0);
 
       await act(async () => {
-        settingsState = { values: { repositoryKey: "demo" }, isLoading: false };
-        for (const subscriber of subscribers) subscriber();
+        controlledSettingsState = { values: { repositoryKey: "demo" }, isLoading: false };
+        for (const subscriber of controlledSettingsSubscribers) subscriber();
       });
       await slot.findByRole("heading", { name: "Repository health" });
 
@@ -274,6 +319,54 @@ describe("Factory read-only UI helpers", () => {
     } finally {
       slot.lifecycle.unmount();
       runtime.__bbPluginRuntime.pluginSdkApp.useSettings = originalUseSettings;
+      controlledSettingsState = { values: { repositoryKey: "demo" }, isLoading: false };
+    }
+  });
+
+  it("switches multiple configured repositories through the accessible local selector", async () => {
+    const { FactoryView } = await import("../src/ui/FactoryView.js");
+    const rpc = {
+      factory_repositories: vi.fn((input: { selectedRepositoryKey?: string | null }) => repositorySelectionForSwitch(input.selectedRepositoryKey)),
+      factory_snapshot: vi.fn(({ repositoryKey }: { repositoryKey: string }) => snapshotForSwitch(repositoryKey)),
+      factory_settings: vi.fn(({ repositoryKey }: { repositoryKey: string }) => settingsForSwitch(repositoryKey)),
+      factory_health: vi.fn(({ repositoryKey }: { repositoryKey: string }) => healthForSwitch(repositoryKey)),
+      factory_interactions: vi.fn(({ repositoryKey }: { repositoryKey: string }) => ({ repositoryKey, interactions: [] })),
+      factory_runs: vi.fn(({ repositoryKey }: { repositoryKey: string }) => runsForSwitch(repositoryKey)),
+    } as unknown as PluginRpcTestHandlers<FactoryRpcContract>;
+    const registry = JSON.stringify({
+      repositories: [
+        { configuration: monorepoRepository, projectId: "project-monorepo", environmentId: "environment-monorepo" },
+        { configuration: dataRepository, projectId: "project-data", environmentId: "environment-data" },
+      ],
+      defaultRepositoryKey: "monorepo",
+    });
+    controlledSettingsState = { values: { repositoryRegistry: registry }, isLoading: false };
+    const slot = renderSlot<FactoryViewProps, FactoryRpcContract>(
+      { component: FactoryView },
+      { subPath: "", panelPath: "factory" },
+      { rpc, settings: { repositoryRegistry: registry } },
+    );
+    try {
+      await slot.findByRole("heading", { name: "monorepo" });
+      const selector = await slot.findByRole("combobox", { name: "Configured repository" });
+      expect((selector as HTMLSelectElement).value).toBe("monorepo");
+
+      fireEvent.change(selector, { target: { value: "data" } });
+      await slot.findByRole("heading", { name: "data" });
+      expect((await slot.findByRole("combobox", { name: "Configured repository" }) as HTMLSelectElement).value).toBe("data");
+
+      expect(rpc.factory_repositories).toHaveBeenCalledTimes(2);
+      expect(rpc.factory_repositories).toHaveBeenNthCalledWith(1, { selectedRepositoryKey: null });
+      expect(rpc.factory_repositories).toHaveBeenNthCalledWith(2, { selectedRepositoryKey: "data" });
+      for (const method of ["factory_snapshot", "factory_settings", "factory_health", "factory_interactions", "factory_runs"]) {
+        const calls = slot.inspection.rpcCalls.filter((call) => call.method === method);
+        expect(calls).toHaveLength(2);
+        expect(calls[1]).toEqual(expect.objectContaining({ input: expect.objectContaining({ repositoryKey: "data" }) }));
+      }
+      expect(slot.inspection.rpcCalls).not.toContainEqual(expect.objectContaining({ method: "factory_action" }));
+    } finally {
+      slot.lifecycle.unmount();
+      controlledSettingsState = { values: { repositoryKey: "demo" }, isLoading: false };
     }
   });
 

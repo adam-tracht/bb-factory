@@ -79,13 +79,37 @@ describe("P1 read integration", () => {
       "data-platform",
     ]);
     expect(selection.selectedRepositoryKey).toBe("data-platform");
-    await expect(composition.getSettingsProjection("data-platform")).resolves.toMatchObject({
+    const dataSettings = await composition.getSettingsProjection("data-platform");
+    expect(dataSettings).toMatchObject({
+      settings: {
+        repositoryKey: "data-platform",
+        repositoryRoot: "/Users/adamtracht/Documents/GitHub/diggs-data-platform-factory",
+        connectedHostId: "host_mpvbhvugjr",
+        checkoutPath: "/Users/adamtracht/Documents/GitHub/diggs-data-platform-factory",
+        projectId: "project-data-platform",
+        environmentId: "environment-data-platform",
+        dispatchMode: "enabled",
+      },
       dispatch: {
         mode: "enabled",
         acceptingNewRuns: false,
         activeRunCount: 1,
+        reason: "This plugin version exposes no dispatch implementation.",
       },
     });
+
+    const monorepoSettings = await composition.getSettingsProjection("monorepo");
+    expect(monorepoSettings.settings).toMatchObject({
+      repositoryKey: "monorepo",
+      repositoryRoot: "/Users/adamtracht/Desktop/Code/monorepo-factory",
+      connectedHostId: "host_mpvbhvugjr",
+      checkoutPath: "/Users/adamtracht/Desktop/Code/monorepo-factory",
+      projectId: "project-monorepo",
+      environmentId: "environment-monorepo",
+      dispatchMode: "enabled",
+    });
+    expect(settings.repositoryRoot).toBeUndefined();
+    expect(settings.projectId).toBeUndefined();
   });
 
   it("returns an empty selection for an explicit empty registry", () => {

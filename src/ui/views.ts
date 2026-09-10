@@ -1,4 +1,4 @@
-import { createElement, type ComponentType, type ReactNode } from "react";
+import { createElement, type ChangeEvent, type ComponentType, type ReactNode } from "react";
 import type {
   DispatchStatus,
   FactorySettings,
@@ -228,10 +228,47 @@ export interface FactoryShellProps {
   connectionState: "connected" | "connecting" | "reconnecting";
   malformedSignal: boolean;
   onNavigate: (section: FactorySection) => void;
+  repositoryProjection?: RepositorySelectionProjection | null;
+  repositorySelectionKey?: string | null;
+  repositorySelectionLoading?: boolean;
+  onRepositorySelect?: (repositoryKey: string) => void;
   children: ReactNode;
 }
 
-export function FactoryShell({ activeSection, connectionState, malformedSignal, onNavigate, children }: FactoryShellProps) {
+export interface RepositorySwitcherProps {
+  projection: RepositorySelectionProjection;
+  selectedRepositoryKey?: string | null;
+  loading?: boolean;
+  onSelect: (repositoryKey: string) => void;
+}
+
+export function RepositorySwitcher({ projection, selectedRepositoryKey, loading = false, onSelect }: RepositorySwitcherProps) {
+  if (projection.repositories.length < 2) return null;
+  const value = selectedRepositoryKey ?? projection.selectedRepositoryKey ?? "";
+  return h(
+    "section",
+    { className: "mb-4 rounded-lg border border-border bg-card p-4", "aria-labelledby": "factory-repository-switcher-heading" },
+    h("div", { className: "flex flex-wrap items-center justify-between gap-3" },
+      h("div", null,
+        h("p", { className: labelClass }, "Repository context"),
+        h("h2", { id: "factory-repository-switcher-heading", className: "mt-1 text-sm font-semibold" }, "Active repository"),
+        h("p", { className: "mt-1 text-sm text-muted-foreground" }, "Switches the read-only Factory context locally; host settings are unchanged."),
+      ),
+      h("label", { className: "flex min-w-56 flex-col gap-1 text-sm font-medium" },
+        h("span", { className: labelClass }, "Configured repository"),
+        h("select", {
+          value,
+          disabled: loading,
+          className: "rounded-md border border-border bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+          "aria-label": "Configured repository",
+          onChange: (event: ChangeEvent<HTMLSelectElement>) => onSelect(event.currentTarget.value),
+        }, projection.repositories.map((repository) => h("option", { key: repository.configuration.repositoryKey, value: repository.configuration.repositoryKey }, repository.configuration.repositoryKey))),
+      ),
+    ),
+  );
+}
+
+export function FactoryShell({ activeSection, connectionState, malformedSignal, onNavigate, repositoryProjection, repositorySelectionKey, repositorySelectionLoading = false, onRepositorySelect, children }: FactoryShellProps) {
   const navItems: Array<{ section: FactorySection; label: string; detail: string }> = [
     { section: "overview", label: "Overview", detail: "Health and current state" },
     { section: "queue", label: "Queue", detail: "Repository-backed work" },
@@ -275,6 +312,7 @@ export function FactoryShell({ activeSection, connectionState, malformedSignal, 
         ),
       ),
       h(ConnectionBanner, { state: connectionState, malformedSignal }),
+      repositoryProjection && onRepositorySelect ? h(RepositorySwitcher, { projection: repositoryProjection, selectedRepositoryKey: repositorySelectionKey, loading: repositorySelectionLoading, onSelect: onRepositorySelect }) : null,
       children,
     ),
   );
@@ -392,12 +430,27 @@ export function OverviewView({ snapshot, settings, settingsError, health, health
   );
 }
 
+function queueBadge(entry: QueueEntry): { label: string; tone: ReturnType<typeof statusTone> } {
+  switch (entry.status.kind) {
+    case "done":
+      return { label: queueStatusLabel(entry.status), tone: "success" };
+    case "in-progress":
+      return { label: queueStatusLabel(entry.status), tone: "primary" };
+    case "blocked-by":
+      return { label: queueStatusLabel(entry.status), tone: "warning" };
+    case "ready":
+      if (entry.eligibilityReasons.includes("not-ready")) return { label: "Not ready", tone: "warning" };
+      return entry.eligible ? { label: "Eligible", tone: "success" } : { label: "Blocked", tone: "warning" };
+  }
+}
+
 function QueueEntryCard({ entry, repository, fileLink }: { entry: QueueEntry; repository: RepositoryConfiguration; fileLink?: FileLinkRenderer }) {
   const reasons = entry.eligibilityReasons.length > 0 ? entry.eligibilityReasons.map(formatEligibilityReason) : entry.eligible ? ["All recorded eligibility checks pass."] : ["Eligibility was not reported by the protocol adapter."];
+  const badge = queueBadge(entry);
   return h(
     "article",
     { className: cardClass },
-    h("div", { className: "flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between" }, h("div", null, h("h2", { className: "text-base font-semibold" }, entry.title), h("p", { className: "mt-1 font-mono text-xs text-muted-foreground" }, entry.id)), h("div", { className: "flex flex-wrap gap-2" }, h(Badge, { label: entry.eligible ? "Eligible" : "Blocked", tone: statusTone(entry.eligible ? "eligible" : "blocked") }), h(Badge, { label: queueStatusLabel(entry.status), tone: statusTone(entry.status.kind) }))),
+    h("div", { className: "flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between" }, h("div", null, h("h2", { className: "text-base font-semibold" }, entry.title), h("p", { className: "mt-1 font-mono text-xs text-muted-foreground" }, entry.id)), h("div", { className: "flex flex-wrap gap-2" }, h(Badge, { label: badge.label, tone: badge.tone }))),
     h("div", { className: "mt-4 grid gap-4 md:grid-cols-2" },
       h("div", null, h("p", { className: labelClass }, "Why this item is eligible or blocked"), h("ul", { className: "mt-2 space-y-1 text-sm leading-5" }, reasons.map((reason) => h("li", { key: reason, className: entry.eligible ? "text-success" : "text-warning" }, `• ${reason}`)))),
       h("div", null, h("p", { className: labelClass }, "Protocol details"), h("dl", { className: "mt-2 space-y-1 text-sm" }, h("div", { className: "flex gap-2" }, h("dt", { className: "text-muted-foreground" }, "Risk"), h("dd", null, entry.risk)), h("div", { className: "flex gap-2" }, h("dt", { className: "text-muted-foreground" }, "Priority"), h("dd", null, String(entry.priority))), h("div", { className: "flex gap-2" }, h("dt", { className: "text-muted-foreground" }, "Plan"), h("dd", { className: "break-all" }, h(FilePath, { path: entry.planPath, target: repositoryFileTarget(repository, entry.planPath), fileLink }))), h("div", { className: "flex gap-2" }, h("dt", { className: "text-muted-foreground" }, "Approval"), h("dd", { className: "space-y-1" }, entry.approved.kind === "explicit" ? [h(Badge, { key: "approved", label: "Explicit approval", tone: "success" }), h("p", { key: "approval-source", className: "text-xs text-muted-foreground" }, `Source: ${entry.approved.source}`), h("p", { key: "approval-text", className: "whitespace-pre-wrap text-sm" }, `Text: ${entry.approved.text}`)] : [h(Badge, { key: "not-approved", label: "No approval", tone: "warning" }), h("p", { key: "approval-source", className: "text-xs text-muted-foreground" }, `Source: ${entry.approved.source}`)])))),

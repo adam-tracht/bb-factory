@@ -26,7 +26,7 @@ afterEach(async () => {
 });
 
 describe("factory RPC serialization", () => {
-  it("omits absent optional SDK settings fields at the RPC boundary", async () => {
+  it("derives registry fields and omits absent optional controls at the RPC boundary", async () => {
     const { bb, harness } = createFakePluginHost({
       pluginId: "bb-factory",
       settings: {
@@ -43,6 +43,11 @@ describe("factory RPC serialization", () => {
     };
     expect(projection.settings).toMatchObject({
       repositoryKey: "monorepo",
+      repositoryRoot: "/workspace/monorepo",
+      connectedHostId: "host-1",
+      checkoutPath: "/workspace/monorepo/.factory",
+      projectId: "project-monorepo",
+      environmentId: "environment-monorepo",
       repositoryRegistry: registry,
       timeZone: "server-local",
       nightWindowEndHour: 6,
@@ -51,11 +56,6 @@ describe("factory RPC serialization", () => {
       concurrencyLimit: 1,
       dispatchMode: "paused",
     });
-    expect(projection.settings).not.toHaveProperty("repositoryRoot");
-    expect(projection.settings).not.toHaveProperty("connectedHostId");
-    expect(projection.settings).not.toHaveProperty("checkoutPath");
-    expect(projection.settings).not.toHaveProperty("projectId");
-    expect(projection.settings).not.toHaveProperty("environmentId");
     expect(projection.settings).not.toHaveProperty("scheduleCron");
     expect(projection.settings).not.toHaveProperty("providerPreference");
   });

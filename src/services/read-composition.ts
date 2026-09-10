@@ -163,15 +163,28 @@ function omitUndefinedObjectFields(value: unknown): unknown {
   return value;
 }
 
-function settingsProjection(settings: FactorySettings, activeRunCount: number): SettingsProjection {
+function settingsProjection(
+  settings: FactorySettings,
+  entry: RepositoryRegistryEntry,
+  activeRunCount: number,
+): SettingsProjection {
+  const repositorySettings = omitUndefinedObjectFields({
+    ...settings,
+    repositoryKey: entry.configuration.repositoryKey,
+    repositoryRoot: entry.configuration.repositoryRoot,
+    connectedHostId: entry.configuration.connectedHostId,
+    checkoutPath: entry.configuration.checkoutPath,
+    projectId: entry.projectId,
+    environmentId: entry.environmentId,
+  }) as FactorySettings;
   return {
-    settings: omitUndefinedObjectFields(settings) as FactorySettings,
+    settings: repositorySettings,
     validation: { valid: true, fieldErrors: {} },
     dispatch: {
       mode: settings.dispatchMode,
       acceptingNewRuns: false,
       activeRunCount,
-      reason: "P1 read-only integration keeps dispatch, schedulers, and workers disabled.",
+      reason: "This plugin version exposes no dispatch implementation.",
     },
   };
 }
@@ -251,10 +264,11 @@ export function createReadComposition(options: ReadCompositionOptions): ReadComp
       return lookupEntry(repositoryKey);
     },
     async getSettingsProjection(repositoryKey) {
-      if (!lookupEntry(repositoryKey)) {
+      const entry = lookupEntry(repositoryKey);
+      if (!entry) {
         throw new Error(`Repository '${repositoryKey}' is not configured.`);
       }
-      return settingsProjection(settings, await countActiveRuns(operationalState, repositoryKey));
+      return settingsProjection(settings, entry, await countActiveRuns(operationalState, repositoryKey));
     },
   };
 }
