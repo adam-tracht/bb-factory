@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # bb-factory release gate.
 #
-# Runs the full verification suite, rebuilds dist/, and stages the bundles for
-# a release commit. It then prints the remaining commit, tag, and push
-# commands instead of running them: a human finishes every release.
+# Runs the full verification suite, rebuilds dist/, and assembles the release
+# commit on local main (tree minus plans/, plus dist/) with its tag. It then
+# prints the push commands instead of running them: a human pushes every
+# release.
 #
 # Usage: pnpm release
 set -euo pipefail
@@ -37,18 +38,37 @@ pnpm build
 
 # dist/ stays gitignored during development; release commits carry the
 # prebuilt bundles so tag checkouts and npm-source installs ship the same
-# artifacts bb would build.
-git add -f dist/
+# artifacts bb would build. Release commits live only on main: their tree
+# is this tree minus plans/ (this repository's own factory protocol is
+# working state, not shipped product) plus the dist/ bundles. The commit
+# is assembled in a scratch index so the worktree stays untouched, and
+# local main is advanced to it for the human push.
+git fetch origin main
 
-BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+TMP_INDEX="$(mktemp)"
+trap 'rm -f "$TMP_INDEX"' EXIT
+export GIT_INDEX_FILE="$TMP_INDEX"
+git read-tree HEAD
+git rm -r -q --cached plans 2>/dev/null || true
+git add -f dist/
+RELEASE_TREE="$(git write-tree)"
+unset GIT_INDEX_FILE
+
+MAIN_PARENT="$(git rev-parse --verify -q origin/main || true)"
+if [ -n "$MAIN_PARENT" ]; then
+  RELEASE_COMMIT="$(git commit-tree "$RELEASE_TREE" -p "$MAIN_PARENT" -m "release: ${TAG} dist artifacts")"
+else
+  RELEASE_COMMIT="$(git commit-tree "$RELEASE_TREE" -m "release: ${TAG} dist artifacts")"
+fi
+git update-ref refs/heads/main "$RELEASE_COMMIT"
+git tag -a "$TAG" -m "bb-factory ${TAG}" "$RELEASE_COMMIT"
 
 cat <<EOF
 
-Gate passed and dist/ is staged. Finish the release by hand:
+Gate passed. Release commit ${RELEASE_COMMIT} is on local main, tagged
+${TAG}. Finish the release by hand:
 
-  git commit -m "release: ${TAG} dist artifacts"
-  git tag -a ${TAG} -m "bb-factory ${TAG}"
-  git push origin ${BRANCH}
+  git push origin main
   git push origin ${TAG}
 
 Installable afterwards with:

@@ -158,7 +158,7 @@ describe("provision-checkout executor (worktree mode)", () => {
     });
     const add = terminals.runs.find((command) => command.includes("worktree add"));
     expect(add).toContain(`worktree add '${WORKTREE}' factory`);
-    expect(add).not.toContain("-b");
+    expect(add).not.toMatch(/worktree add[^;]* -b /);
     expect(terminals.runs.some((command) => command.includes("symbolic-ref"))).toBe(false);
   });
 
