@@ -560,6 +560,7 @@ export const actionKindSchema = z.enum([
   "retry",
   "stop",
   "integration-report",
+  "scaffold-protocol",
 ]);
 export type ActionKind = z.infer<typeof actionKindSchema>;
 
@@ -698,10 +699,21 @@ export const bbInteractionActionSchema = z.union([
 ]);
 export type BbInteractionAction = z.infer<typeof bbInteractionActionSchema>;
 
+/**
+ * Writes the bundled factory protocol files into a managed checkout, creating
+ * only missing files. The per-file create-only compare-and-swap is the guard;
+ * expectedRevision binds the durable intent and stays optional because a
+ * checkout without protocol files has no snapshot revision to pass.
+ */
+const scaffoldProtocolActionSchema = z
+  .object({ kind: z.literal("scaffold-protocol") })
+  .strict();
+export type ScaffoldProtocolAction = z.infer<typeof scaffoldProtocolActionSchema>;
+
 export const guardedActionSchema = z.union([repositoryActionSchema, bbInteractionActionSchema]);
 export type GuardedAction = z.infer<typeof guardedActionSchema>;
 
-export const factoryActionSchema = z.union([revisionFreeActionSchema, guardedActionSchema]);
+export const factoryActionSchema = z.union([revisionFreeActionSchema, guardedActionSchema, scaffoldProtocolActionSchema]);
 export type FactoryAction = z.infer<typeof factoryActionSchema>;
 
 function validateIdempotencyBinding(
@@ -763,10 +775,29 @@ export const bbInteractionActionRequestSchema = z
   .superRefine(validateIdempotencyBinding);
 export type BbInteractionActionRequest = z.infer<typeof bbInteractionActionRequestSchema>;
 
+/** The pre-protocol revision a scaffold caller sends when no snapshot exists. */
+export const EMPTY_REPOSITORY_REVISION: RepositoryRevision = {
+  gitCommit: null,
+  protocolDigest: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  fileDigests: {},
+};
+
+export const scaffoldProtocolActionRequestSchema = z
+  .object({
+    repositoryKey: repositoryKeySchema,
+    action: scaffoldProtocolActionSchema,
+    idempotencyKey: idempotencyKeySchema,
+    expectedRevision: repositoryRevisionSchema.default(EMPTY_REPOSITORY_REVISION),
+  })
+  .strict()
+  .superRefine(validateIdempotencyBinding);
+export type ScaffoldProtocolActionRequest = z.infer<typeof scaffoldProtocolActionRequestSchema>;
+
 export const factoryActionRequestSchema = z.union([
   revisionFreeActionRequestSchema,
   repositoryActionRequestSchema,
   bbInteractionActionRequestSchema,
+  scaffoldProtocolActionRequestSchema,
 ]);
 export type FactoryActionRequest = z.infer<typeof factoryActionRequestSchema>;
 
@@ -834,9 +865,24 @@ export const recommendQuestionOutcomeSchema = z
   .strict();
 export type RecommendQuestionOutcome = z.infer<typeof recommendQuestionOutcomeSchema>;
 
+/** Scaffold results list each target's disposition and the commit that landed. */
+export const scaffoldProtocolOutcomeSchema = z
+  .object({
+    ...actionOutcomeFields,
+    action: z.literal("scaffold-protocol"),
+    questionId: z.null().optional(),
+    interactionId: z.null().optional(),
+    written: z.array(nonEmptyString),
+    skipped: z.array(nonEmptyString),
+    commitSha: z.string().regex(/^[0-9a-f]{7,64}$/).nullable(),
+  })
+  .strict();
+export type ScaffoldProtocolOutcome = z.infer<typeof scaffoldProtocolOutcomeSchema>;
+
 export const actionOutcomeSchema = z.union([
   answerQuestionOutcomeSchema,
   recommendQuestionOutcomeSchema,
+  scaffoldProtocolOutcomeSchema,
   nonAnswerActionOutcomeSchema,
 ]);
 export type ActionOutcome = z.infer<typeof actionOutcomeSchema>;

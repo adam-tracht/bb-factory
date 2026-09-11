@@ -181,7 +181,7 @@ const GIT_HEAD_REF = /^ref:\s*refs\/heads\/(.+?)\s*$/m;
  * plain checkout, or the worktree's gitdir pointer followed by its HEAD for a
  * linked worktree. Detached HEAD yields null.
  */
-async function readCheckoutBranch(sdk: BbSdk, hostId: string, root: string): Promise<string | null> {
+export async function readCheckoutBranch(sdk: Pick<BbSdk, "files">, hostId: string, root: string): Promise<string | null> {
   const dotgit = `${root}/.git`;
   let head: string | null = null;
   try {

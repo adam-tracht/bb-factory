@@ -38,6 +38,26 @@ function makeComposition(overrides: Partial<FactoryComposition> = {}) {
     readOnlyActionExecutor: { execute: vi.fn(async () => accepted("preview")) },
     repositoryActionExecutor: { execute: vi.fn(async () => accepted("answer-question")) },
     bbInteractionActionExecutor: { execute: vi.fn(async () => accepted("run-now")) },
+    scaffoldProtocolActionExecutor: {
+      execute: vi.fn(async (): Promise<FactoryActionResult> => ({
+        ok: true,
+        revision: null,
+        result: {
+          status: "accepted",
+          message: "scaffolded",
+          revision: null,
+          runId: null,
+          leaseId: null,
+          queueItemId: null,
+          action: "scaffold-protocol",
+          questionId: null,
+          interactionId: null,
+          written: ["plans/factory/foreman.md"],
+          skipped: [],
+          commitSha: "abc1234",
+        },
+      })),
+    },
     dispatchEngine: {},
     dispatchContext: {},
     scheduler: { tick: vi.fn() },
@@ -97,6 +117,21 @@ describe("factory action RPC router", () => {
     });
     expect(result.ok).toBe(true);
     expect(composition.bbInteractionActionExecutor.execute).toHaveBeenCalled();
+  });
+
+  it("routes scaffold-protocol actions to the scaffold executor", async () => {
+    const { handlers, composition, publish } = makeComposition();
+    const result = await handlers.factory_action({
+      repositoryKey: "monorepo",
+      action: { kind: "scaffold-protocol" },
+      idempotencyKey: "bbf:v1:monorepo:scaffold-protocol:823e4567-e89b-12d3-a456-426614174000",
+    });
+    expect(result.ok).toBe(true);
+    expect(composition.scaffoldProtocolActionExecutor.execute).toHaveBeenCalledWith(expect.objectContaining({
+      action: { kind: "scaffold-protocol" },
+    }));
+    expect(composition.repositoryActionExecutor.execute).not.toHaveBeenCalled();
+    expect(publish).toHaveBeenCalledWith(expect.objectContaining({ kind: "repository.changed" }));
   });
 
   it("routes revision-free actions to the read-only executor without a revision", async () => {

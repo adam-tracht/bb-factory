@@ -42,7 +42,7 @@ validate:
 - pnpm test
 
 ## BBF-0002 Protocol scaffolder
-status: ready
+status: done (orchestrated session 2026-09-11)
 priority: 2
 depends_on: BBF-0001
 risk: medium

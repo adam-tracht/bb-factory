@@ -2,6 +2,7 @@ import {
   bbInteractionActionRequestSchema,
   repositoryActionRequestSchema,
   revisionFreeActionRequestSchema,
+  scaffoldProtocolActionRequestSchema,
   factoryActionResultSchema,
   type FactoryActionResult,
   type InvalidationEvent,
@@ -71,12 +72,17 @@ export function createFactoryRpcHandlers(
       }
 
       const repositoryAction = repositoryActionRequestSchema.safeParse(input);
+      const scaffoldAction = repositoryAction.success ? null : scaffoldProtocolActionRequestSchema.safeParse(input);
       let request;
       let execute: () => Promise<FactoryActionResult>;
       if (repositoryAction.success) {
         request = repositoryAction.data;
         const valid = repositoryAction.data;
         execute = () => composition.repositoryActionExecutor.execute(valid);
+      } else if (scaffoldAction !== null && scaffoldAction.success) {
+        request = scaffoldAction.data;
+        const valid = scaffoldAction.data;
+        execute = () => composition.scaffoldProtocolActionExecutor.execute(valid);
       } else {
         const bbAction = bbInteractionActionRequestSchema.safeParse(input);
         if (!bbAction.success) {

@@ -13,6 +13,7 @@ import type {
   RepositoryKey,
   RepositoryActionRequest,
   RevisionFreeActionRequest,
+  ScaffoldProtocolActionRequest,
 } from "./contracts.js";
 
 export interface ProtocolReader {
@@ -43,4 +44,8 @@ export interface RepositoryActionExecutor {
 
 export interface BbInteractionActionExecutor {
   execute(request: BbInteractionActionRequest): Promise<FactoryActionResult>;
+}
+
+export interface ScaffoldProtocolActionExecutor {
+  execute(request: ScaffoldProtocolActionRequest): Promise<FactoryActionResult>;
 }

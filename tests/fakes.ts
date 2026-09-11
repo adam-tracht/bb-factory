@@ -155,6 +155,10 @@ export class FakeFileSystem {
     this.writes.push({ path: args.path, expectedSha256: args.expectedSha256 });
     this.writeHook?.(args.path, args.content);
     const existing = this.files.get(args.path);
+    if (args.expectedSha256 === null && existing !== undefined) {
+      // null means create-only: any existing content is a conflict.
+      return { outcome: "conflict" as const, currentSha256: digestText(existing) };
+    }
     if (args.expectedSha256 !== undefined && args.expectedSha256 !== null) {
       const current = existing === undefined ? null : digestText(existing);
       if (current !== args.expectedSha256) {

@@ -10,9 +10,9 @@ actor identity. Verified against the installed `@get-bb/plugin-sdk@0.4.47`.
 
 - `factory_action` is routed by `src/rpc/action-router.ts`: revision-free
   actions go to the read-only executor, repository actions to the repository
-  executor, and BB interaction plus run-control actions to the interaction
-  executor. Successful non-preview results publish a repository-changed
-  invalidation.
+  executor, `scaffold-protocol` to the scaffold executor, and BB interaction
+  plus run-control actions to the interaction executor. Successful
+  non-preview results publish a repository-changed invalidation.
 - The repository executor (`src/actions/repository.ts`) performs the guarded
   sequence below: fresh snapshot, expected-revision check, single-file
   section-preserving Markdown update (`src/actions/markdown.ts`), durable
@@ -29,9 +29,17 @@ actor identity. Verified against the installed `@get-bb/plugin-sdk@0.4.47`.
   It writes nothing to the repository.
 - The `pending_action_intents` table stores typed request, target, expected
   revision, single-file change, entry point, one-shot, lifecycle status,
-  result, and reconciliation metadata, and both executors consume it. Its
-  `action_kind` constraint was widened for `recommend-question` by an
-  append-only table rebuild migration.
+  result, and reconciliation metadata, and all three executors consume it. Its
+  `action_kind` constraint was widened for `recommend-question` and later for
+  `scaffold-protocol` by append-only table rebuild migrations.
+- The scaffold executor (`src/actions/scaffold.ts`) writes only missing
+  protocol files from the bundled `templates/` manifest with create-only
+  `expectedSha256: null` CAS (a conflict is a skip, never an overwrite),
+  refuses when the checkout is not on `factory`, and runs one
+  `git add plans && git commit` on the connected host when any file was
+  written. The bundled `foreman.md` digest is recorded in
+  `templates/MANIFEST.json`, so a baseline template change is a deliberate
+  manifest update rather than drift.
 - The dispatch engine (`src/dispatch/`) owns preflight, ownership leases,
   durable run intents, worker start, lifecycle reconciliation, runtime caps,
   cancellation, bounded retry, and startup recovery. The scheduler
