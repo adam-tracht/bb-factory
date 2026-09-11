@@ -1,10 +1,11 @@
 import { createElement, useEffect, useMemo, useState, type ReactNode } from "react";
-import type {
-  FactorySettings,
-  FactorySettingsPatch,
-  HealthProjection,
-  ProviderPreference,
-  SettingsProjection,
+import {
+  providerPreferenceSchema,
+  type FactorySettings,
+  type FactorySettingsPatch,
+  type HealthProjection,
+  type ProviderPreference,
+  type SettingsProjection,
 } from "../../contracts.js";
 import { cronValid, describeCron, nextCronTimes } from "../../schedule/cron.js";
 import type { ViewContext } from "../context.js";
@@ -142,6 +143,10 @@ function analyzeDraft(draft: DraftShape, settings: FactorySettings): DraftAnalys
 
   if (dirty.has("providerPreference")) {
     patch.providerPreference = draft.providerPreference as ProviderPreference;
+  }
+
+  if (dirty.has("dispatchMode")) {
+    patch.dispatchMode = draft.dispatchMode;
   }
 
   return { patch, dirty, errors };
@@ -338,13 +343,19 @@ function DispatchCard(props: {
     ? `Preferred provider is ${preferred.availability}${preferred.lastError ? `: ${preferred.lastError}` : ""}.`
     : null;
 
+  const selectableProviders = useMemo(
+    () => new Set<string>(providerPreferenceSchema.options),
+    [],
+  );
   const providerOptions = useMemo(() => {
     const options: Array<{ value: string; label: string }> = [
       { value: "alternate", label: "alternate (rotate providers)" },
     ];
     const seen = new Set<string>(["alternate"]);
     for (const provider of providers) {
-      if (seen.has(provider.providerId)) continue;
+      // The contract pins preference to a fixed enum; other reported provider
+      // ids are shown as status text in the row warning, never as options.
+      if (seen.has(provider.providerId) || !selectableProviders.has(provider.providerId)) continue;
       seen.add(provider.providerId);
       options.push({ value: provider.providerId, label: `${provider.providerId} (${provider.availability})` });
     }

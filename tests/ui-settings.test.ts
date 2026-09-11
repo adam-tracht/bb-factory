@@ -206,6 +206,18 @@ describe("SettingsView", () => {
     await waitFor(() => expect(screen.queryByText("Unsaved changes")).toBeNull());
   });
 
+  it("sends the dispatch mode in the settings patch", () => {
+    const ctx = makeCtx();
+    renderSettings({ ctx });
+
+    fireEvent.click(screen.getByRole("button", { name: "Paused" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    const dialog = screen.getByRole("alertdialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+
+    expect(ctx.updateSettings).toHaveBeenCalledWith({ dispatchMode: "paused" });
+  });
+
   it("warns on an invalid cron and blocks saving it", () => {
     renderSettings();
     fireEvent.change(screen.getByLabelText("Schedule"), { target: { value: "not a cron" } });
