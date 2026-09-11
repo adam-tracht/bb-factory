@@ -1,5 +1,10 @@
 # Phase 0 contract and bootstrap
 
+*Frozen record, dated 2026-09-10. Status lines, phase-open claims, "no
+`plans/factory/` protocol" statements, and the SHA-256 fingerprint tables
+describe the tree at freeze time and no longer match current source; the
+v1.2 contract terms and review provenance remain authoritative.*
+
 Status: Phase 0 bootstrap complete and frozen at contract `v1.2`. Phase 1 storage and read-only UI components are reviewed complete; overall Phase 1 remains open awaiting the protocol parser, BB interaction reader, read integration, and product acceptance. Phases 2 through 5 remain open.
 
 ## Frozen handoff

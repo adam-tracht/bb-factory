@@ -1,5 +1,9 @@
 # Factory dependency and ownership map
 
+*Build-era coordination artifact, frozen at the Phase 0 freeze (2026-09-10).
+The task ownership table and fingerprint records are point-in-time; nothing
+current routes through this file.*
+
 This map is the Phase 0 handoff contract. Each task has exactly one implementation worker. Root coordinates reviews and integration. Every task receives a separate Sol Medium compliance review first, the worker fixes concrete findings, then a separate Sol Medium code-quality review. A task is not an integration dependency until both reviews pass.
 
 The current approved implementation assignment is Luna Extra High. The current approved review assignment is Sol Medium. This is the current model assignment for downstream task work and does not authorize downstream work.

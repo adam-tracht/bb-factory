@@ -35,3 +35,6 @@ dist/
 
 # Factory protocol transient claim file
 plans/factory/lock
+
+# context-mode session telemetry (machine-local)
+.github/context-mode/

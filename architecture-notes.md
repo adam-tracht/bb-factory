@@ -1,5 +1,9 @@
 # BB Factory Architecture Notes
 
+*Planning input, superseded by [PLAN.md](PLAN.md) and `docs/`; kept for the
+guardrail and cutover rationale. Phase numbering here predates the final
+plan.*
+
 Planning input for downstream phases. Phase 0 bootstrap is frozen in [docs/phase-0-contract.md](docs/phase-0-contract.md). This document defines boundaries and a phased migration plan. It does not authorize downstream implementation, repository policy changes, commits, or remote publishing.
 
 ## Architecture decision

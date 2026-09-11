@@ -52,18 +52,19 @@ bb plugin install git:github.com/adam-tracht/bb-factory@v0.1.0
 
 ## Quickstart
 
-1. Open the Factory view. The Repositories landing lists managed repos;
-   click **Add repository**.
-2. In the wizard, pick a repository key, the connected host, the repository
-   root, and a dedicated checkout path (the foreman works there, not in your
-   main working copy), then choose the bb project and environment and the
-   main ref (`origin/main` by default). Keep dispatch paused while you set
-   up.
-3. Initialize the protocol in the dedicated checkout: create
-   `plans/factory/` with `foreman.md` (generic run rules), `repo.md`
-   (repo-specific rules), `queue.md`, `current.md`, `questions.md`, and a
-   `runs/` directory. This repository's own `plans/factory/` is a working
-   example.
+1. Open the Factory view and click **Add repository**, then **Choose
+   repository folder**. The native picker opens on the connected host.
+2. Review the derived registration: the wizard fills the repository key and
+   main ref (`origin/main` by default), matches or creates the bb project,
+   and defaults the checkout to a dedicated `<root>-factory` worktree so the
+   foreman never works in your main working copy. Registering the selected
+   checkout directly stays available as the advanced path, and when the
+   `factory` branch is already checked out elsewhere the wizard offers that
+   checkout instead. Registration ends paused.
+3. If the checkout has no `plans/factory/` protocol, the wizard offers to
+   scaffold it (`foreman.md`, `repo.md`, `queue.md`, `current.md`,
+   `questions.md`, `runs/`), committed on the `factory` branch. Existing
+   protocol files are never overwritten.
 4. Write the first queue entry in `queue.md` with acceptance criteria and
    validation commands, then set `status: ready`. Marking work ready is
    always a human act.

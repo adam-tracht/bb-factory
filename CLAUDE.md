@@ -1,6 +1,6 @@
 # bb-factory instructions
 
-This repository began as **planned, not implemented**. Phase 0 bootstrap is complete and frozen at contract `v1.2`; the reviewed Phase 1 protocol, storage, interaction, read integration, and native UI surfaces have passed local read acceptance. Phase 2 guarded actions and the Phase 3 dispatch engine are implemented with dispatch paused. The separate Phase 1 rollout gate remains open for an always-on host, the remote Connect owner-session route, and a live `run_detail` path when a run exists. Phases 4, 5, and 6 remain open. Read [PLAN.md](PLAN.md), [docs/phase-1-acceptance.md](docs/phase-1-acceptance.md), and [docs/action-implementation-gates.md](docs/action-implementation-gates.md) before implementation. Keep the build efficient and avoid speculative scaffolding.
+This repository ships **v0.1.0** of the factory plugin, installable via `bb plugin install git:github.com/adam-tracht/bb-factory`. Phase 0 bootstrap is frozen at contract `v1.2` ([docs/phase-0-contract.md](docs/phase-0-contract.md)); Phases 1 through 6 are implemented, including guarded actions, the dispatch engine, the quickstart add-repository wizard, protocol scaffolding, and dedicated-worktree provisioning. Open work: the Phase 1 rollout gate (always-on host, remote Connect owner-session route, live `run_detail` path; [docs/hosting-decision.md](docs/hosting-decision.md)) and the marketplace listing (BBF-0007, human-gated). Read [PLAN.md](PLAN.md), [docs/phase-1-acceptance.md](docs/phase-1-acceptance.md), and [docs/action-implementation-gates.md](docs/action-implementation-gates.md) before implementation. Keep the build efficient and avoid speculative scaffolding.
 
 ## Factory protocol
 
@@ -31,13 +31,13 @@ The plugin provides purpose-built overview, work, questions, runs, and settings 
 
 Use native `bb thread spawn` for subagents. Run independent tasks in parallel when their interfaces do not depend on one another. Use Luna at xhigh reasoning for most implementation, debugging, and broad technical work. Use Sol at low reasoning for judgment, prioritization, and concise review. Keep prompts self-contained and send each task through the repository protocol.
 
-For the current approved Phase 0 assignment, use Luna Extra High for the implementation worker and separate Sol Medium reviews for compliance followed by code quality. Root coordinates those reviews and freezes the phase only after both pass.
+For implementation work, use Luna Extra High for the worker and separate Sol Medium reviews for compliance followed by code quality. Root coordinates those reviews and freezes the task only after both pass.
 
 Review after each task: check protocol and acceptance criteria first, then check reuse, simplicity, and maintainability. Do not overengineer or add tests that do not protect a stated behavior.
 
 ## Local development
 
-At the documentation-only baseline there was no package or code scaffold. Phase 0 adds the minimal package and uses `pnpm` for local development. BB Git installs currently use `npm`; do not describe pnpm as the BB installation mechanism. Keep `PLAN.md`, lockfiles, manifests, and `.env.example` trackable.
+The package uses `pnpm` for local development. BB Git installs use `npm`; do not describe pnpm as the BB installation mechanism. Keep `PLAN.md`, lockfiles, and manifests trackable.
 
 Run verification through `pnpm test` / `pnpm typecheck` / `pnpm lint` (pnpm is pinned to Node 20). Invoking `node_modules/.bin/vitest` or `tsc` under the machine-default Node 24 fails on the better-sqlite3 native module; if it was rebuilt for a different Node, `pnpm rebuild better-sqlite3` restores it.
 

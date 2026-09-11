@@ -1,5 +1,9 @@
 # Phase 1 runtime acceptance
 
+*Point-in-time acceptance record, dated 2026-09-10. Phases 2 through 6 have
+shipped since (v0.1.0); the rollout-gate limits recorded here still apply
+(BBF-0008).*
+
 Status: **LOCAL RUNTIME READ ACCEPTANCE PASS; NATIVE UI ACCEPTANCE PASS; REMOTE ROUTE UNVERIFIED**. This local acceptance checkpoint is complete and records the bounded acceptance retest on 2026-09-10. It does not approve rollout or close the always-on hosting gate. PLAN remains open.
 
 The hosting decision remains pending in [docs/hosting-decision.md](hosting-decision.md); no host was selected or provisioned by this acceptance.

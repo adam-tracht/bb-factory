@@ -189,16 +189,16 @@ reconciliation. Both guarded executors consume it.
 
 ## Normative plan basis
 
-- `PLAN.md:22`: “For each selected queue item: human authorization for its
+- `PLAN.md:33`: “For each selected queue item: human authorization for its
   initial transition to `ready`, satisfied dependencies, and no open blocking
   question on that item before work can start.”
-- `PLAN.md:105`: “unauthorized or ambiguous `ready` transitions are rejected;
+- `PLAN.md:116`: “unauthorized or ambiguous `ready` transitions are rejected;
   agents cannot perform the first transition to `ready`.”
-- `PLAN.md:151`: “each item needs human-only initial authorization” and
+- `PLAN.md:197`: “each item needs human-only initial authorization” and
   “authorization provenance is visible.”
 - `CLAUDE.md:15`: “Select only human-authorized queue entries with
   `status: ready`.”
-- `CLAUDE.md:47`: “Never bypass a human `approved:` queue authorization for
+- `CLAUDE.md:49`: “Never bypass a human `approved:` queue authorization for
   protected operations.”
 
 ## Human-only initial `ready` policy
@@ -257,9 +257,9 @@ The implementation gates are now met by the current code and focused tests:
 
 ## Source pointers
 
-- Plan boundary and P2 acceptance checks: `PLAN.md:97-105`.
-- Human-only initial-ready and authorization rules: `PLAN.md:22,105,151` and
-  `CLAUDE.md:15,47`.
+- Plan boundary and P2 acceptance checks: `PLAN.md:108-116`.
+- Human-only initial-ready and authorization rules: `PLAN.md:33,116,197` and
+  `CLAUDE.md:15,49`.
 - Frozen action, revision, error, provenance, and RPC seams:
   `docs/phase-0-contract.md:110-135` and `src/contracts.ts:398-429,
   492-740`.
