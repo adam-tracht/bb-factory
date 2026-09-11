@@ -139,7 +139,7 @@ validate:
 notes: Publishing, tagging, and opening the marketplace PR are protected and need an `approved:` line before a run may do them.
 
 ## BBF-0009 Question deep links 404 on encoded hash
-status: draft
+status: ready
 priority: 2
 depends_on: none
 risk: low
@@ -155,7 +155,7 @@ validate:
 notes: Root cause: `sectionPath` builds `questions#question-Q3`, but `toPluginPanel` percent-encodes the subPath, so the plugin receives `questions%23question-Q3` and `parseFactoryRoute` (which only splits a literal `#`) matches no section. Reported live on diggs-data-platform DATA-0008.03's Q3 chip. Every anchor caller is affected: work.ts question chips and Answer CTAs, questions.ts gated-item links, runs.ts work links.
 
 ## BBF-0010 Refresh glyph renders rotated
-status: draft
+status: ready
 priority: 4
 depends_on: none
 risk: low
@@ -169,7 +169,7 @@ validate:
 notes: src/ui/shell.ts appends the literal character `↻`, which renders misrotated in the app font (user screenshot). Replace with a real icon (the shell's existing icon set or an inline SVG) at the correct orientation.
 
 ## BBF-0011 Question-gated ready entries show "Ready" and Approve
-status: draft
+status: ready
 priority: 1
 depends_on: none
 risk: low
