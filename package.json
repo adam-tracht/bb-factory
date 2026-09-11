@@ -1,6 +1,6 @@
 {
   "name": "bb-factory",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -27,8 +27,7 @@
     "templates",
     "docs",
     "README.md",
-    "LICENSE",
-    "PLUGIN_OVERVIEW.md"
+    "LICENSE"
   ],
   "scripts": {
     "build": "bb plugin build .",
