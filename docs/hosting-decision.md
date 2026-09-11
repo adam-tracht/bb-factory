@@ -16,7 +16,7 @@ The current audit found only one enrolled BB machine, `MacBook Pro`. Existing Cl
 - Rollout requires persistent plugin storage, verified restart behavior, operator access, one dispatch owner, and repository-by-repository enablement.
 - Some data-platform work requires host-local Aside/browser and dbt Studio access. Moving the scheduler does not remove that requirement.
 
-These constraints come from [PLAN.md](../PLAN.md), [architecture-notes.md](../architecture-notes.md), and [the frozen Phase 0 contract](phase-0-contract.md).
+These constraints come from [PLAN.md](../PLAN.md) and the frozen contract `v1.2` (freeze note in [CLAUDE.md](../CLAUDE.md); the full Phase 0 record lives in git history).
 
 ## Verified BB deployment facts
 

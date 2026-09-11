@@ -260,8 +260,9 @@ The implementation gates are now met by the current code and focused tests:
 - Plan boundary and P2 acceptance checks: `PLAN.md:108-116`.
 - Human-only initial-ready and authorization rules: `PLAN.md:33,116,197` and
   `CLAUDE.md:15,49`.
-- Frozen action, revision, error, provenance, and RPC seams:
-  `docs/phase-0-contract.md:110-135` and `src/contracts.ts:398-429,
+- Frozen action, revision, error, provenance, and RPC seams: contract `v1.2`
+  (freeze note in `CLAUDE.md`; the Phase 0 contract record was removed
+  post-ship and lives in git history) and `src/contracts.ts:398-429,
   492-740`.
 - Current storage implementation: `src/storage/index.ts:49-122,
   150-213, 656-755`.

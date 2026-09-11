@@ -9,7 +9,6 @@ Open work:
 - BBF-0007 marketplace listing is Active but requires an explicit `approved:`
   line before any tag, publish, or marketplace submission actions.
 - BBF-0008 rollout gate is Blocked on the always-on host, remote Connect
-  owner-session route, and live run_detail path (docs/phase-1-acceptance.md,
-  docs/hosting-decision.md).
+  owner-session route, and live run_detail path (docs/hosting-decision.md).
 
 state: success
