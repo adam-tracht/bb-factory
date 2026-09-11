@@ -152,26 +152,29 @@ describe("WorkView grouping", () => {
     makeEntry({ id: "BLOCKED-1", dependsOn: ["READY-1"], eligibilityReasons: ["unmet-dependency"] }),
     makeEntry({ id: "UNKNOWN-1", status: { kind: "unknown", raw: "mystery-state" }, eligibilityReasons: ["not-ready"] }),
     makeEntry({ id: "RUN-1", status: { kind: "in-progress", detail: "foreman running" } }),
+    makeEntry({ id: "DRAFT-1", status: { kind: "draft" }, eligibilityReasons: ["not-ready"] }),
     makeEntry({ id: "DONE-1", status: { kind: "done", detail: "shipped" }, eligibilityReasons: ["not-ready"] }),
   ];
 
-  it("renders Needs you, Ready, Blocked, Running, Done in order with counts", () => {
+  it("renders Needs you, Ready, Blocked, Running, Drafts, Done in order with counts", () => {
     renderWork(queue);
     const headings = screen.getAllByRole("heading").map((heading) => heading.textContent);
-    expect(headings).toEqual(["Needs you", "Ready", "Blocked", "Running", "Done"]);
+    expect(headings).toEqual(["Needs you", "Ready", "Blocked", "Running", "Drafts", "Done"]);
     expect(within(sectionOf("Needs you")).getByText("2")).toBeTruthy();
     expect(within(sectionOf("Done")).getByText("1")).toBeTruthy();
   });
 
   it("partitions every entry into exactly one expected group", () => {
     renderWork(queue);
-    // Done renders collapsed by default; expand it so its rows mount.
+    // Done and Drafts render collapsed by default; expand them so rows mount.
     fireEvent.click(sectionOf("Done").querySelector("summary")!);
+    fireEvent.click(sectionOf("Drafts").querySelector("summary")!);
     const expectations: Array<[string, string[]]> = [
       ["Needs you", ["NEEDS-APPROVAL", "GATED-1"]],
       ["Ready", ["READY-1"]],
       ["Blocked", ["BLOCKED-1", "UNKNOWN-1"]],
       ["Running", ["RUN-1"]],
+      ["Drafts", ["DRAFT-1"]],
       ["Done", ["DONE-1"]],
     ];
     for (const [title, ids] of expectations) {
@@ -206,6 +209,17 @@ describe("WorkView grouping", () => {
 });
 
 describe("WorkView rows", () => {
+  it("renders a quiet Draft badge in the Drafts group with no CTAs", () => {
+    renderWork([makeEntry({ id: "DRAFT-1", status: { kind: "draft" }, eligibilityReasons: ["not-ready"] })]);
+    const drafts = sectionOf("Drafts");
+    fireEvent.click(drafts.querySelector("summary")!);
+    const row = rowOf("DRAFT-1");
+    expect(within(row).getByText("Draft")).toBeTruthy();
+    expect(within(row).queryByText("Unrecognized status")).toBeNull();
+    expect(within(row).queryByRole("button", { name: "Approve" })).toBeNull();
+    expect(within(row).queryByRole("button", { name: /^Answer/ })).toBeNull();
+  });
+
   it("renders raw status, warning copy, and a queue.md link for unknown status", () => {
     renderWork([makeEntry({ id: "UNKNOWN-1", status: { kind: "unknown", raw: "mystery-state" }, eligibilityReasons: ["not-ready"] })]);
     expect(within(rowOf("UNKNOWN-1")).getByText("Unrecognized status")).toBeTruthy();

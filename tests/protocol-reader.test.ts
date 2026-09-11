@@ -289,10 +289,23 @@ acceptance:
 - done
 validate:
 - pnpm test
+
+## DATA-0099 Proposed row
+status: draft
+priority: 3
+depends_on: none
+risk: low
+plan: plans/y.md
+approved: none
+acceptance:
+- done
+validate:
+- pnpm test
 `, "plans/factory/queue.md");
     expect(parsed[0]?.status).toEqual({ kind: "ready" });
     expect(parsed[0]?.blockedBy).toEqual(["Q13"]);
     expect(parsed[1]?.status).toEqual({ kind: "unknown", raw: "frobnicate" });
+    expect(parsed[2]?.status).toEqual({ kind: "draft" });
 
     const files = makeFiles({
       "plans/factory/foreman.md": "# Foreman\n",
@@ -318,6 +331,18 @@ priority: 2
 depends_on: none
 risk: low
 plan: plans/x.md
+approved: none
+acceptance:
+- done
+validate:
+- pnpm test
+
+## DATA-0099 Proposed row
+status: draft
+priority: 3
+depends_on: none
+risk: low
+plan: plans/y.md
 approved: none
 acceptance:
 - done
@@ -352,6 +377,12 @@ answer:
       eligible: false,
     });
     expect(drifted?.eligibilityReasons).toContain("not-ready");
+    const proposed = snapshot.queue.find((entry) => entry.id === "DATA-0099");
+    expect(proposed).toMatchObject({
+      status: { kind: "draft" },
+      eligible: false,
+    });
+    expect(proposed?.eligibilityReasons).toEqual(["not-ready"]);
   });
 
   it("supports base64 file responses and compact or colonized run timestamps", async () => {

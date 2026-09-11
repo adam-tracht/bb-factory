@@ -23,13 +23,14 @@ const LIST_CLAMP = 6;
 const NOTE_LINE_CLAMP = 6;
 const NOTE_CHAR_CLAMP = 320;
 
-type WorkGroup = "needs-you" | "ready" | "blocked" | "running" | "done";
+type WorkGroup = "needs-you" | "ready" | "blocked" | "running" | "draft" | "done";
 
 const STATUS_TONE: Record<QueueEntry["status"]["kind"], Tone> = {
   ready: "success",
   "in-progress": "primary",
   done: "neutral",
   "blocked-by": "warning",
+  draft: "neutral",
   unknown: "danger",
 };
 
@@ -61,6 +62,7 @@ function needsYou(entry: QueueEntry): boolean {
 function groupOf(entry: QueueEntry): WorkGroup {
   if (entry.status.kind === "done") return "done";
   if (entry.status.kind === "in-progress") return "running";
+  if (entry.status.kind === "draft") return "draft";
   if (needsYou(entry)) return "needs-you";
   if (entry.eligible) return "ready";
   return "blocked";
@@ -307,6 +309,7 @@ export function WorkView(props: {
       ready: [],
       blocked: [],
       running: [],
+      draft: [],
       done: [],
     };
     for (const entry of snapshot.queue) buckets[groupOf(entry)].push(entry);
@@ -327,6 +330,7 @@ export function WorkView(props: {
     { key: "ready", title: "Ready", defaultOpen: true },
     { key: "blocked", title: "Blocked", defaultOpen: true },
     { key: "running", title: "Running", defaultOpen: true },
+    { key: "draft", title: "Drafts", defaultOpen: focusedEntry !== null && groupOf(focusedEntry) === "draft" },
     { key: "done", title: "Done", defaultOpen: focusedEntry !== null && groupOf(focusedEntry) === "done" },
   ];
 

@@ -289,6 +289,7 @@ export const queueStatusSchema = z.discriminatedUnion("kind", [
   z
     .object({ kind: z.literal("blocked-by"), questionId: nonEmptyString, detail: nonEmptyString.optional() })
     .strict(),
+  z.object({ kind: z.literal("draft") }).strict(),
   z.object({ kind: z.literal("unknown"), raw: nonEmptyString }).strict(),
 ]);
 export type QueueStatus = z.infer<typeof queueStatusSchema>;

@@ -6,7 +6,7 @@ Entry format (copy the block, one per task):
 
 ```
 ## <DASHBOARD-ID> <short title>
-status: ready | in-progress (...) | done (...) | blocked-by: Q<n>
+status: draft | ready | in-progress (...) | done (...) | blocked-by: Q<n>
 priority: 1 (highest) to 5
 depends_on: <IDs, or none>
 risk: low | medium | high
@@ -198,3 +198,18 @@ validate:
 - pnpm test
 - pnpm typecheck
 notes: Found during BBF-0011 review. `approve-queue` on a ready entry returns conflict "already ready with different authorization" (src/actions/repository.ts:90-95) before the blocked-by-question guard runs, while the reader still emits `missing-authorization` for ready entries without an `approved:` line, so the UI offers an Approve that always fails.
+
+## BBF-0013 First-class draft queue status
+status: done (orchestrated session 2026-09-11)
+priority: 3
+depends_on: none
+risk: low
+plan: src/protocol/markdown.ts, src/ui/views/work.ts
+approved: none
+acceptance:
+- `status: draft` parses to its own kind instead of falling through to unknown.
+- Draft entries render a neutral Draft badge in a collapsed Drafts group, are never eligible, and get no Approve or Answer CTAs; malformed statuses keep the loud Unrecognized treatment.
+validate:
+- pnpm test
+- pnpm typecheck
+notes: Reported live: a draft entry rendered as an "Unrecognized status" danger badge inside the Blocked group. The shipped template and this queue's format header now list `draft` in the status set.
