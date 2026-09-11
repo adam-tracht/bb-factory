@@ -27,7 +27,7 @@ Rules:
 - `risk: high` entries need at least one `approved:` item or they will be skipped.
 
 ## BBF-0001 Spawn contract and registry schema
-status: draft
+status: ready
 priority: 1
 depends_on: none
 risk: low
@@ -42,7 +42,7 @@ validate:
 - pnpm test
 
 ## BBF-0002 Protocol scaffolder
-status: draft
+status: ready
 priority: 2
 depends_on: BBF-0001
 risk: medium
@@ -58,7 +58,7 @@ validate:
 - pnpm lint
 
 ## BBF-0003 Dedicated checkout provisioning
-status: draft
+status: ready
 priority: 2
 depends_on: BBF-0002
 risk: medium
@@ -73,7 +73,7 @@ validate:
 - pnpm typecheck
 
 ## BBF-0004 Quickstart add-repository flow
-status: draft
+status: ready
 priority: 2
 depends_on: BBF-0001, BBF-0003
 risk: medium
@@ -92,7 +92,7 @@ validate:
 - pnpm lint
 
 ## BBF-0005 Registry-first discovery gating
-status: draft
+status: ready
 priority: 3
 depends_on: BBF-0004
 risk: low
@@ -106,7 +106,7 @@ validate:
 - pnpm typecheck
 
 ## BBF-0006 Release hygiene
-status: draft
+status: ready
 priority: 3
 depends_on: none
 risk: low
@@ -124,7 +124,7 @@ validate:
 - bb plugin types --check .
 
 ## BBF-0007 Marketplace listing
-status: draft
+status: ready
 priority: 4
 depends_on: BBF-0004, BBF-0006
 risk: high
