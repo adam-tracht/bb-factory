@@ -213,3 +213,18 @@ validate:
 - pnpm test
 - pnpm typecheck
 notes: Reported live: a draft entry rendered as an "Unrecognized status" danger badge inside the Blocked group. The shipped template and this queue's format header now list `draft` in the status set.
+
+## BBF-0014 Blocked-by badge drops the question id when a detail exists
+status: draft
+priority: 3
+depends_on: none
+risk: low
+plan: src/ui/primitives.ts
+approved: none
+acceptance:
+- A `blocked-by` status with a detail renders the question id plus the detail (e.g. "Blocked by Q6: property id now known"), never the detail alone.
+- The row still offers a way to reach the referenced question.
+validate:
+- pnpm test
+- pnpm typecheck
+notes: Reported live on diggs-data-platform DATA-0007.04: `blocked-by: Q6 (property id now known; ...)` rendered as "Blocked: (property id now known; ...)", which reads like an error and hides the question reference. queueStatusLabel at src/ui/primitives.ts:500 prefers detail over questionId.
