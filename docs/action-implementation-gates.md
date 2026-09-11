@@ -10,9 +10,12 @@ actor identity. Verified against the installed `@get-bb/plugin-sdk@0.4.47`.
 
 - `factory_action` is routed by `src/rpc/action-router.ts`: revision-free
   actions go to the read-only executor, repository actions to the repository
-  executor, `scaffold-protocol` to the scaffold executor, and BB interaction
-  plus run-control actions to the interaction executor. Successful
-  non-preview results publish a repository-changed invalidation.
+  executor, `scaffold-protocol` to the scaffold executor, `provision-checkout`
+  to the provision executor, and BB interaction plus run-control actions to
+  the interaction executor. A `provision-checkout` request with an explicit
+  `hostId` + `repositoryRoot` target is allowed before the repository is
+  registered; every other action still requires a configured entry.
+  Successful non-preview results publish a repository-changed invalidation.
 - The repository executor (`src/actions/repository.ts`) performs the guarded
   sequence below: fresh snapshot, expected-revision check, single-file
   section-preserving Markdown update (`src/actions/markdown.ts`), durable
@@ -29,9 +32,26 @@ actor identity. Verified against the installed `@get-bb/plugin-sdk@0.4.47`.
   It writes nothing to the repository.
 - The `pending_action_intents` table stores typed request, target, expected
   revision, single-file change, entry point, one-shot, lifecycle status,
-  result, and reconciliation metadata, and all three executors consume it. Its
-  `action_kind` constraint was widened for `recommend-question` and later for
-  `scaffold-protocol` by append-only table rebuild migrations.
+  result, and reconciliation metadata, and all mutating executors consume it. Its
+  `action_kind` constraint was widened for `recommend-question`, later for
+  `scaffold-protocol`, and again for `provision-checkout` by append-only table
+  rebuild migrations.
+- The provision executor (`src/actions/provision.ts`) provisions the
+  dedicated factory worktree (`<repositoryRoot>-factory` on `factory`) through
+  host terminals, creating the `factory` branch from the repo's remote default
+  (`origin/HEAD`) when missing and falling back to plain `-b factory` on the
+  current HEAD. A `factory` branch already checked out in another worktree
+  returns the structured `branch-in-use` outcome with the blocking path so
+  the add flow can offer the direct-checkout fallback. Direct mode only
+  verifies the root and reports its branch; it never creates or switches
+  branches. Guard outcomes and direct mode run before the intent claim; only
+  the `worktree add` is claimed and reconciled.
+- Host command execution is shared by `src/actions/host-command.ts`
+  (`runHostCommand`): command-mode terminal create, `terminals.get` polling,
+  base64 output decode, and force-close. A create failure throws
+  `HostCommandStartError` (nothing ran); a disconnect or timeout throws
+  `HostCommandLostError` (the result is ambiguous and reconciled for
+  mutations); a non-zero exit is a normal result the caller interprets.
 - The scaffold executor (`src/actions/scaffold.ts`) writes only missing
   protocol files from the bundled `templates/` manifest with create-only
   `expectedSha256: null` CAS (a conflict is a skip, never an overwrite),

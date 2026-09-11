@@ -1,5 +1,6 @@
 import {
   bbInteractionActionRequestSchema,
+  provisionCheckoutActionRequestSchema,
   repositoryActionRequestSchema,
   revisionFreeActionRequestSchema,
   scaffoldProtocolActionRequestSchema,
@@ -73,6 +74,9 @@ export function createFactoryRpcHandlers(
 
       const repositoryAction = repositoryActionRequestSchema.safeParse(input);
       const scaffoldAction = repositoryAction.success ? null : scaffoldProtocolActionRequestSchema.safeParse(input);
+      const provisionAction = repositoryAction.success || scaffoldAction?.success
+        ? null
+        : provisionCheckoutActionRequestSchema.safeParse(input);
       let request;
       let execute: () => Promise<FactoryActionResult>;
       if (repositoryAction.success) {
@@ -83,6 +87,10 @@ export function createFactoryRpcHandlers(
         request = scaffoldAction.data;
         const valid = scaffoldAction.data;
         execute = () => composition.scaffoldProtocolActionExecutor.execute(valid);
+      } else if (provisionAction !== null && provisionAction.success) {
+        request = provisionAction.data;
+        const valid = provisionAction.data;
+        execute = () => composition.provisionCheckoutActionExecutor.execute(valid);
       } else {
         const bbAction = bbInteractionActionRequestSchema.safeParse(input);
         if (!bbAction.success) {
@@ -96,7 +104,11 @@ export function createFactoryRpcHandlers(
         execute = () => composition.bbInteractionActionExecutor.execute(valid);
       }
       const entry = composition.getRepositoryEntry(request.repositoryKey);
-      if (!entry) {
+      // A provision request with an explicit host + root target runs before
+      // the repository is registered, so it does not need a configured entry.
+      const provisionHasExplicitTarget =
+        request.action.kind === "provision-checkout" && request.action.hostId !== undefined;
+      if (!entry && !provisionHasExplicitTarget) {
         return actionError("not-found", `Repository '${request.repositoryKey}' is not configured.`, request.idempotencyKey);
       }
 

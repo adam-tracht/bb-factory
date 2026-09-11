@@ -130,6 +130,13 @@ export class FakeFileSystem {
     return this.files.get(posix.join(rootPath, relativePath));
   }
 
+  /** True when the absolute path is a seeded file or a directory containing one. */
+  hasPath(absolutePath: string): boolean {
+    if (this.files.has(absolutePath)) return true;
+    const prefix = absolutePath.endsWith("/") ? absolutePath : `${absolutePath}/`;
+    return [...this.files.keys()].some((key) => key.startsWith(prefix));
+  }
+
   put(absolutePath: string, content: string, mtime?: number): void {
     this.files.set(absolutePath, content);
     if (mtime !== undefined) this.mtimes.set(absolutePath, mtime);
@@ -180,6 +187,81 @@ export class FakeFileSystem {
       .map((key) => ({ kind: "file" as const, name: posix.basename(key), path: key }));
     return { paths, truncated: false };
   }
+}
+
+/** A hosts-area stand-in whose pathsExist answers from the fake file system. */
+export function makeHostsProbe(files: FakeFileSystem) {
+  return {
+    pathsExist: async (args: { hostId?: string; paths: readonly string[] }) => ({
+      existence: Object.fromEntries(args.paths.map((path) => [path, files.hasPath(path)])),
+    }),
+  };
+}
+
+export interface FakeTerminalResponse {
+  readonly status?: "exited" | "running" | "disconnected" | "starting";
+  readonly exitCode?: number | null;
+  readonly output?: string;
+  /** Runs when a matching command is created; simulates host side effects. */
+  readonly sideEffect?: () => void;
+}
+
+export interface FakeTerminalRule {
+  /** Substring or pattern matched against the terminal's command. */
+  readonly match: string | RegExp;
+  readonly response: FakeTerminalResponse;
+}
+
+/**
+ * Command-mode terminal stand-in for host-command tests: create() picks the
+ * first rule whose matcher appears in the command (falling back to a clean
+ * exit), sessions report "exited" immediately, and output() replays the
+ * rule's text as base64 chunks. Every created command is recorded in `runs`.
+ */
+export function makeHostTerminals(rules: readonly FakeTerminalRule[] = [], fallback: FakeTerminalResponse = {}) {
+  let counter = 0;
+  const sessions = new Map<string, { session: Record<string, unknown>; output: string }>();
+  const runs: string[] = [];
+  const pick = (command: string): FakeTerminalResponse => {
+    const rule = rules.find((candidate) =>
+      typeof candidate.match === "string" ? command.includes(candidate.match) : candidate.match.test(command));
+    return rule?.response ?? fallback;
+  };
+  return {
+    runs,
+    create: async (args: { start?: { command?: string }; title?: string; scope: unknown }) => {
+      const command = args.start?.command ?? "";
+      runs.push(command);
+      const response = pick(command);
+      response.sideEffect?.();
+      counter += 1;
+      const session = {
+        id: `term-${counter}`,
+        hostId: "host-1",
+        environmentId: null,
+        threadId: null,
+        status: response.status ?? "exited",
+        exitCode: response.exitCode ?? 0,
+        cols: 120,
+        rows: 30,
+        title: args.title ?? "test",
+        createdAt: 0,
+        updatedAt: 0,
+        initialCwd: "/repo",
+        lastUserInputAt: null,
+        closeReason: null,
+      };
+      sessions.set(session.id, { session, output: response.output ?? "" });
+      return session;
+    },
+    get: async (args: { terminalId: string }) => sessions.get(args.terminalId)!.session,
+    output: async (args: { terminalId: string }) => ({
+      chunks: [{ dataBase64: Buffer.from(sessions.get(args.terminalId)!.output).toString("base64"), seq: 1 }],
+      nextSeq: 2,
+      truncated: false,
+    }),
+    close: async (args: { terminalId: string }) => sessions.get(args.terminalId)!.session,
+  };
 }
 
 export function makeProtocolReader(files: FakeFileSystem): ProtocolReader {

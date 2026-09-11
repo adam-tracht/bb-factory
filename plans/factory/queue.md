@@ -58,7 +58,7 @@ validate:
 - pnpm lint
 
 ## BBF-0003 Dedicated checkout provisioning
-status: ready
+status: done (orchestrated session 2026-09-11)
 priority: 2
 depends_on: BBF-0002
 risk: medium

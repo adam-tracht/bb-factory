@@ -18,6 +18,7 @@ import type {
   OperationalRunStatus,
   OperationalRunSummary,
   OwnershipLease,
+  ProvisionCheckoutActionRequest,
   RepositoryKey,
   RepositoryActionRequest,
   RepositoryRevision,
@@ -38,6 +39,7 @@ import {
   operationalRunListProjectionSchema,
   operationalRunSummarySchema,
   ownershipLeaseSchema,
+  provisionCheckoutActionRequestSchema,
   repositoryActionRequestSchema,
   repositoryKeySchema,
   repositoryRevisionSchema,
@@ -64,6 +66,7 @@ const pendingActionRequestSchema = z.union([
   repositoryActionRequestSchema,
   bbInteractionActionRequestSchema,
   scaffoldProtocolActionRequestSchema,
+  provisionCheckoutActionRequestSchema,
 ]);
 const isoTimestampSchema = z.string().datetime({ offset: true });
 const pendingActionIntentStatusSchema = z.enum([
@@ -307,6 +310,32 @@ export const OPERATIONAL_STORAGE_MIGRATIONS = [
   `INSERT INTO pending_action_intents_v3 SELECT * FROM pending_action_intents`,
   `DROP TABLE pending_action_intents`,
   `ALTER TABLE pending_action_intents_v3 RENAME TO pending_action_intents`,
+  // SQLite cannot alter a CHECK constraint, so widening action_kind for
+  // provision-checkout rebuilds the table again.
+  `CREATE TABLE pending_action_intents_v4 (
+    idempotency_key TEXT PRIMARY KEY,
+    repository_key TEXT NOT NULL,
+    action_kind TEXT NOT NULL CHECK (action_kind IN ('run-now', 'pause', 'resume', 'answer-question', 'approve-queue', 'recommend-question', 'retry', 'stop', 'scaffold-protocol', 'provision-checkout')),
+    request_fingerprint TEXT NOT NULL,
+    request_json TEXT NOT NULL,
+    expected_revision_json TEXT NOT NULL,
+    target_json TEXT NOT NULL,
+    file_change_json TEXT,
+    entry_point TEXT NOT NULL CHECK (entry_point IN ('action-executor', 'native-ui-initial-ready')),
+    one_shot INTEGER NOT NULL CHECK (one_shot IN (0, 1)),
+    status TEXT NOT NULL CHECK (status IN ('pending', 'resolving', 'completed', 'reconciliation-required')),
+    submitted_at TEXT NOT NULL,
+    expires_at TEXT,
+    last_attempt_at TEXT,
+    completed_at TEXT,
+    result_json TEXT,
+    observed_status TEXT CHECK (observed_status IS NULL OR observed_status IN ('pending', 'resolving', 'resolved', 'interrupted', 'written', 'conflict', 'verified')),
+    observed_resolution_json TEXT,
+    last_error TEXT
+  )`,
+  `INSERT INTO pending_action_intents_v4 SELECT * FROM pending_action_intents`,
+  `DROP TABLE pending_action_intents`,
+  `ALTER TABLE pending_action_intents_v4 RENAME TO pending_action_intents`,
 ] as const;
 
 export interface CreateRunIntentInput {
@@ -370,7 +399,11 @@ export interface IdempotencyClaim<T> {
   readonly record: T;
 }
 
-export type PendingActionIntentRequest = RepositoryActionRequest | BbInteractionActionRequest | ScaffoldProtocolActionRequest;
+export type PendingActionIntentRequest =
+  | RepositoryActionRequest
+  | BbInteractionActionRequest
+  | ScaffoldProtocolActionRequest
+  | ProvisionCheckoutActionRequest;
 export type PendingActionIntentStatus = z.infer<typeof pendingActionIntentStatusSchema>;
 export type PendingActionIntentEntryPoint = z.infer<typeof pendingActionIntentEntryPointSchema>;
 export type PendingActionObservedStatus = z.infer<typeof pendingActionObservedStatusSchema>;

@@ -561,6 +561,7 @@ export const actionKindSchema = z.enum([
   "stop",
   "integration-report",
   "scaffold-protocol",
+  "provision-checkout",
 ]);
 export type ActionKind = z.infer<typeof actionKindSchema>;
 
@@ -710,10 +711,43 @@ const scaffoldProtocolActionSchema = z
   .strict();
 export type ScaffoldProtocolAction = z.infer<typeof scaffoldProtocolActionSchema>;
 
+/**
+ * Provisions the checkout a repository registers. "worktree" mode runs
+ * `git worktree add <repositoryRoot>-factory` on the connected host, creating
+ * the `factory` branch when missing; "direct" mode only verifies the root is
+ * a Git checkout and reports its branch (switching is never this action's
+ * job). hostId + repositoryRoot make the target explicit so the add wizard
+ * can provision before a registry entry exists; when both are omitted the
+ * configured entry for repositoryKey supplies them.
+ */
+const provisionCheckoutActionSchema = z
+  .object({
+    kind: z.literal("provision-checkout"),
+    mode: z.enum(["worktree", "direct"]),
+    hostId: nonEmptyString.optional(),
+    repositoryRoot: absolutePath.optional(),
+  })
+  .strict()
+  .superRefine((action, context) => {
+    if ((action.hostId === undefined) !== (action.repositoryRoot === undefined)) {
+      context.addIssue({
+        code: "custom",
+        path: ["repositoryRoot"],
+        message: "hostId and repositoryRoot must be provided together",
+      });
+    }
+  });
+export type ProvisionCheckoutAction = z.infer<typeof provisionCheckoutActionSchema>;
+
 export const guardedActionSchema = z.union([repositoryActionSchema, bbInteractionActionSchema]);
 export type GuardedAction = z.infer<typeof guardedActionSchema>;
 
-export const factoryActionSchema = z.union([revisionFreeActionSchema, guardedActionSchema, scaffoldProtocolActionSchema]);
+export const factoryActionSchema = z.union([
+  revisionFreeActionSchema,
+  guardedActionSchema,
+  scaffoldProtocolActionSchema,
+  provisionCheckoutActionSchema,
+]);
 export type FactoryAction = z.infer<typeof factoryActionSchema>;
 
 function validateIdempotencyBinding(
@@ -793,11 +827,28 @@ export const scaffoldProtocolActionRequestSchema = z
   .superRefine(validateIdempotencyBinding);
 export type ScaffoldProtocolActionRequest = z.infer<typeof scaffoldProtocolActionRequestSchema>;
 
+/**
+ * Provision requests carry the same envelope as scaffold: repositoryKey binds
+ * the idempotency key even when the action targets an explicit host + root
+ * for a repository that is not registered yet.
+ */
+export const provisionCheckoutActionRequestSchema = z
+  .object({
+    repositoryKey: repositoryKeySchema,
+    action: provisionCheckoutActionSchema,
+    idempotencyKey: idempotencyKeySchema,
+    expectedRevision: repositoryRevisionSchema.default(EMPTY_REPOSITORY_REVISION),
+  })
+  .strict()
+  .superRefine(validateIdempotencyBinding);
+export type ProvisionCheckoutActionRequest = z.infer<typeof provisionCheckoutActionRequestSchema>;
+
 export const factoryActionRequestSchema = z.union([
   revisionFreeActionRequestSchema,
   repositoryActionRequestSchema,
   bbInteractionActionRequestSchema,
   scaffoldProtocolActionRequestSchema,
+  provisionCheckoutActionRequestSchema,
 ]);
 export type FactoryActionRequest = z.infer<typeof factoryActionRequestSchema>;
 
@@ -879,10 +930,51 @@ export const scaffoldProtocolOutcomeSchema = z
   .strict();
 export type ScaffoldProtocolOutcome = z.infer<typeof scaffoldProtocolOutcomeSchema>;
 
+/**
+ * Provision results describe the checkout the caller should register.
+ * `status` stays "accepted" only when the host changed (a worktree add
+ * landed); non-mutating results keep "preview" or "already-applied" so the
+ * router does not publish a repository-changed invalidation for a read-only
+ * outcome.
+ */
+export const provisionCheckoutOutcomeSchema = z
+  .object({
+    ...actionOutcomeFields,
+    action: z.literal("provision-checkout"),
+    questionId: z.null().optional(),
+    interactionId: z.null().optional(),
+    mode: z.enum(["worktree", "direct"]),
+    /**
+     * "provisioned": the worktree was created on the factory branch.
+     * "already-provisioned": the worktree already existed on factory.
+     * "branch-in-use": the factory branch is checked out in another worktree
+     * (blockingWorktreePath); the wizard offers the direct-checkout fallback.
+     * "verified": direct mode found the root on the factory branch.
+     * "off-branch": direct mode found a different branch; surfacing the
+     * switch is the caller's job, never this action's.
+     */
+    outcome: z.enum(["provisioned", "already-provisioned", "branch-in-use", "verified", "off-branch"]),
+    /** Path to register as checkoutPath: `<root>-factory` or the root itself. */
+    checkoutPath: absolutePath,
+    /** Branch checked out at checkoutPath after the action, when known. */
+    branch: nonEmptyString.nullable(),
+    /** The worktree already holding the factory branch (branch-in-use only). */
+    blockingWorktreePath: absolutePath.nullable(),
+    /** Whether this run created the factory branch; null when no add ran. */
+    branchCreated: z.boolean().nullable(),
+    /** Whether the factory branch existed before the add; null when unprobed. */
+    branchExisted: z.boolean().nullable(),
+    /** Remote base ref a created branch started from; null for plain HEAD or no creation. */
+    baseRef: nonEmptyString.nullable(),
+  })
+  .strict();
+export type ProvisionCheckoutOutcome = z.infer<typeof provisionCheckoutOutcomeSchema>;
+
 export const actionOutcomeSchema = z.union([
   answerQuestionOutcomeSchema,
   recommendQuestionOutcomeSchema,
   scaffoldProtocolOutcomeSchema,
+  provisionCheckoutOutcomeSchema,
   nonAnswerActionOutcomeSchema,
 ]);
 export type ActionOutcome = z.infer<typeof actionOutcomeSchema>;

@@ -58,6 +58,31 @@ function makeComposition(overrides: Partial<FactoryComposition> = {}) {
         },
       })),
     },
+    provisionCheckoutActionExecutor: {
+      execute: vi.fn(async (): Promise<FactoryActionResult> => ({
+        ok: true,
+        revision: null,
+        result: {
+          status: "preview",
+          message: "verified",
+          revision: null,
+          runId: null,
+          leaseId: null,
+          queueItemId: null,
+          action: "provision-checkout",
+          questionId: null,
+          interactionId: null,
+          mode: "direct",
+          outcome: "verified",
+          checkoutPath: "/repo",
+          branch: "factory",
+          blockingWorktreePath: null,
+          branchCreated: null,
+          branchExisted: null,
+          baseRef: null,
+        },
+      })),
+    },
     dispatchEngine: {},
     dispatchContext: {},
     scheduler: { tick: vi.fn() },
@@ -125,6 +150,7 @@ describe("factory action RPC router", () => {
       repositoryKey: "monorepo",
       action: { kind: "scaffold-protocol" },
       idempotencyKey: "bbf:v1:monorepo:scaffold-protocol:823e4567-e89b-12d3-a456-426614174000",
+      expectedRevision: revision,
     });
     expect(result.ok).toBe(true);
     expect(composition.scaffoldProtocolActionExecutor.execute).toHaveBeenCalledWith(expect.objectContaining({
@@ -132,6 +158,45 @@ describe("factory action RPC router", () => {
     }));
     expect(composition.repositoryActionExecutor.execute).not.toHaveBeenCalled();
     expect(publish).toHaveBeenCalledWith(expect.objectContaining({ kind: "repository.changed" }));
+  });
+
+  it("routes provision-checkout actions to the provision executor", async () => {
+    const { handlers, composition } = makeComposition();
+    const result = await handlers.factory_action({
+      repositoryKey: "monorepo",
+      action: { kind: "provision-checkout", mode: "worktree" },
+      idempotencyKey: "bbf:v1:monorepo:provision-checkout:923e4567-e89b-42d3-8456-426614174000",
+      expectedRevision: revision,
+    });
+    expect(result.ok).toBe(true);
+    expect(composition.provisionCheckoutActionExecutor.execute).toHaveBeenCalledWith(expect.objectContaining({
+      action: { kind: "provision-checkout", mode: "worktree" },
+    }));
+    expect(composition.repositoryActionExecutor.execute).not.toHaveBeenCalled();
+  });
+
+  it("routes provision-checkout with an explicit target for an unconfigured repository", async () => {
+    const { handlers, composition } = makeComposition();
+    const result = await handlers.factory_action({
+      repositoryKey: "newrepo",
+      action: { kind: "provision-checkout", mode: "direct", hostId: "host-1", repositoryRoot: "/repo" },
+      idempotencyKey: "bbf:v1:newrepo:provision-checkout:923e4567-e89b-42d3-8456-426614174000",
+      expectedRevision: revision,
+    });
+    expect(result.ok).toBe(true);
+    expect(composition.provisionCheckoutActionExecutor.execute).toHaveBeenCalled();
+  });
+
+  it("rejects provision-checkout without an explicit target for an unconfigured repository", async () => {
+    const { handlers, composition } = makeComposition();
+    const result = await handlers.factory_action({
+      repositoryKey: "newrepo",
+      action: { kind: "provision-checkout", mode: "direct" },
+      idempotencyKey: "bbf:v1:newrepo:provision-checkout:923e4567-e89b-42d3-8456-426614174000",
+      expectedRevision: revision,
+    });
+    expect(result).toMatchObject({ ok: false, error: { category: "not-found" } });
+    expect(composition.provisionCheckoutActionExecutor.execute).not.toHaveBeenCalled();
   });
 
   it("routes revision-free actions to the read-only executor without a revision", async () => {

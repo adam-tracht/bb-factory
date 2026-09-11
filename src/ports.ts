@@ -9,6 +9,7 @@ import type {
   ProviderStatus,
   PendingInteractionsProjection,
   ProtocolSnapshot,
+  ProvisionCheckoutActionRequest,
   RepositoryConfiguration,
   RepositoryKey,
   RepositoryActionRequest,
@@ -48,4 +49,8 @@ export interface BbInteractionActionExecutor {
 
 export interface ScaffoldProtocolActionExecutor {
   execute(request: ScaffoldProtocolActionRequest): Promise<FactoryActionResult>;
+}
+
+export interface ProvisionCheckoutActionExecutor {
+  execute(request: ProvisionCheckoutActionRequest): Promise<FactoryActionResult>;
 }

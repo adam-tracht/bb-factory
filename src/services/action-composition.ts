@@ -1,11 +1,13 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type {
   BbInteractionActionExecutor,
+  ProvisionCheckoutActionExecutor,
   RepositoryActionExecutor,
   ScaffoldProtocolActionExecutor,
 } from "../ports.js";
 import type { RepositoryKey } from "../contracts.js";
 import { createBbInteractionActionExecutor } from "../actions/interactions.js";
+import { createProvisionCheckoutActionExecutor } from "../actions/provision.js";
 import { createRepositoryActionExecutor } from "../actions/repository.js";
 import { createScaffoldProtocolActionExecutor } from "../actions/scaffold.js";
 import { createDispatchEngine, type DispatchEngine } from "../dispatch/index.js";
@@ -29,6 +31,7 @@ export interface ActionComposition {
   readonly repositoryActionExecutor: RepositoryActionExecutor;
   readonly bbInteractionActionExecutor: BbInteractionActionExecutor;
   readonly scaffoldProtocolActionExecutor: ScaffoldProtocolActionExecutor;
+  readonly provisionCheckoutActionExecutor: ProvisionCheckoutActionExecutor;
   readonly dispatchEngine: DispatchEngine;
   readonly dispatchContext: DispatchContext;
   readonly scheduler: { tick(): Promise<SchedulerTickResult[]> };
@@ -78,6 +81,13 @@ export function createActionComposition(options: ActionCompositionOptions): Acti
     now,
   });
 
+  const provisionCheckoutActionExecutor = createProvisionCheckoutActionExecutor({
+    sdk,
+    store,
+    repositoryLookup: (repositoryKey) => composition.getRepositoryEntry(repositoryKey as RepositoryKey),
+    now,
+  });
+
   const bbInteractionActionExecutor = createBbInteractionActionExecutor({
     threads: sdk.threads,
     store,
@@ -92,6 +102,7 @@ export function createActionComposition(options: ActionCompositionOptions): Acti
     repositoryActionExecutor,
     bbInteractionActionExecutor,
     scaffoldProtocolActionExecutor,
+    provisionCheckoutActionExecutor,
     dispatchEngine,
     dispatchContext,
     scheduler,

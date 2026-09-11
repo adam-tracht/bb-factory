@@ -14,11 +14,11 @@ import { confinedPath } from "../protocol/files.js";
 import { loadProtocolTemplates, type ProtocolTemplate } from "../scaffold/templates.js";
 import { readCheckoutBranch } from "../services/live-health.js";
 import type { OperationalStateStore, PendingActionIntentRecord } from "../storage/index.js";
+import { HostCommandStartError, runHostCommand, shellQuote, type HostCommandResult } from "./host-command.js";
 import { claimErrorResult, completeIntent, consumedResult, reconcileIntent, recordedIntentResult } from "./intents.js";
 import { actionError, actionSuccess, errorMessage } from "./results.js";
 
 type ScaffoldSdk = Pick<BbPluginApi["sdk"], "files" | "terminals">;
-type TerminalSession = Awaited<ReturnType<ScaffoldSdk["terminals"]["create"]>>;
 
 export interface ScaffoldProtocolActionExecutorOptions {
   readonly sdk: ScaffoldSdk;
@@ -28,13 +28,8 @@ export interface ScaffoldProtocolActionExecutorOptions {
 }
 
 const COMMIT_MESSAGE = "factory: scaffold protocol";
-const COMMIT_POLL_MS = 250;
 const COMMIT_TIMEOUT_MS = 60_000;
 const HEAD_SHA_RE = /^([0-9a-f]{40})\s*$/mu;
-
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
 
 function scaffoldFailure(error: unknown, idempotencyKey: IdempotencyKey): FactoryActionResult {
   const message = errorMessage(error);
@@ -67,46 +62,26 @@ export function createScaffoldProtocolActionExecutor(options: ScaffoldProtocolAc
   const now = options.now ?? (() => new Date());
   const sdk = options.sdk;
 
-  function decodeOutput(output: { chunks: readonly { dataBase64: string }[] }): string {
-    return output.chunks.map((chunk) => Buffer.from(chunk.dataBase64, "base64").toString("utf8")).join("");
-  }
-
   /** Runs the scaffold commit on the connected host and waits for it to exit. */
   async function runCommit(configuration: RepositoryConfiguration): Promise<CommitResult> {
     const command = `cd ${shellQuote(configuration.checkoutPath)} && git add plans && git commit -m "${COMMIT_MESSAGE}" && git rev-parse HEAD`;
-    let terminal: TerminalSession;
+    let run: HostCommandResult;
     try {
-      terminal = await sdk.terminals.create({
-        cols: 120,
-        rows: 30,
-        scope: { kind: "host_path", hostId: configuration.connectedHostId, cwd: configuration.checkoutPath },
-        start: { mode: "command", command },
+      run = await runHostCommand(sdk.terminals, {
+        hostId: configuration.connectedHostId,
+        cwd: configuration.checkoutPath,
+        command,
         title: "factory scaffold commit",
-      });
+        timeoutMs: COMMIT_TIMEOUT_MS,
+      }, now);
     } catch (error) {
       // A create failure means the command never started: nothing to reconcile.
-      return { ok: false, sha: null, output: `the commit terminal could not be created: ${errorMessage(error)}` };
+      if (error instanceof HostCommandStartError) {
+        return { ok: false, sha: null, output: `the commit terminal could not be created: ${errorMessage(error)}` };
+      }
+      throw error;
     }
-    try {
-      const deadline = now().getTime() + COMMIT_TIMEOUT_MS;
-      let session = terminal;
-      while ((session.status === "starting" || session.status === "running") && now().getTime() < deadline) {
-        await new Promise<void>((resolve) => {
-          setTimeout(resolve, COMMIT_POLL_MS);
-        });
-        session = await sdk.terminals.get({ terminalId: terminal.id });
-      }
-      const output = decodeOutput(await sdk.terminals.output({ terminalId: terminal.id }));
-      if (session.status === "disconnected") {
-        throw new Error(`the commit terminal disconnected mid-run. Output: ${output || "none"}`);
-      }
-      if (session.status !== "exited") {
-        throw new Error(`the commit did not finish within ${Math.round(COMMIT_TIMEOUT_MS / 1000)}s. Output: ${output || "none"}`);
-      }
-      return { ok: session.exitCode === 0, sha: HEAD_SHA_RE.exec(output)?.[1] ?? null, output };
-    } finally {
-      await sdk.terminals.close({ terminalId: terminal.id, mode: "force" }).catch(() => undefined);
-    }
+    return { ok: run.exitCode === 0, sha: HEAD_SHA_RE.exec(run.output)?.[1] ?? null, output: run.output };
   }
 
   /** True when the target exists inside the checkout; throws on other read failures. */
