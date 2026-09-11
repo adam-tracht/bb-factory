@@ -324,3 +324,22 @@ validate:
 - pnpm test
 - pnpm typecheck
 notes: Review of cbcdfe4 found the live-reported glitch: on the landing the Overview tab is highlighted by scopeSection, repo pills call onRepositorySelect with no navigation, and repositoriesActive guarantees they can never appear active, so every click fires a full load() that resets data.repositories to loading, unmounts the whole pill strip, and repaints the identical landing. Secondary: load() empties the switcher on every reload; onRealtime reloads on every factory event including other repos' (invalidationEventSchema carries repositoryKey, src/contracts.ts:1003); repositoryOverride is keyed to settingsIdentity which includes the raw registry JSON, so any registry write clears it and snaps back to the default repo (src/ui/FactoryView.ts:125-129,189-197).
+
+## BBF-0021 Repo chrome stays rendered over the repositories landing
+status: done (orchestrated session 2026-09-11)
+priority: 2
+depends_on: BBF-0020
+risk: low
+plan: src/ui/shell.ts
+approved: user direction 2026-09-11 (filed and orchestrated on instruction)
+acceptance:
+- When the repositories landing is the rendered content, the branch/commit chip, dispatch chip, running/idle badge, Pause/Resume, Run now (and its confirm dialog), and the section tab bar do not render.
+- The Factory title, repository switcher, refreshed indicator, chip legend, and connection/malformed banners still render.
+- Repo-scoped routes keep all chrome; the add-repository route is excluded from repositoriesActive, so the wizard keeps the chrome as before.
+- Regression coverage asserts the tablist, dispatch chip, and branch/commit chip absent on the landing and present on a repo view.
+validate:
+- pnpm test
+- pnpm typecheck
+- pnpm lint
+- pnpm build
+notes: Reported by live QA after c29f3cc: clicking "All" left the previous repo's sub-header (chips, run controls, tab bar) rendered above the Repositories landing. Fix gates all repo-scoped chrome in FactoryShell on the existing repositoriesActive prop (src/ui/FactoryView.ts:671), which is true exactly when the landing is the content (repositories route, no repos, or no selected entry).

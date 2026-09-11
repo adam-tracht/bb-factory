@@ -101,6 +101,41 @@ describe("FactoryShell", () => {
     expect(group).not.toMatch(/aria-pressed="false"[^>]*class="[^"]*shadow-sm/);
   });
 
+  it("hides repo-scoped chrome on the repositories landing but keeps the switcher and shared controls", () => {
+    const markup = renderToStaticMarkup(h(FactoryShell, shellProps({
+      repositories: switcherRepositories("alpha", "beta"),
+      selectedRepositoryKey: "alpha",
+      repositoriesActive: true,
+      runNow: { disabled: false, reason: null, confirmTitle: "Run?", confirmBody: "body", onConfirm: () => undefined },
+      activeRun: {
+        runId: "run-9",
+        repositoryKey: "alpha",
+        requestedAt: "2026-09-10T12:00:00Z",
+        startedAt: new Date(Date.now() - 5 * 60000).toISOString(),
+        finishedAt: null,
+        providerId: "codex",
+        workerThreadId: "th_1",
+        projectId: "p1",
+        environmentId: "e1",
+        status: "started",
+        queueItemIds: ["A-1"],
+        repositoryRevision: { gitCommit: "abc1234", protocolDigest: "d".repeat(64), fileDigests: {} },
+        canonicalRecords: [],
+      },
+      children: "body",
+    })));
+    expect(markup).not.toContain('role="tablist"');
+    expect(markup).not.toContain("Dispatch on");
+    expect(markup).not.toContain("@abcdef1");
+    expect(markup).not.toContain(">Pause<");
+    expect(markup).not.toContain("Running");
+    expect(markup).not.toContain("Run now");
+    expect(markup).toContain(">Factory<");
+    expect(markup).toContain('aria-label="Configured repository"');
+    expect(markup).toContain("refreshed");
+    expect(markup).toContain('aria-label="Chip legend"');
+  });
+
   it("keeps the selected repository pill active off the landing", () => {
     const markup = renderToStaticMarkup(h(FactoryShell, shellProps({
       repositories: switcherRepositories("alpha", "beta"),

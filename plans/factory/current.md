@@ -12,7 +12,9 @@ of stranding, and BBF-0016 through BBF-0019, four live-UI fixes
 and a collapsed Repository details disclosure in Settings), plus BBF-0020
 which fixed dead repo pills on the landing, switcher unmounts during
 reloads, selection snap-back on registry writes, and cross-repo realtime
-reload churn. All are Done on the canonical dashboard; see
+reload churn, and BBF-0021 which stops repo-scoped header chrome (chips,
+run controls, and the section tab bar) from rendering over the
+Repositories landing. All are Done on the canonical dashboard; see
 runs/2026-09-11-stale-question-gates.md.
 
 Open work:

@@ -192,6 +192,10 @@ export function FactoryShell(props: FactoryShellProps) {
   const chip = dispatchChip(props.dispatch);
   const run = props.activeRun;
   const runElapsed = run?.startedAt ? formatDuration(run.startedAt, null, now) : null;
+  // The repositories landing is not scoped to one repository, so none of the
+  // per-repo chrome (branch chip, dispatch state, run controls, section tabs)
+  // may render above it.
+  const repoChrome = !props.repositoriesActive;
 
   return h("main", { className: "flex h-full min-h-0 flex-1 flex-col bg-background text-foreground" },
     h("header", { className: "shrink-0 border-b border-border bg-background" },
@@ -199,26 +203,28 @@ export function FactoryShell(props: FactoryShellProps) {
         h("span", { className: "text-sm font-semibold" }, "Factory"),
         h(RepositorySwitcher, props),
         h("div", { className: "flex-1" }),
-        props.branch || props.commit
+        repoChrome && (props.branch || props.commit)
           ? h("span", { className: "inline-flex items-center gap-1 font-mono text-xs text-muted-foreground" },
               props.branch ?? "",
               props.commit ? h(CopyText, { value: props.commit, label: `@${shortSha(props.commit)}`, mono: true }) : null)
           : null,
-        chip ? h(Badge, {
+        repoChrome && chip ? h(Badge, {
           label: chip.label,
           tone: chip.tone,
           title: props.dispatch?.reason ?? undefined,
         }) : null,
-        run
-          ? h(Badge, {
-              label: `Running ${runElapsed ? `${runElapsed} ` : ""}${run.providerId ? `· ${run.providerId}` : ""}`,
-              tone: "primary",
-              title: `Run ${run.runId}${run.queueItemIds.length > 0 ? ` on ${run.queueItemIds.join(", ")}` : ""}`,
-            })
-          : props.dispatch && chip?.tone === "success"
-            ? h(Badge, { label: "Idle", tone: "neutral", title: "No run in progress" })
-            : null,
-        props.dispatch
+        repoChrome
+          ? run
+            ? h(Badge, {
+                label: `Running ${runElapsed ? `${runElapsed} ` : ""}${run.providerId ? `· ${run.providerId}` : ""}`,
+                tone: "primary",
+                title: `Run ${run.runId}${run.queueItemIds.length > 0 ? ` on ${run.queueItemIds.join(", ")}` : ""}`,
+              })
+            : props.dispatch && chip?.tone === "success"
+              ? h(Badge, { label: "Idle", tone: "neutral", title: "No run in progress" })
+              : null
+          : null,
+        repoChrome && props.dispatch
           ? h(ActionButton, {
               label: props.dispatch.mode === "enabled" ? "Pause" : "Resume",
               variant: "secondary",
@@ -228,7 +234,7 @@ export function FactoryShell(props: FactoryShellProps) {
               disabled: props.actionPending,
             })
           : null,
-        props.runNow
+        repoChrome && props.runNow
           ? h(ActionButton, {
               label: "Run now",
               variant: "primary",
@@ -257,7 +263,8 @@ export function FactoryShell(props: FactoryShellProps) {
             "aria-expanded": legendOpen,
           }, "?"),
           legendOpen ? h(ChipLegend, { onClose: () => setLegendOpen(false) }) : null)),
-      h("nav", { className: "flex items-center gap-1 px-3", role: "tablist", "aria-label": "Factory sections" },
+      repoChrome
+        ? h("nav", { className: "flex items-center gap-1 px-3", role: "tablist", "aria-label": "Factory sections" },
         SECTION_TABS.map((tab) => {
           const active = props.section === tab.section;
           const badge = tab.section === "work" ? props.badges.work
@@ -282,7 +289,7 @@ export function FactoryShell(props: FactoryShellProps) {
             tab.section === "runs" && props.badges.runsActive
               ? h(StatusDot, { tone: "primary", pulse: true })
               : null);
-        }))),
+        })) : null),
     h("div", { className: "min-h-0 flex-1 overflow-y-auto", "data-testid": "factory-scroll" },
       props.connectionState !== "connected"
         ? h("div", { className: "border-b border-warning/30 bg-warning/10 px-4 py-2 text-xs text-warning" },
@@ -295,7 +302,7 @@ export function FactoryShell(props: FactoryShellProps) {
             "A previous read returned malformed data. Showing the last good snapshot.")
         : null,
       h("div", { className: "mx-auto max-w-5xl px-4 py-4" }, props.children)),
-    props.runNow
+    repoChrome && props.runNow
       ? h(ConfirmDialog, {
           open: runNowOpen,
           title: props.runNow.confirmTitle,

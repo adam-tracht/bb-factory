@@ -413,6 +413,66 @@ describe("Factory view shell", () => {
     }
   });
 
+  it("hides repo-scoped chrome on the repositories landing and restores it on a repo view", async () => {
+    const { FactoryView } = await import("../src/ui/FactoryView.js");
+    const rpc = {
+      ...baseRpc(),
+      factory_repositories: vi.fn((input: { selectedRepositoryKey?: string | null }) => repositorySelectionForSwitch(input.selectedRepositoryKey)),
+      factory_snapshot: vi.fn(({ repositoryKey }: { repositoryKey: string }) => snapshotForSwitch(repositoryKey)),
+      factory_settings: vi.fn(({ repositoryKey }: { repositoryKey: string }) => settingsForSwitch(repositoryKey)),
+      factory_health: vi.fn(({ repositoryKey }: { repositoryKey: string }) => healthForSwitch(repositoryKey)),
+      factory_interactions: vi.fn(({ repositoryKey }: { repositoryKey: string }) => ({ repositoryKey, interactions: [] })),
+      factory_runs: vi.fn(({ repositoryKey }: { repositoryKey: string }) => runsForSwitch(repositoryKey)),
+    } as unknown as PluginRpcTestHandlers<FactoryRpcContract>;
+    const registry = JSON.stringify({
+      repositories: [
+        { configuration: monorepoRepository, projectId: "project-monorepo", environmentId: "environment-monorepo" },
+        { configuration: dataRepository, projectId: "project-data", environmentId: "environment-data" },
+      ],
+      defaultRepositoryKey: "monorepo",
+    });
+    controlledSettingsState = { values: { repositoryRegistry: registry }, isLoading: false };
+    const landing = renderSlot<FactoryViewProps, FactoryRpcContract>(
+      { component: FactoryView },
+      { subPath: "repositories", panelPath: "factory" },
+      { rpc, settings: { repositoryRegistry: registry } },
+    );
+    try {
+      await landing.findByText("Repositories");
+      const header = landing.container.querySelector("header") as HTMLElement;
+      // Repo-scoped chrome must not render above the landing.
+      expect(header.querySelector('[role="tablist"]')).toBeNull();
+      expect(within(header).queryByText("Dispatch paused")).toBeNull();
+      expect(within(header).queryByText(/@abcdef1/)).toBeNull();
+      expect(within(header).queryByRole("button", { name: "Resume" })).toBeNull();
+      expect(within(header).queryByRole("button", { name: "Run now" })).toBeNull();
+      // The title, switcher, refreshed indicator, and legend stay.
+      expect(within(header).getByText("Factory")).toBeTruthy();
+      expect(within(header).getByRole("group", { name: "Configured repository" })).toBeTruthy();
+      expect(within(header).getByText(/refreshed/)).toBeTruthy();
+      expect(within(header).getByRole("button", { name: "Chip legend" })).toBeTruthy();
+    } finally {
+      landing.lifecycle.unmount();
+    }
+
+    const overview = renderSlot<FactoryViewProps, FactoryRpcContract>(
+      { component: FactoryView },
+      { subPath: "", panelPath: "factory" },
+      { rpc: baseRpc(), settings: { repositoryKey: "demo" } },
+    );
+    try {
+      await overview.findByText("Dispatch paused");
+      const header = overview.container.querySelector("header") as HTMLElement;
+      expect(within(header).getByRole("tablist")).toBeTruthy();
+      expect(within(header).getByText(/@abcdef1/)).toBeTruthy();
+      expect(within(header).getByRole("button", { name: "Resume" })).toBeTruthy();
+      expect(within(header).getByRole("button", { name: "Run now" })).toBeTruthy();
+    } finally {
+      overview.lifecycle.unmount();
+      controlledSettingsState = { values: { repositoryKey: "demo" }, isLoading: false };
+    }
+  });
+
   it("navigates to overview when a switcher pill is clicked on the repositories landing", async () => {
     const { FactoryView } = await import("../src/ui/FactoryView.js");
     const rpc = {
