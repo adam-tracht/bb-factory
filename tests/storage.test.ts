@@ -39,6 +39,31 @@ afterEach(async () => {
 });
 
 describe("operational SQLite storage", () => {
+  it("reopens the plugin database when the host closes the handle", async () => {
+    const storage = makeStorage();
+    const store = initializeOperationalStorage(storage);
+    const intent = makeIntent("run-1", "bbf:v1:monorepo:run-now:123e4567-e89b-12d3-a456-426614174000");
+    store.createRunIntent({ intent, canonicalRecords: [makeCanonicalRecord(intent.runId)] });
+
+    // The host closes the plugin's handle on dispose/reload; the next store
+    // operation must resolve a fresh handle rather than failing on the stale one.
+    storage.db.close();
+    store.updateRunDispatch({
+      repositoryKey: intent.repositoryKey,
+      runId: intent.runId,
+      status: "started",
+      startedAt: "2026-09-10T00:01:00Z",
+      finishedAt: null,
+      providerId: "codex",
+      workerThreadId: "thread-1",
+      projectId: "project-1",
+      environmentId: "environment-1",
+      repositoryRevision: intent.baseRevision,
+    });
+    const detail = await store.getRun({ repositoryKey: intent.repositoryKey, runId: intent.runId });
+    expect(detail.run?.summary).toMatchObject({ runId: intent.runId, status: "started" });
+  });
+
   it("initializes through SDK storage, preserves run links, and reloads durably", async () => {
     const storage = makeStorage();
     const store = initializeOperationalStorage(storage);
@@ -448,11 +473,18 @@ function newStore(executionNow?: string | (() => string)): OperationalStateStore
 }
 
 function makeStorage(directory = mkdtempSync(join(tmpdir(), "bb-factory-storage-"))): TestStorage {
-  const db = new Database(join(directory, "data.db"));
+  let handle = new Database(join(directory, "data.db"));
   const values = new Map<string, JsonValue>();
   let closed = false;
+  // Match the host contract: database() reopens after the handle is closed.
+  const open = (): Database.Database => {
+    if (!handle.open) handle = new Database(join(directory, "data.db"));
+    return handle;
+  };
   const storage: TestStorage = {
-    db,
+    get db() {
+      return open();
+    },
     directory,
     kv: {
       async get<T>(key: string): Promise<T | undefined> {
@@ -468,7 +500,7 @@ function makeStorage(directory = mkdtempSync(join(tmpdir(), "bb-factory-storage-
         return [...values.keys()].filter((key) => key.startsWith(prefix));
       },
     },
-    database: () => db,
+    database: open,
     migrate: (database, statements) => {
       database.exec(`CREATE TABLE IF NOT EXISTS _bb_migrations (id INTEGER PRIMARY KEY, hash TEXT NOT NULL)`);
       statements.forEach((statement, id) => {
@@ -489,7 +521,7 @@ function makeStorage(directory = mkdtempSync(join(tmpdir(), "bb-factory-storage-
     close: () => {
       if (!closed) {
         closed = true;
-        db.close();
+        if (handle.open) handle.close();
       }
     },
   };

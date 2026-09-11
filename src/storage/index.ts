@@ -597,10 +597,29 @@ export { PendingActionIntentExpiredError };
 
 class OperationalSqliteStore implements OperationalStateStore {
   readonly transactionApi: OperationalTransaction;
+  private configuredHandle: SqliteDatabase | null = null;
 
-  constructor(readonly db: SqliteDatabase, private readonly executionNow: () => string = now) {
-    db.pragma("foreign_keys = ON");
+  constructor(
+    private readonly resolveDatabase: () => SqliteDatabase,
+    private readonly executionNow: () => string = now,
+  ) {
     this.transactionApi = this.createTransactionApi();
+  }
+
+  /**
+   * Resolved on every use. The host closes the plugin's handle on
+   * dispose/reload and `PluginStorage.database()` reopens it on demand, so a
+   * handle cached at load would leave every store operation failing with
+   * "database connection is not open" until the next restart.
+   */
+  get db(): SqliteDatabase {
+    const handle = this.resolveDatabase();
+    if (handle !== this.configuredHandle) {
+      // Per-connection pragma: a reopened handle starts with FK checks off.
+      handle.pragma("foreign_keys = ON");
+      this.configuredHandle = handle;
+    }
+    return handle;
   }
 
   withTransaction<T>(callback: (transaction: OperationalTransaction) => T): T {
@@ -865,7 +884,7 @@ export function initializeOperationalStorage(
 ): OperationalStateStore {
   const db = storage.database();
   storage.migrate(db, [...OPERATIONAL_STORAGE_MIGRATIONS]);
-  return new OperationalSqliteStore(db, options.now ?? now);
+  return new OperationalSqliteStore(() => storage.database(), options.now ?? now);
 }
 
 export const createOperationalStateStore = initializeOperationalStorage;

@@ -201,9 +201,16 @@ export function cleanupStorages(): void {
 }
 
 export function makeStorage(directory = mkdtempSync(join(tmpdir(), "bb-factory-test-"))): TestStorage {
-  const db = new Database(join(directory, "data.db"));
+  let handle = new Database(join(directory, "data.db"));
+  // Match the host contract: database() reopens after the handle is closed.
+  const open = (): Database.Database => {
+    if (!handle.open) handle = new Database(join(directory, "data.db"));
+    return handle;
+  };
   const storage: TestStorage = {
-    db,
+    get db() {
+      return open();
+    },
     directory,
     kv: {
       async get<T>(): Promise<T | undefined> {
@@ -215,7 +222,7 @@ export function makeStorage(directory = mkdtempSync(join(tmpdir(), "bb-factory-t
         return [];
       },
     },
-    database: () => db,
+    database: open,
     migrate: (database, statements) => {
       database.exec(`CREATE TABLE IF NOT EXISTS _bb_migrations (id INTEGER PRIMARY KEY, hash TEXT NOT NULL)`);
       statements.forEach((statement, id) => {
@@ -226,7 +233,9 @@ export function makeStorage(directory = mkdtempSync(join(tmpdir(), "bb-factory-t
         }
       });
     },
-    close: () => db.close(),
+    close: () => {
+      if (handle.open) handle.close();
+    },
   };
   storages.push(storage);
   return storage;
