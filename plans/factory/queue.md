@@ -155,7 +155,7 @@ validate:
 notes: Root cause: `sectionPath` builds `questions#question-Q3`, but `toPluginPanel` percent-encodes the subPath, so the plugin receives `questions%23question-Q3` and `parseFactoryRoute` (which only splits a literal `#`) matches no section. Reported live on diggs-data-platform DATA-0008.03's Q3 chip. Every anchor caller is affected: work.ts question chips and Answer CTAs, questions.ts gated-item links, runs.ts work links.
 
 ## BBF-0010 Refresh glyph renders rotated
-status: ready
+status: done (orchestrated session 2026-09-11)
 priority: 4
 depends_on: none
 risk: low
