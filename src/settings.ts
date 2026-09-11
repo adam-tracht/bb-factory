@@ -25,37 +25,42 @@ export const repositoryRegistrySettingSchema = z.string().superRefine((value, co
 export const factorySettingDescriptors = {
   repositoryKey: {
     type: "string",
-    label: "Repository key",
-    description: "Stable key used for factory state and reporting.",
+    label: "Repository key (legacy)",
+    description:
+      "Stable key used for factory state and reporting. Legacy single-repository setting kept for existing installs; new setups should use Add repository instead.",
     experimental_schema: repositoryKey,
   },
   repositoryRoot: {
     type: "string",
-    label: "Repository root",
-    description: "Containing project root. The plugin never writes outside the configured checkout.",
+    label: "Repository root (legacy)",
+    description:
+      "Containing project root. The plugin never writes outside the configured checkout. Legacy single-repository setting; new setups should use Add repository instead.",
     experimental_schema: absolutePath,
   },
   connectedHostId: {
     type: "string",
-    label: "Connected host",
-    description: "BB host that owns the checkout and any host-local prerequisites.",
+    label: "Connected host (legacy)",
+    description:
+      "BB host that owns the checkout and any host-local prerequisites. Legacy single-repository setting; new setups should use Add repository instead.",
   },
   checkoutPath: {
     type: "string",
-    label: "Checkout path",
-    description: "Factory worktree path on the connected host.",
+    label: "Checkout path (legacy)",
+    description:
+      "Factory worktree path on the connected host. Legacy single-repository setting; new setups should use Add repository instead.",
     experimental_schema: absolutePath,
   },
   projectId: {
     type: "string",
-    label: "BB project",
-    description: "Required BB project scope for this repository's threads and interactions.",
+    label: "BB project (legacy)",
+    description:
+      "Required BB project scope for this repository's threads and interactions. Legacy single-repository setting; new setups should use Add repository instead.",
   },
   environmentId: {
     type: "string",
-    label: "BB environment",
+    label: "BB environment (legacy)",
     description:
-      "Advanced: pin a pre-existing BB environment for this repository's threads and interactions. Leave unset and bb registers an unmanaged environment for the checkout path on first dispatch.",
+      "Advanced legacy setting: pin a pre-existing BB environment for this repository's threads and interactions. Leave unset and bb registers an unmanaged environment for the checkout path on first dispatch. New setups should use Add repository instead.",
   },
   repositoryRegistry: {
     type: "string",

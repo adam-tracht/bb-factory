@@ -92,7 +92,7 @@ validate:
 - pnpm lint
 
 ## BBF-0005 Registry-first discovery gating
-status: ready
+status: done (orchestrated session 2026-09-11)
 priority: 3
 depends_on: BBF-0004
 risk: low

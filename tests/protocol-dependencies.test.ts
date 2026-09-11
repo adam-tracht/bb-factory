@@ -224,6 +224,92 @@ describe("qualified repository dependencies", () => {
   });
 });
 
+describe("merge-state.sh discovery gating", () => {
+  const discoveredSibling: RepositoryConfiguration = {
+    repositoryKey: "sibling",
+    repositoryRoot: "/sibling",
+    connectedHostId: "host-mac",
+    checkoutPath: "/sibling-factory",
+    factoryBranch: "factory",
+    mainRef: "origin/main",
+  };
+
+  const dependencyInput = (dependency: string, repositoryKey: string) => ({
+    sourceConfiguration: monorepoConfiguration,
+    sourceEntry: {
+      id: "MON-1",
+      title: "Source item",
+      planPath: "plans/tasks/mon-1.md",
+      acceptance: [],
+      validate: [],
+      notes: null,
+    },
+    dependency,
+    policy: {
+      qualifiedDependencies: [{
+        repositoryKey,
+        dashboardRequirement: "done" as const,
+        allowNamedDeliverableEvidence: false,
+      }],
+    },
+  });
+
+  const siblingFiles = () => repositoryFiles(discoveredSibling, [
+    queueItem("SIB-1", "Sibling item", "none", [], "done"),
+  ].join("\n"), "", [["SIB-1", "Done", "Shipped in the sibling dashboard."]]);
+
+  it("prefers the configured registry and never reads merge-state.sh", async () => {
+    const files = makeFiles(siblingFiles());
+    const resolver = createConnectedHostDependencyResolver({
+      files,
+      repositoryRegistry: {
+        listRepositories: () => [monorepoConfiguration, discoveredSibling],
+      },
+      repositoryDiscovery: {
+        files,
+        factoryRoot: "/factory-without-merge-state",
+        connectedHostId: "host-mac",
+      },
+    });
+
+    await expect(resolver.resolveDependency(dependencyInput("sibling:SIB-1", "sibling"))).resolves.toBe(true);
+    expect(files.readCalls.some((call) => call.path.endsWith("/merge-state.sh"))).toBe(false);
+  });
+
+  it("treats a missing merge-state.sh as an unmet dependency without surfacing an error", async () => {
+    const files = makeFiles(siblingFiles());
+    const resolver = createConnectedHostDependencyResolver({
+      files,
+      repositoryDiscovery: {
+        files,
+        factoryRoot: "/factory",
+        connectedHostId: "host-mac",
+      },
+    });
+
+    await expect(resolver.resolveDependency(dependencyInput("sibling:SIB-1", "sibling"))).resolves.toBe(false);
+    expect(files.readCalls.some((call) => call.path === "/factory/merge-state.sh")).toBe(true);
+  });
+
+  it("resolves through merge-state.sh discovery when the configured file exists", async () => {
+    const files = makeFiles({
+      ...siblingFiles(),
+      "/factory/merge-state.sh": "#!/bin/sh\nreport /sibling-factory sibling /sibling\n",
+    });
+    const resolver = createConnectedHostDependencyResolver({
+      files,
+      repositoryDiscovery: {
+        files,
+        factoryRoot: "/factory",
+        connectedHostId: "host-mac",
+      },
+    });
+
+    await expect(resolver.resolveDependency(dependencyInput("sibling:SIB-1", "sibling"))).resolves.toBe(true);
+    expect(files.readCalls.some((call) => call.path === "/factory/merge-state.sh")).toBe(true);
+  });
+});
+
 function makeReader(files: ProtocolFiles): RepositoryProtocolReader {
   return new RepositoryProtocolReader(files, {
     mergeReader: staticMergeReader(mergeProjection),

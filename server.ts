@@ -21,8 +21,8 @@ export function reportConfigurationStatus(
 ): void {
   if (composition.resolution.status !== "disabled" || composition.resolution.reason === "explicitly-empty") return;
   const message = composition.resolution.reason === "legacy-incomplete"
-    ? `Factory legacy repository settings are incomplete. Configure repositoryRegistry, or provide repositoryKey, repositoryRoot, connectedHostId, checkoutPath, and projectId. Then run: bb plugin reload ${bb.pluginId}.`
-    : `Factory repository configuration is missing. Configure repositoryRegistry, or complete the legacy repository settings. Then run: bb plugin reload ${bb.pluginId}.`;
+    ? `Factory legacy repository settings are incomplete. Provide repositoryKey, repositoryRoot, connectedHostId, checkoutPath, and projectId, or configure repositoryRegistry instead. Then run: bb plugin reload ${bb.pluginId}.`
+    : `Factory has no repositories configured. Open the Repositories view and choose Add repository, then run: bb plugin reload ${bb.pluginId}.`;
   bb.status.needsConfiguration(message);
 }
 

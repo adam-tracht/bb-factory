@@ -17,22 +17,25 @@ function statusFor(settings: unknown) {
 }
 
 describe("server configuration status", () => {
-  it("reports missing configuration with the reload command", () => {
+  it("routes a fresh install to the Add repository flow", () => {
     const result = statusFor({});
 
     expect(result.resolution).toMatchObject({ status: "disabled", reason: "not-configured" });
-    expect(result.needsConfiguration).toHaveBeenCalledWith(
-      expect.stringContaining("bb plugin reload factory"),
-    );
+    const message = result.needsConfiguration.mock.calls[0]?.[0] as string;
+    expect(message).toContain("Add repository");
+    expect(message).toContain("bb plugin reload factory");
+    expect(message).not.toMatch(/repositoryKey|repositoryRoot|connectedHostId|checkoutPath|projectId/);
   });
 
-  it("reports incomplete legacy configuration with the reload command", () => {
+  it("routes incomplete legacy configuration to the legacy fields or the registry", () => {
     const result = statusFor({ repositoryKey: "monorepo" });
 
     expect(result.resolution).toMatchObject({ status: "disabled", reason: "legacy-incomplete" });
-    expect(result.needsConfiguration).toHaveBeenCalledWith(
-      expect.stringContaining("bb plugin reload factory"),
-    );
+    const message = result.needsConfiguration.mock.calls[0]?.[0] as string;
+    expect(message).toContain("repositoryKey");
+    expect(message).toContain("projectId");
+    expect(message).toContain("repositoryRegistry");
+    expect(message).toContain("bb plugin reload factory");
   });
 
   it("leaves intentional explicit-empty configuration quiet", () => {
