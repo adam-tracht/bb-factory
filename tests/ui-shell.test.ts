@@ -57,6 +57,13 @@ describe("FactoryShell", () => {
     expect(markup).toContain("refreshed");
   });
 
+  it("renders the refresh affordance with an inline icon, not the ↻ glyph", () => {
+    const markup = renderToStaticMarkup(h(FactoryShell, shellProps({ children: "body" })));
+    expect(markup).not.toContain("↻");
+    expect(markup).toMatch(/<button[^>]*title="Refresh now"[^>]*>refreshed [^<]*<svg[^>]*viewBox="0 0 24 24"/);
+    expect(markup).toContain('aria-hidden="true"');
+  });
+
   it("surfaces a repo pause and an active run", () => {
     const markup = renderToStaticMarkup(h(FactoryShell, shellProps({
       dispatch: { mode: "enabled" as const, repositoryPaused: true, acceptingNewRuns: false, activeRunCount: 1, reason: null },

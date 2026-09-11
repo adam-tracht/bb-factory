@@ -6,7 +6,7 @@ Entry format (copy the block, one per task):
 
 ```
 ## <DASHBOARD-ID> <short title>
-status: ready | in-progress (...) | done (...) | blocked-by: Q<n>
+status: draft | ready | in-progress (...) | done (...) | blocked-by: Q<n>
 priority: 1 (highest) to 5
 depends_on: <IDs, or none>
 risk: low | medium | high

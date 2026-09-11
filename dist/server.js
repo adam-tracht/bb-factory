@@ -19915,6 +19915,7 @@ var queueStatusSchema = external_exports.discriminatedUnion("kind", [
   external_exports.object({ kind: external_exports.literal("in-progress"), detail: nonEmptyString }).strict(),
   external_exports.object({ kind: external_exports.literal("done"), detail: nonEmptyString.optional() }).strict(),
   external_exports.object({ kind: external_exports.literal("blocked-by"), questionId: nonEmptyString, detail: nonEmptyString.optional() }).strict(),
+  external_exports.object({ kind: external_exports.literal("draft") }).strict(),
   external_exports.object({ kind: external_exports.literal("unknown"), raw: nonEmptyString }).strict()
 ]);
 var queueAuthorizationSchema = external_exports.discriminatedUnion("kind", [
@@ -24147,6 +24148,9 @@ function parseStatus(value) {
   if (trimmed === "ready") {
     return { kind: "ready" };
   }
+  if (trimmed === "draft") {
+    return { kind: "draft" };
+  }
   const inProgress = trimmed.match(/^in-progress(?:\s+(.+))?$/u);
   if (inProgress) {
     if (!inProgress[1]?.trim()) {
@@ -24631,7 +24635,7 @@ async function queueEntry(parsed, allEntries, questions, configuration, policy, 
   if (parsed.approved.kind === "none" && parsed.status.kind === "ready") {
     eligibilityReasons.push(parsed.risk === "high" ? "high-risk-approval-missing" : "missing-authorization");
   }
-  const status = parsed.status.kind === "ready" ? { kind: "ready" } : parsed.status.kind === "in-progress" ? { kind: "in-progress", detail: parsed.status.detail } : parsed.status.kind === "done" ? { kind: "done", ...parsed.status.detail ? { detail: parsed.status.detail } : {} } : parsed.status.kind === "unknown" ? { kind: "unknown", raw: parsed.status.raw } : {
+  const status = parsed.status.kind === "ready" ? { kind: "ready" } : parsed.status.kind === "in-progress" ? { kind: "in-progress", detail: parsed.status.detail } : parsed.status.kind === "done" ? { kind: "done", ...parsed.status.detail ? { detail: parsed.status.detail } : {} } : parsed.status.kind === "draft" ? { kind: "draft" } : parsed.status.kind === "unknown" ? { kind: "unknown", raw: parsed.status.raw } : {
     kind: "blocked-by",
     questionId: parsed.status.questionId,
     ...parsed.status.detail ? { detail: parsed.status.detail } : {}

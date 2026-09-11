@@ -23,13 +23,14 @@ const LIST_CLAMP = 6;
 const NOTE_LINE_CLAMP = 6;
 const NOTE_CHAR_CLAMP = 320;
 
-type WorkGroup = "needs-you" | "ready" | "blocked" | "running" | "done";
+type WorkGroup = "needs-you" | "ready" | "blocked" | "running" | "draft" | "done";
 
 const STATUS_TONE: Record<QueueEntry["status"]["kind"], Tone> = {
   ready: "success",
   "in-progress": "primary",
   done: "neutral",
   "blocked-by": "warning",
+  draft: "neutral",
   unknown: "danger",
 };
 
@@ -61,6 +62,7 @@ function needsYou(entry: QueueEntry): boolean {
 function groupOf(entry: QueueEntry): WorkGroup {
   if (entry.status.kind === "done") return "done";
   if (entry.status.kind === "in-progress") return "running";
+  if (entry.status.kind === "draft") return "draft";
   if (needsYou(entry)) return "needs-you";
   if (entry.eligible) return "ready";
   return "blocked";
@@ -221,7 +223,7 @@ function WorkRowDetail(props: { entry: QueueEntry; group: WorkGroup; ctx: ViewCo
           h("blockquote", {
             className: "mt-0.5 border-l-2 border-success/50 pl-2 text-xs text-muted-foreground",
           }, entry.approved.text))
-      : approvalMissing(entry)
+      : approvalMissing(entry) && entry.blockingQuestionIds.length === 0
         ? h("div", null,
             h(DetailLabel, { text: "Approval" }),
             h("div", { className: "mt-1" }, h(ApproveComposer, { entry, ctx })))
@@ -242,23 +244,31 @@ function WorkRow(props: { entry: QueueEntry; group: WorkGroup; ctx: ViewContext;
   const { entry, group, ctx } = props;
   const [expanded, setExpanded] = useState(props.defaultExpanded);
   const pending = ctx.pendingTarget === `queued:${entry.id}`;
-  const qids = gatingQuestionIds(entry);
+  const openQids = entry.blockingQuestionIds;
   const approvalNeeded = approvalMissing(entry);
 
-  const cta = approvalNeeded
+  // A ready item gated by open questions is question-blocked in reality:
+  // render the blocked-by warning treatment, not a misleading "Ready" badge.
+  const displayStatus = entry.status.kind === "ready" && openQids.length > 0
+    ? { kind: "blocked-by" as const, questionId: openQids[0] }
+    : entry.status;
+
+  // Open questions gate first: the action layer rejects approval while any
+  // blocking question is unanswered, so Approve is offered only once clear.
+  const cta = openQids.length > 0
     ? h(ActionButton, {
-        label: "Approve",
-        variant: "primary",
+        label: `Answer ${openQids[0]}`,
+        variant: "ghost",
         size: "xs",
-        disabled: pending,
-        onClick: () => setExpanded(true),
+        onClick: () => ctx.onOpenSection("questions", `question-${openQids[0]}`),
       })
-    : qids.length > 0
+    : approvalNeeded
       ? h(ActionButton, {
-          label: `Answer ${qids[0]}`,
-          variant: "ghost",
+          label: "Approve",
+          variant: "primary",
           size: "xs",
-          onClick: () => ctx.onOpenSection("questions", `question-${qids[0]}`),
+          disabled: pending,
+          onClick: () => setExpanded(true),
         })
       : null;
 
@@ -277,7 +287,7 @@ function WorkRow(props: { entry: QueueEntry; group: WorkGroup; ctx: ViewContext;
           }
         },
       },
-        h(Badge, { label: queueStatusLabel(entry.status), tone: STATUS_TONE[entry.status.kind] }),
+        h(Badge, { label: queueStatusLabel(displayStatus), tone: STATUS_TONE[displayStatus.kind] }),
         h("code", { className: "shrink-0 font-mono text-xs text-muted-foreground" }, entry.id),
         h("span", { className: "min-w-0 truncate text-sm text-foreground" }, entry.title),
         h("span", { className: "shrink-0 text-xs text-muted-foreground" }, `P${entry.priority}`),
@@ -299,6 +309,7 @@ export function WorkView(props: {
       ready: [],
       blocked: [],
       running: [],
+      draft: [],
       done: [],
     };
     for (const entry of snapshot.queue) buckets[groupOf(entry)].push(entry);
@@ -319,6 +330,7 @@ export function WorkView(props: {
     { key: "ready", title: "Ready", defaultOpen: true },
     { key: "blocked", title: "Blocked", defaultOpen: true },
     { key: "running", title: "Running", defaultOpen: true },
+    { key: "draft", title: "Drafts", defaultOpen: focusedEntry !== null && groupOf(focusedEntry) === "draft" },
     { key: "done", title: "Done", defaultOpen: focusedEntry !== null && groupOf(focusedEntry) === "done" },
   ];
 

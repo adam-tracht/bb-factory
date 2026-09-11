@@ -140,10 +140,14 @@ function parseStatus(value: string):
   | { readonly kind: "in-progress"; readonly detail: string }
   | { readonly kind: "done"; readonly detail?: string }
   | { readonly kind: "blocked-by"; readonly questionId: string; readonly detail?: string }
+  | { readonly kind: "draft" }
   | { readonly kind: "unknown"; readonly raw: string } {
   const trimmed = value.trim();
   if (trimmed === "ready") {
     return { kind: "ready" };
+  }
+  if (trimmed === "draft") {
+    return { kind: "draft" };
   }
   const inProgress = trimmed.match(/^in-progress(?:\s+(.+))?$/u);
   if (inProgress) {
@@ -246,6 +250,7 @@ export interface ParsedQueueEntry {
     | { readonly kind: "in-progress"; readonly detail: string }
     | { readonly kind: "done"; readonly detail?: string }
     | { readonly kind: "blocked-by"; readonly questionId: string; readonly detail?: string }
+    | { readonly kind: "draft" }
     | { readonly kind: "unknown"; readonly raw: string };
   readonly blockedBy: readonly string[];
   readonly priority: number;

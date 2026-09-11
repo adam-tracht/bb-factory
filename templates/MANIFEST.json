@@ -14,7 +14,7 @@
     {
       "template": "queue.md",
       "target": "plans/factory/queue.md",
-      "sha256": "77bb9bd06bf9210141ceeab5c92981338f596f50bc2f07ae7ad4064bd9968936"
+      "sha256": "0da3d08de388191185df68adc7b566d344154a7a4fc49b65ee3c30acc7d0372a"
     },
     {
       "template": "questions.md",

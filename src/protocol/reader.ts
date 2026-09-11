@@ -162,8 +162,10 @@ async function queueEntry(
       ? { kind: "in-progress" as const, detail: parsed.status.detail }
       : parsed.status.kind === "done"
         ? { kind: "done" as const, ...(parsed.status.detail ? { detail: parsed.status.detail } : {}) }
-        : parsed.status.kind === "unknown"
-          ? { kind: "unknown" as const, raw: parsed.status.raw }
+        : parsed.status.kind === "draft"
+          ? { kind: "draft" as const }
+          : parsed.status.kind === "unknown"
+            ? { kind: "unknown" as const, raw: parsed.status.raw }
           : {
               kind: "blocked-by" as const,
               questionId: parsed.status.questionId,

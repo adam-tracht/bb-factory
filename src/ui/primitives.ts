@@ -499,6 +499,8 @@ export function queueStatusLabel(status: QueueEntry["status"]): string {
       return status.detail ? `Done: ${status.detail}` : "Done";
     case "blocked-by":
       return status.detail ? `Blocked: ${status.detail}` : `Blocked by ${status.questionId}`;
+    case "draft":
+      return "Draft";
     case "unknown":
       return "Unrecognized status";
   }
