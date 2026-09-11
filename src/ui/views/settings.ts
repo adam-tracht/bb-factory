@@ -15,6 +15,7 @@ import {
   Card,
   ConfirmDialog,
   CopyText,
+  Disclosure,
   Field,
   StateChip,
   formatTimestamp,
@@ -224,13 +225,7 @@ function RepositoryCard(props: {
   return h(Card, {
     title: "Repository",
     children: [
-      h("dl", { key: "fields", className: "grid gap-3 sm:grid-cols-2" },
-        copyField("Repository key", repository.repositoryKey),
-        pathField("Repository root", repository.repositoryRoot),
-        pathField("Checkout path", repository.checkoutPath),
-        copyField("Factory branch", repository.factoryBranch),
-        copyField("Main ref", repository.mainRef),
-        copyField("Connected host", repository.connectedHostId),
+      h("dl", { key: "status", className: "grid gap-3 sm:grid-cols-2" },
         h(Field, { key: "host", label: "Host status" },
           health
             ? h("dd", { className: "mt-0.5 flex flex-wrap items-center gap-2" },
@@ -241,9 +236,7 @@ function RepositoryCard(props: {
                 !health.host.ok && health.host.reasons[0]
                   ? h("span", { className: "text-xs text-warning" }, health.host.reasons[0])
                   : null)
-            : h("dd", { className: "mt-0.5 text-sm text-muted-foreground" }, "Health not loaded")),
-        optionalField("Project", projectId),
-        optionalField("Environment", environmentId)),
+            : h("dd", { className: "mt-0.5 text-sm text-muted-foreground" }, "Health not loaded"))),
       h("div", { key: "dispatch", className: "mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border pt-3" },
         h(StateChip, {
           on: !repoPaused,
@@ -254,6 +247,20 @@ function RepositoryCard(props: {
         }),
         result.message ? h("span", { className: "text-xs text-success", role: "status" }, result.message) : null,
         result.error ? h("span", { className: "text-xs text-destructive" }, result.error) : null),
+      h(Disclosure, {
+        key: "details",
+        summary: "Repository details",
+        className: "mt-3 border-t border-border pt-3",
+        children: h("dl", { className: "grid gap-3 sm:grid-cols-2" },
+          copyField("Repository key", repository.repositoryKey),
+          pathField("Repository root", repository.repositoryRoot),
+          pathField("Checkout path", repository.checkoutPath),
+          copyField("Factory branch", repository.factoryBranch),
+          copyField("Main ref", repository.mainRef),
+          copyField("Connected host", repository.connectedHostId),
+          optionalField("Project", projectId),
+          optionalField("Environment", environmentId)),
+      }),
     ],
   });
 }

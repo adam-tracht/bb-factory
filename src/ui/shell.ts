@@ -43,6 +43,8 @@ export interface FactoryShellProps {
   readonly onNavigate: (section: FactorySection) => void;
   readonly repositories: readonly RepositorySelection[];
   readonly selectedRepositoryKey: RepositoryKey | null;
+  /** True while the repositories landing is the rendered content: the "All" control owns the active state. */
+  readonly repositoriesActive: boolean;
   readonly repositorySelectionLoading: boolean;
   readonly onSelectRepository: (repositoryKey: RepositoryKey) => void;
   readonly onShowRepositories: () => void;
@@ -98,12 +100,12 @@ function dispatchChip(dispatch: DispatchStatus | null): { label: string; tone: T
 }
 
 function RepositorySwitcher(props: Pick<FactoryShellProps,
-  "repositories" | "selectedRepositoryKey" | "repositorySelectionLoading" | "onSelectRepository" | "onShowRepositories" | "onAddRepository"
+  "repositories" | "selectedRepositoryKey" | "repositoriesActive" | "repositorySelectionLoading" | "onSelectRepository" | "onShowRepositories" | "onAddRepository"
 >) {
-  const { repositories, selectedRepositoryKey, onSelectRepository, onShowRepositories, onAddRepository } = props;
+  const { repositories, selectedRepositoryKey, repositoriesActive, onSelectRepository, onShowRepositories, onAddRepository } = props;
   if (repositories.length > 4) {
     return h("div", { className: "flex items-center gap-1" },
-      h(ActionButton, { label: "All", variant: "ghost", size: "xs", onClick: onShowRepositories }),
+      h(ActionButton, { label: "All", variant: repositoriesActive ? "secondary" : "ghost", size: "xs", onClick: onShowRepositories }),
       h("select", {
         "aria-label": "Configured repository",
         className: "rounded-md border border-border bg-background px-2 py-1 text-sm",
@@ -120,13 +122,16 @@ function RepositorySwitcher(props: Pick<FactoryShellProps,
   return h("div", { className: "flex items-center gap-1 rounded-lg bg-muted/60 p-1", role: "group", "aria-label": "Configured repository" },
     h("button", {
       type: "button",
-      className: "rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground",
+      "aria-pressed": repositoriesActive,
+      className: `rounded-md px-2 py-1 text-xs font-medium transition-colors ${
+        repositoriesActive ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+      }`,
       onClick: onShowRepositories,
       title: "All repositories",
     }, "All"),
     repositories.map((repo) => {
       const key = repo.configuration.repositoryKey;
-      const active = key === selectedRepositoryKey;
+      const active = !repositoriesActive && key === selectedRepositoryKey;
       return h("button", {
         key,
         type: "button",

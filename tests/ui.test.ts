@@ -361,6 +361,58 @@ describe("Factory view shell", () => {
     }
   });
 
+  it("activates the All pill on the repositories landing and navigates to overview on a card click", async () => {
+    const { FactoryView } = await import("../src/ui/FactoryView.js");
+    const rpc = {
+      ...baseRpc(),
+      factory_repositories: vi.fn((input: { selectedRepositoryKey?: string | null }) => repositorySelectionForSwitch(input.selectedRepositoryKey)),
+      factory_snapshot: vi.fn(({ repositoryKey }: { repositoryKey: string }) => snapshotForSwitch(repositoryKey)),
+      factory_settings: vi.fn(({ repositoryKey }: { repositoryKey: string }) => settingsForSwitch(repositoryKey)),
+      factory_health: vi.fn(({ repositoryKey }: { repositoryKey: string }) => healthForSwitch(repositoryKey)),
+      factory_interactions: vi.fn(({ repositoryKey }: { repositoryKey: string }) => ({ repositoryKey, interactions: [] })),
+      factory_runs: vi.fn(({ repositoryKey }: { repositoryKey: string }) => runsForSwitch(repositoryKey)),
+    } as unknown as PluginRpcTestHandlers<FactoryRpcContract> & { factory_repositories: ReturnType<typeof vi.fn> };
+    const registry = JSON.stringify({
+      repositories: [
+        { configuration: monorepoRepository, projectId: "project-monorepo", environmentId: "environment-monorepo" },
+        { configuration: dataRepository, projectId: "project-data", environmentId: "environment-data" },
+      ],
+      defaultRepositoryKey: "monorepo",
+    });
+    controlledSettingsState = { values: { repositoryRegistry: registry }, isLoading: false };
+    const slot = renderSlot<FactoryViewProps, FactoryRpcContract>(
+      { component: FactoryView },
+      { subPath: "repositories", panelPath: "factory" },
+      { rpc, settings: { repositoryRegistry: registry } },
+    );
+    try {
+      await slot.findByText("Repositories");
+      const switcher = (await slot.findByRole("group", { name: "Configured repository" })) as HTMLElement;
+      const allPill = within(switcher).getByRole("button", { name: "All" });
+      expect(allPill.getAttribute("aria-pressed")).toBe("true");
+      expect(allPill.className).toContain("bg-background");
+      for (const repositoryKey of ["monorepo", "data"]) {
+        const pill = within(switcher).getByRole("button", { name: repositoryKey });
+        expect(pill.getAttribute("aria-pressed")).toBe("false");
+        expect(pill.className).not.toContain("shadow-sm");
+      }
+
+      const scroll = (await slot.findByTestId("factory-scroll")) as HTMLElement;
+      fireEvent.click(within(scroll).getByRole("button", { name: /^data\b/ }));
+      expect(slot.inspection.navigateCalls).toContainEqual({
+        method: "toPluginPanel",
+        path: "factory",
+        options: { subPath: "overview" },
+      });
+      await vi.waitFor(() => {
+        expect(rpc.factory_repositories).toHaveBeenCalledWith({ selectedRepositoryKey: "data" });
+      });
+    } finally {
+      slot.lifecycle.unmount();
+      controlledSettingsState = { values: { repositoryKey: "demo" }, isLoading: false };
+    }
+  });
+
   it("reloads every durable projection after recovery and invalidation", async () => {
     const { FactoryView } = await import("../src/ui/FactoryView.js");
     const slot = renderSlot<FactoryViewProps, FactoryRpcContract>(

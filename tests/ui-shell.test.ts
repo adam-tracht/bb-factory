@@ -13,6 +13,7 @@ function shellProps(overrides: Partial<FactoryShellProps> = {}): FactoryShellPro
     onNavigate: () => undefined,
     repositories: [],
     selectedRepositoryKey: "demo",
+    repositoriesActive: false,
     repositorySelectionLoading: false,
     onSelectRepository: () => undefined,
     onShowRepositories: () => undefined,
@@ -33,6 +34,25 @@ function shellProps(overrides: Partial<FactoryShellProps> = {}): FactoryShellPro
     children: null,
     ...overrides,
   };
+}
+
+function switcherRepositories(...keys: string[]): FactoryShellProps["repositories"] {
+  return keys.map((repositoryKey) => ({
+    configuration: {
+      repositoryKey,
+      repositoryRoot: `/work/${repositoryKey}`,
+      connectedHostId: "host-1",
+      checkoutPath: `/work/${repositoryKey}`,
+      factoryBranch: "factory" as const,
+      mainRef: "origin/main",
+    },
+    projectId: `project-${repositoryKey}`,
+    environmentId: `env-${repositoryKey}`,
+    dispatchPaused: false,
+    selected: true,
+    available: true,
+    reasons: [],
+  }));
 }
 
 describe("FactoryShell", () => {
@@ -62,6 +82,53 @@ describe("FactoryShell", () => {
     expect(markup).not.toContain("↻");
     expect(markup).toMatch(/<button[^>]*title="Refresh now"[^>]*>refreshed [^<]*<svg[^>]*viewBox="0 0 24 24"/);
     expect(markup).toContain('aria-hidden="true"');
+  });
+
+  it("marks the All pill active and every repo pill inactive on the repositories landing", () => {
+    const markup = renderToStaticMarkup(h(FactoryShell, shellProps({
+      repositories: switcherRepositories("alpha", "beta"),
+      selectedRepositoryKey: "alpha",
+      repositoriesActive: true,
+      children: "body",
+    })));
+    const group = /<div[^>]*role="group"[^>]*>([\s\S]*?)<\/div>/.exec(markup)?.[1] ?? "";
+    // "All" carries the same active pill styling a selected repository gets.
+    expect(group).toMatch(/aria-pressed="true" class="[^"]*bg-background text-foreground shadow-sm[^"]*"[^>]*>All<\/button>/);
+    expect(group.match(/aria-pressed="true"/g)).toHaveLength(1);
+    // Both repo pills render inactive, including the still-selected "alpha".
+    expect(group.match(/aria-pressed="false"/g)).toHaveLength(2);
+    expect(group).toContain(">alpha</button>");
+    expect(group).not.toMatch(/aria-pressed="false"[^>]*class="[^"]*shadow-sm/);
+  });
+
+  it("keeps the selected repository pill active off the landing", () => {
+    const markup = renderToStaticMarkup(h(FactoryShell, shellProps({
+      repositories: switcherRepositories("alpha", "beta"),
+      selectedRepositoryKey: "alpha",
+      children: "body",
+    })));
+    const group = /<div[^>]*role="group"[^>]*>([\s\S]*?)<\/div>/.exec(markup)?.[1] ?? "";
+    expect(group).toMatch(/aria-pressed="false"[^>]*>All<\/button>/);
+    expect(group).toMatch(/aria-pressed="true" class="[^"]*bg-background text-foreground shadow-sm[^"]*"[^>]*>alpha<\/button>/);
+  });
+
+  it("highlights the All button in the >4 repositories select fallback on the landing", () => {
+    const repositories = switcherRepositories("a", "b", "c", "d", "e");
+    const active = renderToStaticMarkup(h(FactoryShell, shellProps({
+      repositories,
+      selectedRepositoryKey: "a",
+      repositoriesActive: true,
+      children: "body",
+    })));
+    expect(active).toContain("<select");
+    // The secondary variant reads as selected next to the ghost "+" control.
+    expect(active).toMatch(/<button[^>]*class="[^"]*border border-border bg-card text-foreground[^"]*"[^>]*>All<\/button>/);
+    const inactive = renderToStaticMarkup(h(FactoryShell, shellProps({
+      repositories,
+      selectedRepositoryKey: "a",
+      children: "body",
+    })));
+    expect(inactive).toMatch(/<button[^>]*class="[^"]*text-muted-foreground hover:bg-state-hover[^"]*"[^>]*>All<\/button>/);
   });
 
   it("surfaces a repo pause and an active run", () => {

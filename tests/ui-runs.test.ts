@@ -221,6 +221,47 @@ describe("RunDetailView", () => {
     expect(ctx.onAction).toHaveBeenCalledWith({ kind: "retry", attemptId: "attempt-1" });
   });
 
+  it("renders an Open thread button that navigates to the worker thread", () => {
+    const ctx = makeCtx();
+    const detail = makeDetail(makeRun({ workerThreadId: "thr_abc" }));
+    render(h(RunDetailView, { detail, ctx }));
+
+    const button = screen.getByRole("button", { name: "Open thread" });
+    expect(button.getAttribute("title")).toBe("Open worker thread thr_abc");
+
+    fireEvent.click(button);
+    expect(ctx.onOpenThread).toHaveBeenCalledWith("thr_abc");
+  });
+
+  it("renders a Thread button on attempt rows that carry a workerThreadId", () => {
+    const ctx = makeCtx();
+    // Two attempts keep the collapsible Attempts section open by default.
+    const detail = makeDetail(makeRun({ workerThreadId: null }), {
+      attempts: [
+        { ...attempt, workerThreadId: "thr_attempt" },
+        { ...attempt, attemptId: "attempt-2", workerThreadId: null },
+      ],
+    });
+    render(h(RunDetailView, { detail, ctx }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Thread" }));
+    expect(ctx.onOpenThread).toHaveBeenCalledWith("thr_attempt");
+  });
+
+  it("renders no thread control when run and attempts have no workerThreadId", () => {
+    const ctx = makeCtx();
+    const detail = makeDetail(makeRun({ workerThreadId: null }), {
+      attempts: [
+        { ...attempt, workerThreadId: null },
+        { ...attempt, attemptId: "attempt-2", workerThreadId: null },
+      ],
+    });
+    render(h(RunDetailView, { detail, ctx }));
+
+    expect(screen.queryByRole("button", { name: "Open thread" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Thread" })).toBeNull();
+  });
+
   it("hides technical detail rows whose values are null", () => {
     const ctx = makeCtx();
     // A pending run may carry null thread, project, and environment ids.

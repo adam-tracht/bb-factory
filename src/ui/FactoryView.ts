@@ -570,7 +570,12 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
   } else if (route.section === "repositories" || !repositoryProjection || repositoryProjection.repositories.length === 0 || !selectedEntry) {
     content = h(RepositoryLandingView, {
       repositories: repositoryProjection?.repositories ?? [],
-      onSelect: onRepositorySelect,
+      // Same combined handler as ctx.onOpenRepository: select, then leave the
+      // landing so the card click lands on the repository's overview tab.
+      onSelect: (repositoryKey) => {
+        onRepositorySelect(repositoryKey);
+        onNavigate("overview");
+      },
       onAddRepository,
       loadSummary: loadRepositorySummary,
     });
@@ -638,12 +643,22 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
 
   const dispatch = settings?.dispatch ?? null;
   const sectionForShell: FactorySection = scopeSection;
+  // Mirrors the landing branch above: "All" owns the switcher's active state
+  // whenever the landing is the rendered content (the repositories route, or
+  // any route with no repository list/selection to scope to).
+  const repositoriesActive = data.repositories.status === "ready"
+    && route.section !== "add-repository"
+    && (route.section === "repositories"
+      || repositoryProjection === null
+      || repositoryProjection.repositories.length === 0
+      || !selectedEntry);
 
   return h(FactoryShell, {
     section: sectionForShell,
     onNavigate,
     repositories: repositoryProjection?.repositories ?? [],
     selectedRepositoryKey: selectedRepositoryKey(repositoryProjection ?? { repositories: [], selectedRepositoryKey: null }),
+    repositoriesActive,
     repositorySelectionLoading: data.repositories.status === "loading",
     onSelectRepository: onRepositorySelect,
     onShowRepositories,

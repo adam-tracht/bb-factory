@@ -7,8 +7,10 @@ made `status: draft` a first-class quiet status. A follow-on session
 completed BBF-0014 and BBF-0015, which keep question references visible
 on blocked entries and flag `blocked-by` gates whose question resolved
 or vanished as `stale-question-gate` so they land in Needs you instead
-of stranding (see runs/2026-09-11-stale-question-gates.md). All are
-Done on the canonical dashboard.
+of stranding, and BBF-0016 through BBF-0019, four live-UI fixes
+(switcher All state, landing-card navigation, run-detail thread links,
+and a collapsed Repository details disclosure in Settings). All are Done
+on the canonical dashboard; see runs/2026-09-11-stale-question-gates.md.
 
 Open work:
 

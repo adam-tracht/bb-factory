@@ -197,13 +197,23 @@ function CanonicalRecordRow({ run, record, ctx }: { run: OperationalRunSummary; 
     }));
 }
 
-function AttemptRow({ attempt }: { attempt: DispatchAttempt }) {
+function AttemptRow({ attempt, ctx }: { attempt: DispatchAttempt; ctx: ViewContext }) {
+  const threadId = attempt.workerThreadId;
   return h("div", { className: "flex flex-wrap items-center gap-x-3 gap-y-1 px-1 py-2" },
     h(Badge, { label: runStatusLabel(attempt.status), tone: runStatusTone(attempt.status) }),
     h("span", { className: "text-xs text-muted-foreground" }, `${attempt.providerId} · ${attempt.model} · ${attempt.reasoningLevel}`),
     h("span", { className: "text-xs tabular-nums text-muted-foreground" },
       `${formatTimestamp(attempt.startedAt) ?? "pending"} → ${formatTimestamp(attempt.finishedAt) ?? "running"}`),
-    h("span", { className: "ml-auto" },
+    h("span", { className: "ml-auto flex items-center gap-2" },
+      threadId
+        ? h(ActionButton, {
+            label: "Thread",
+            variant: "ghost",
+            size: "xs",
+            title: `Open worker thread ${threadId}`,
+            onClick: () => ctx.onOpenThread(threadId),
+          })
+        : null,
       h(CopyText, { value: attempt.attemptId, mono: true })));
 }
 
@@ -212,6 +222,7 @@ export function RunDetailView(props: { detail: OperationalRunDetail; ctx: ViewCo
   const run = detail.summary;
   const now = useNow();
   const [confirm, setConfirm] = useState<"retry" | "stop" | null>(null);
+  const threadId = run.workerThreadId;
 
   const latestAttempt = detail.attempts.length > 0 ? detail.attempts[detail.attempts.length - 1] : null;
   const active = isActiveRunStatus(run.status);
@@ -242,7 +253,16 @@ export function RunDetailView(props: { detail: OperationalRunDetail; ctx: ViewCo
       when ? h("span", { className: "text-xs text-muted-foreground" }, when) : null,
       run.providerId ? h("span", { className: "text-xs text-muted-foreground" }, run.providerId) : null,
       h("span", { className: "text-xs text-muted-foreground" }, `${detail.intent.trigger} trigger`),
-      duration ? h("span", { className: "text-xs tabular-nums text-muted-foreground" }, duration) : null),
+      duration ? h("span", { className: "text-xs tabular-nums text-muted-foreground" }, duration) : null,
+      threadId
+        ? h(ActionButton, {
+            label: "Open thread",
+            variant: "ghost",
+            size: "xs",
+            title: `Open worker thread ${threadId}`,
+            onClick: () => ctx.onOpenThread(threadId),
+          })
+        : null),
     h(Timeline, { run, active }),
     h(Section, {
       title: "Worked on",
@@ -272,7 +292,7 @@ export function RunDetailView(props: { detail: OperationalRunDetail; ctx: ViewCo
       collapsible: true,
       defaultOpen: detail.attempts.length > 1,
       children: detail.attempts.length > 0
-        ? detail.attempts.map((attempt) => h(AttemptRow, { key: attempt.attemptId, attempt }))
+        ? detail.attempts.map((attempt) => h(AttemptRow, { key: attempt.attemptId, attempt, ctx }))
         : h("p", { className: "px-1 py-2 text-sm text-muted-foreground" }, "No dispatch attempts recorded."),
     }),
     canRetry || canStop

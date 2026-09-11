@@ -23,3 +23,16 @@
 - None; implemented inline (small coherent change across reader, contracts, two UI surfaces, and the foreman template).
 
 state: success
+
+## Follow-on in the same session: BBF-0016 through BBF-0019
+
+Four more live-UI defects, orchestrated as three parallel workers (0016+0017 shared FactoryView.ts):
+
+- BBF-0016: done. `FactoryShellProps.repositoriesActive` mirrors the landing-render branch; the All pill owns active state on the landing and repo pills stay dark. Select-fallback All switches to the secondary treatment when active.
+- BBF-0017: done. Landing card select now runs select + navigate("overview"), so card clicks leave the landing instead of re-rendering it under the Overview tab highlight.
+- BBF-0018: done. RunDetailView header renders "Open thread" via `ctx.onOpenThread(run.workerThreadId)`; attempt rows link their own `workerThreadId`. Null threads render no control.
+- BBF-0019: done. RepositoryCard keeps host status and the dispatch toggle inline; the eight read-only identity fields moved into a collapsed "Repository details" Disclosure.
+
+Validation: `pnpm test` 300 passing, `pnpm typecheck`, `pnpm lint`, `pnpm build` clean.
+
+state: success

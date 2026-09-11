@@ -153,8 +153,17 @@ function renderSettings(overrides: { projection?: SettingsProjection; health?: H
 afterEach(() => cleanup());
 
 describe("SettingsView", () => {
-  it("renders the read-only repository identity card with copy buttons", () => {
+  it("keeps read-only repository identity fields inside a collapsed disclosure", () => {
     renderSettings();
+    // Live operational pieces stay visible at the top level.
+    expect(screen.getByText("online")).toBeTruthy();
+    expect(screen.getByText("Dispatch active for this repo")).toBeTruthy();
+    // Identity fields mount lazily: absent until the disclosure is expanded.
+    expect(screen.queryByText("Repository key")).toBeNull();
+    expect(screen.queryByTitle("Copy /work/demo")).toBeNull();
+    expect(screen.queryByTitle("Copy project-1")).toBeNull();
+
+    fireEvent.click(screen.getByText("Repository details").closest("details")!.querySelector("summary")!);
     expect(screen.getByText("demo")).toBeTruthy();
     expect(screen.getByTitle("Copy /work/demo")).toBeTruthy();
     expect(screen.getByTitle("Copy /work/demo-factory")).toBeTruthy();
@@ -163,8 +172,6 @@ describe("SettingsView", () => {
     expect(screen.getByTitle("Copy host-1")).toBeTruthy();
     expect(screen.getByTitle("Copy project-1")).toBeTruthy();
     expect(screen.getByTitle("Copy environment-1")).toBeTruthy();
-    expect(screen.getByText("online")).toBeTruthy();
-    expect(screen.getByText("Dispatch active for this repo")).toBeTruthy();
   });
 
   it("shows the first host reason when the host is unhealthy", () => {
