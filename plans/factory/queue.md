@@ -169,7 +169,7 @@ validate:
 notes: src/ui/shell.ts appends the literal character `↻`, which renders misrotated in the app font (user screenshot). Replace with a real icon (the shell's existing icon set or an inline SVG) at the correct orientation.
 
 ## BBF-0011 Question-gated ready entries show "Ready" and Approve
-status: ready
+status: done (orchestrated session 2026-09-11)
 priority: 1
 depends_on: none
 risk: low
@@ -183,3 +183,18 @@ validate:
 - pnpm test
 - pnpm typecheck
 notes: Reported live: DATA-0009.01 on diggs-data-platform shows "Ready" plus Approve while its expanded detail lists "Blocked by: Q13 and Q17"; approval is then rejected by the blocked-by-question guard (src/actions/repository.ts). The WorkRow CTA prefers Approve over Answer whenever approval is missing, and the status badge renders the raw parsed status instead of the question-gated state.
+
+## BBF-0012 Approve on an already-ready entry is a dead end
+status: draft
+priority: 2
+depends_on: BBF-0011
+risk: low
+plan: src/actions/repository.ts, src/protocol/reader.ts, src/ui/views/work.ts
+approved: none
+acceptance:
+- The intended semantics are decided: either `approve-queue` may attach an `approved:` line to a `status: ready` entry that lacks one, or the reader/UI stops offering Approve on ready entries.
+- The chosen path is implemented so the UI never offers an approval the action layer will reject.
+validate:
+- pnpm test
+- pnpm typecheck
+notes: Found during BBF-0011 review. `approve-queue` on a ready entry returns conflict "already ready with different authorization" (src/actions/repository.ts:90-95) before the blocked-by-question guard runs, while the reader still emits `missing-authorization` for ready entries without an `approved:` line, so the UI offers an Approve that always fails.

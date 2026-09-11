@@ -418,14 +418,14 @@ describe("Factory guarded actions", () => {
     ...snapshot,
     queue: [{
       ...snapshot.queue[0]!,
-      id: "blocked-item",
-      title: "Blocked work",
-      status: { kind: "blocked-by" as const, questionId: "Q1", detail: "Waiting on Q1" },
+      id: "draft-item",
+      title: "Draft work",
+      status: { kind: "unknown" as const, raw: "draft" },
       approved: { kind: "none" as const, source: "none" as const },
-      blockedBy: ["Q1"],
-      blockingQuestionIds: ["Q1"],
+      blockedBy: [],
+      blockingQuestionIds: [],
       eligible: false,
-      eligibilityReasons: ["blocking-question" as const, "missing-authorization" as const],
+      eligibilityReasons: ["not-ready" as const, "missing-authorization" as const],
     }],
   };
 
@@ -450,7 +450,7 @@ describe("Factory guarded actions", () => {
         expect(rpc.factory_action).toHaveBeenCalledWith(expect.objectContaining({
           repositoryKey: "demo",
           expectedRevision: revision,
-          action: { kind: "approve-queue", queueItemId: "blocked-item", approvedText: "no gated actions" },
+          action: { kind: "approve-queue", queueItemId: "draft-item", approvedText: "no gated actions" },
         }));
       });
     } finally {

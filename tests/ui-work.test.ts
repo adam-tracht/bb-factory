@@ -229,6 +229,61 @@ describe("WorkView rows", () => {
     expect(ctx.onOpenSection).toHaveBeenCalledWith("questions", "question-Q13");
   });
 
+  it("renders a ready item gated by open questions as blocked and prefers Answer over Approve", () => {
+    const ctx = makeCtx();
+    renderWork([makeEntry({
+      id: "GATED-READY",
+      status: { kind: "ready" },
+      blockingQuestionIds: ["Q13", "Q17"],
+      blockedBy: ["Q13", "Q17"],
+      eligibilityReasons: ["blocking-question", "missing-authorization"],
+    })], ctx);
+    const row = rowOf("GATED-READY");
+    expect(within(row).getByText("Blocked by Q13")).toBeTruthy();
+    expect(within(row).queryByText("Ready")).toBeNull();
+    expect(within(sectionOf("Needs you")).getByText("GATED-READY")).toBeTruthy();
+    fireEvent.click(within(row).getByRole("button", { name: "Answer Q13" }));
+    expect(ctx.onOpenSection).toHaveBeenCalledWith("questions", "question-Q13");
+    expect(within(row).queryByRole("button", { name: "Approve" })).toBeNull();
+  });
+
+  it("hides the approve composer while open questions gate the item", () => {
+    renderWork([makeEntry({
+      id: "GATED-READY",
+      blockingQuestionIds: ["Q13"],
+      blockedBy: ["Q13"],
+      eligibilityReasons: ["blocking-question", "missing-authorization"],
+    })]);
+    expandRow("GATED-READY");
+    const row = rowOf("GATED-READY");
+    expect(within(row).getByRole("button", { name: "Q13" })).toBeTruthy();
+    expect(within(row).queryByRole("textbox")).toBeNull();
+    expect(within(row).queryByRole("button", { name: "Approve" })).toBeNull();
+  });
+
+  it("keeps the Ready badge and Approve CTA when the gating questions are answered", () => {
+    renderWork([
+      makeEntry({
+        id: "CLEARED-1",
+        blockedBy: ["Q13"],
+        eligibilityReasons: ["missing-authorization"],
+      }),
+      makeEntry({
+        id: "CLEARED-2",
+        eligible: true,
+        blockedBy: ["Q13"],
+        approved: { kind: "explicit", source: "queue.approved", text: "ok" },
+      }),
+    ]);
+    const unapproved = rowOf("CLEARED-1");
+    expect(within(unapproved).getByText("Ready")).toBeTruthy();
+    expect(within(unapproved).getByRole("button", { name: "Approve" })).toBeTruthy();
+    const approved = rowOf("CLEARED-2");
+    expect(within(approved).getByText("Ready")).toBeTruthy();
+    expect(within(approved).queryByRole("button", { name: /Approve|Answer/u })).toBeNull();
+    expect(within(sectionOf("Ready")).getByText("CLEARED-2")).toBeTruthy();
+  });
+
   it("links each .md token in the plan field while keeping commentary as plain text", () => {
     renderWork([makeEntry({
       id: "PLAN-1",

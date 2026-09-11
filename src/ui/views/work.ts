@@ -221,7 +221,7 @@ function WorkRowDetail(props: { entry: QueueEntry; group: WorkGroup; ctx: ViewCo
           h("blockquote", {
             className: "mt-0.5 border-l-2 border-success/50 pl-2 text-xs text-muted-foreground",
           }, entry.approved.text))
-      : approvalMissing(entry)
+      : approvalMissing(entry) && entry.blockingQuestionIds.length === 0
         ? h("div", null,
             h(DetailLabel, { text: "Approval" }),
             h("div", { className: "mt-1" }, h(ApproveComposer, { entry, ctx })))
@@ -242,23 +242,31 @@ function WorkRow(props: { entry: QueueEntry; group: WorkGroup; ctx: ViewContext;
   const { entry, group, ctx } = props;
   const [expanded, setExpanded] = useState(props.defaultExpanded);
   const pending = ctx.pendingTarget === `queued:${entry.id}`;
-  const qids = gatingQuestionIds(entry);
+  const openQids = entry.blockingQuestionIds;
   const approvalNeeded = approvalMissing(entry);
 
-  const cta = approvalNeeded
+  // A ready item gated by open questions is question-blocked in reality:
+  // render the blocked-by warning treatment, not a misleading "Ready" badge.
+  const displayStatus = entry.status.kind === "ready" && openQids.length > 0
+    ? { kind: "blocked-by" as const, questionId: openQids[0] }
+    : entry.status;
+
+  // Open questions gate first: the action layer rejects approval while any
+  // blocking question is unanswered, so Approve is offered only once clear.
+  const cta = openQids.length > 0
     ? h(ActionButton, {
-        label: "Approve",
-        variant: "primary",
+        label: `Answer ${openQids[0]}`,
+        variant: "ghost",
         size: "xs",
-        disabled: pending,
-        onClick: () => setExpanded(true),
+        onClick: () => ctx.onOpenSection("questions", `question-${openQids[0]}`),
       })
-    : qids.length > 0
+    : approvalNeeded
       ? h(ActionButton, {
-          label: `Answer ${qids[0]}`,
-          variant: "ghost",
+          label: "Approve",
+          variant: "primary",
           size: "xs",
-          onClick: () => ctx.onOpenSection("questions", `question-${qids[0]}`),
+          disabled: pending,
+          onClick: () => setExpanded(true),
         })
       : null;
 
@@ -277,7 +285,7 @@ function WorkRow(props: { entry: QueueEntry; group: WorkGroup; ctx: ViewContext;
           }
         },
       },
-        h(Badge, { label: queueStatusLabel(entry.status), tone: STATUS_TONE[entry.status.kind] }),
+        h(Badge, { label: queueStatusLabel(displayStatus), tone: STATUS_TONE[displayStatus.kind] }),
         h("code", { className: "shrink-0 font-mono text-xs text-muted-foreground" }, entry.id),
         h("span", { className: "min-w-0 truncate text-sm text-foreground" }, entry.title),
         h("span", { className: "shrink-0 text-xs text-muted-foreground" }, `P${entry.priority}`),
