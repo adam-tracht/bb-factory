@@ -102,9 +102,12 @@ function dispatchChip(dispatch: DispatchStatus | null): { label: string; tone: T
 function RepositorySwitcher(props: Pick<FactoryShellProps,
   "repositories" | "selectedRepositoryKey" | "repositoriesActive" | "repositorySelectionLoading" | "onSelectRepository" | "onShowRepositories" | "onAddRepository"
 >) {
-  const { repositories, selectedRepositoryKey, repositoriesActive, onSelectRepository, onShowRepositories, onAddRepository } = props;
+  const { repositories, selectedRepositoryKey, repositoriesActive, repositorySelectionLoading, onSelectRepository, onShowRepositories, onAddRepository } = props;
   if (repositories.length > 4) {
-    return h("div", { className: "flex items-center gap-1" },
+    return h("div", {
+      className: `flex items-center gap-1 transition-opacity ${repositorySelectionLoading ? "opacity-60" : ""}`,
+      "aria-busy": repositorySelectionLoading,
+    },
       h(ActionButton, { label: "All", variant: repositoriesActive ? "secondary" : "ghost", size: "xs", onClick: onShowRepositories }),
       h("select", {
         "aria-label": "Configured repository",
@@ -119,7 +122,12 @@ function RepositorySwitcher(props: Pick<FactoryShellProps,
             repo.configuration.repositoryKey))),
       h(ActionButton, { label: "+", variant: "ghost", size: "xs", onClick: onAddRepository, title: "Add repository" }));
   }
-  return h("div", { className: "flex items-center gap-1 rounded-lg bg-muted/60 p-1", role: "group", "aria-label": "Configured repository" },
+  return h("div", {
+    className: `flex items-center gap-1 rounded-lg bg-muted/60 p-1 transition-opacity ${repositorySelectionLoading ? "opacity-60" : ""}`,
+    role: "group",
+    "aria-label": "Configured repository",
+    "aria-busy": repositorySelectionLoading,
+  },
     h("button", {
       type: "button",
       "aria-pressed": repositoriesActive,

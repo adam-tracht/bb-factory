@@ -186,23 +186,34 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
   const [refreshSequence, setRefreshSequence] = useState(0);
   const [refreshedAt, setRefreshedAt] = useState<number | null>(null);
   const [malformedSignal, setMalformedSignal] = useState(false);
-  const [repositoryOverride, setRepositoryOverride] = useState<{ settingsIdentity: string; repositoryKey: string } | null>(null);
+  const [repositoryOverride, setRepositoryOverride] = useState<{ configuredKey: string | null; repositoryKey: string } | null>(null);
   const [data, setData] = useState<FactoryData>(() => initialData(Boolean(routeRunId)));
   const [actionState, setActionState] = useState<{ pendingTarget: string | null; feedback: ActionFeedback }>({ pendingTarget: null, feedback: idleFeedback });
+  const [repositoriesPending, setRepositoriesPending] = useState(true);
   const loadToken = useRef(0);
-  const requestedRepositoryKey = repositoryOverride?.settingsIdentity === settingsIdentity ? repositoryOverride.repositoryKey : configuredRepositoryKey;
+  // The override is keyed to the configured repositoryKey only. Registry writes
+  // (dispatch toggle, add repository) change the registry JSON but must not
+  // snap the selection back to the default repository.
+  const requestedRepositoryKey = repositoryOverride && repositoryOverride.configuredKey === (configuredRepositoryKey ?? null)
+    ? repositoryOverride.repositoryKey
+    : configuredRepositoryKey;
 
   useEffect(() => {
-    setRepositoryOverride((current) => current?.settingsIdentity === settingsIdentity ? current : null);
-  }, [settingsIdentity]);
+    setRepositoryOverride((current) => current && current.configuredKey === (configuredRepositoryKey ?? null) ? current : null);
+  }, [configuredRepositoryKey]);
 
   const reload = useCallback(() => {
     setRefreshSequence((current) => current + 1);
   }, []);
 
+  // Events that name another repository do not concern the visible one; global
+  // events (repositoryKey null) still reload everything.
+  const requestedKeyRef = useRef(requestedRepositoryKey);
+  requestedKeyRef.current = requestedRepositoryKey;
   const onRealtime = useCallback((payload: unknown) => {
     const parsed = invalidationEventSchema.safeParse(payload);
     setMalformedSignal(!parsed.success);
+    if (parsed.success && parsed.data.repositoryKey && parsed.data.repositoryKey !== requestedKeyRef.current) return;
     reload();
   }, [reload]);
   useRealtime("factory", onRealtime);
@@ -215,12 +226,18 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
 
   const onRepositorySelect = useCallback((repositoryKey: string) => {
     if (repositoryKey === requestedRepositoryKey) return;
-    setRepositoryOverride({ settingsIdentity, repositoryKey });
-  }, [requestedRepositoryKey, settingsIdentity]);
+    setRepositoryOverride({ configuredKey: configuredRepositoryKey ?? null, repositoryKey });
+  }, [requestedRepositoryKey, configuredRepositoryKey]);
 
   const load = useCallback(async () => {
     const token = ++loadToken.current;
-    setData({ ...initialData(Boolean(routeRunId)), repositories: { status: "loading" } });
+    // Keep a ready repositories projection mounted during reloads so the
+    // switcher pills never unmount mid-click.
+    setData((current) => ({
+      ...initialData(Boolean(routeRunId)),
+      repositories: current.repositories.status === "ready" ? current.repositories : { status: "loading" },
+    }));
+    setRepositoriesPending(true);
 
     try {
       const repositories = parseProjection(
@@ -234,6 +251,7 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
       if (!repositoryKey) {
         setData((current) => ({ ...current, snapshot: { status: "idle" }, settings: { status: "idle" }, health: { status: "idle" }, interactions: { status: "idle" }, runs: { status: "idle" }, detail: null }));
         setRefreshedAt(Date.now());
+        setRepositoriesPending(false);
         return;
       }
 
@@ -267,8 +285,12 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
         detail: routeRunId ? resource(detailResult as PromiseSettledResult<OperationalRunDetailProjection>) : null,
       }));
       setRefreshedAt(Date.now());
+      setRepositoriesPending(false);
     } catch (error) {
-      if (token === loadToken.current) setData((current) => ({ ...current, repositories: { status: "error", error: errorText(error) } }));
+      if (token === loadToken.current) {
+        setData((current) => ({ ...current, repositories: { status: "error", error: errorText(error) } }));
+        setRepositoriesPending(false);
+      }
     }
   }, [requestedRepositoryKey, routeRunId, refreshSequence, settingsIdentity]);
 
@@ -653,14 +675,24 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
       || repositoryProjection.repositories.length === 0
       || !selectedEntry);
 
+  // On landing-scoped routes a selection must navigate to the repo's overview:
+  // otherwise the click reloads data but repaints the same landing, which reads
+  // as a dead control. On repo-scoped tabs selection keeps the current tab.
+  const selectionNavigates = route.section === "repositories"
+    || route.section === "not-found"
+    || route.section === "add-repository";
+
   return h(FactoryShell, {
     section: sectionForShell,
     onNavigate,
     repositories: repositoryProjection?.repositories ?? [],
     selectedRepositoryKey: selectedRepositoryKey(repositoryProjection ?? { repositories: [], selectedRepositoryKey: null }),
     repositoriesActive,
-    repositorySelectionLoading: data.repositories.status === "loading",
-    onSelectRepository: onRepositorySelect,
+    repositorySelectionLoading: repositoriesPending || data.repositories.status === "loading",
+    onSelectRepository: (repositoryKey) => {
+      onRepositorySelect(repositoryKey);
+      if (selectionNavigates) onNavigate("overview");
+    },
     onShowRepositories,
     onAddRepository,
     dispatch,

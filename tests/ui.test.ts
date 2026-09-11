@@ -413,6 +413,182 @@ describe("Factory view shell", () => {
     }
   });
 
+  it("navigates to overview when a switcher pill is clicked on the repositories landing", async () => {
+    const { FactoryView } = await import("../src/ui/FactoryView.js");
+    const rpc = {
+      ...baseRpc(),
+      factory_repositories: vi.fn((input: { selectedRepositoryKey?: string | null }) => repositorySelectionForSwitch(input.selectedRepositoryKey)),
+      factory_snapshot: vi.fn(({ repositoryKey }: { repositoryKey: string }) => snapshotForSwitch(repositoryKey)),
+      factory_settings: vi.fn(({ repositoryKey }: { repositoryKey: string }) => settingsForSwitch(repositoryKey)),
+      factory_health: vi.fn(({ repositoryKey }: { repositoryKey: string }) => healthForSwitch(repositoryKey)),
+      factory_interactions: vi.fn(({ repositoryKey }: { repositoryKey: string }) => ({ repositoryKey, interactions: [] })),
+      factory_runs: vi.fn(({ repositoryKey }: { repositoryKey: string }) => runsForSwitch(repositoryKey)),
+    } as unknown as PluginRpcTestHandlers<FactoryRpcContract> & { factory_repositories: ReturnType<typeof vi.fn> };
+    const registry = JSON.stringify({
+      repositories: [
+        { configuration: monorepoRepository, projectId: "project-monorepo", environmentId: "environment-monorepo" },
+        { configuration: dataRepository, projectId: "project-data", environmentId: "environment-data" },
+      ],
+      defaultRepositoryKey: "monorepo",
+    });
+    controlledSettingsState = { values: { repositoryRegistry: registry }, isLoading: false };
+    const slot = renderSlot<FactoryViewProps, FactoryRpcContract>(
+      { component: FactoryView },
+      { subPath: "repositories", panelPath: "factory" },
+      { rpc, settings: { repositoryRegistry: registry } },
+    );
+    try {
+      await slot.findByText("Repositories");
+      const switcher = (await slot.findByRole("group", { name: "Configured repository" })) as HTMLElement;
+      fireEvent.click(within(switcher).getByRole("button", { name: "data" }));
+      expect(slot.inspection.navigateCalls).toContainEqual({
+        method: "toPluginPanel",
+        path: "factory",
+        options: { subPath: "overview" },
+      });
+      await vi.waitFor(() => {
+        expect(rpc.factory_repositories).toHaveBeenCalledWith({ selectedRepositoryKey: "data" });
+      });
+    } finally {
+      slot.lifecycle.unmount();
+      controlledSettingsState = { values: { repositoryKey: "demo" }, isLoading: false };
+    }
+  });
+
+  it("keeps the switcher mounted while a selection reload runs", async () => {
+    const { FactoryView } = await import("../src/ui/FactoryView.js");
+    let resolveSnapshot: ((value: unknown) => void) | null = null;
+    const rpc = {
+      ...baseRpc(),
+      factory_repositories: vi.fn((input: { selectedRepositoryKey?: string | null }) => repositorySelectionForSwitch(input.selectedRepositoryKey)),
+      factory_snapshot: vi.fn(({ repositoryKey }: { repositoryKey: string }) => repositoryKey === "data"
+        ? new Promise((resolve) => { resolveSnapshot = resolve; })
+        : snapshotForSwitch(repositoryKey)),
+      factory_settings: vi.fn(({ repositoryKey }: { repositoryKey: string }) => settingsForSwitch(repositoryKey)),
+      factory_health: vi.fn(({ repositoryKey }: { repositoryKey: string }) => healthForSwitch(repositoryKey)),
+      factory_interactions: vi.fn(({ repositoryKey }: { repositoryKey: string }) => ({ repositoryKey, interactions: [] })),
+      factory_runs: vi.fn(({ repositoryKey }: { repositoryKey: string }) => runsForSwitch(repositoryKey)),
+    } as unknown as PluginRpcTestHandlers<FactoryRpcContract> & { factory_repositories: ReturnType<typeof vi.fn> };
+    const registry = JSON.stringify({
+      repositories: [
+        { configuration: monorepoRepository, projectId: "project-monorepo", environmentId: "environment-monorepo" },
+        { configuration: dataRepository, projectId: "project-data", environmentId: "environment-data" },
+      ],
+      defaultRepositoryKey: "monorepo",
+    });
+    controlledSettingsState = { values: { repositoryRegistry: registry }, isLoading: false };
+    const slot = renderSlot<FactoryViewProps, FactoryRpcContract>(
+      { component: FactoryView },
+      { subPath: "work", panelPath: "factory" },
+      { rpc, settings: { repositoryRegistry: registry } },
+    );
+    try {
+      await slot.findByText("Ready work");
+      const switcher = (await slot.findByRole("group", { name: "Configured repository" })) as HTMLElement;
+      fireEvent.click(within(switcher).getByRole("button", { name: "data" }));
+      // The data snapshot is held pending: the pills must stay mounted and the
+      // strip shows a subtle busy state instead of collapsing.
+      const group = (await slot.findByRole("group", { name: "Configured repository" })) as HTMLElement;
+      expect(within(group).getByRole("button", { name: "monorepo" })).toBeTruthy();
+      expect(within(group).getByRole("button", { name: "data" })).toBeTruthy();
+      expect(group.getAttribute("aria-busy")).toBe("true");
+      expect(group.className).toContain("opacity-60");
+      await act(async () => { resolveSnapshot?.(snapshotForSwitch("data")); });
+      await vi.waitFor(async () => {
+        const resolved = (await slot.findByRole("group", { name: "Configured repository" })) as HTMLElement;
+        expect(resolved.getAttribute("aria-busy")).toBe("false");
+      });
+    } finally {
+      slot.lifecycle.unmount();
+      controlledSettingsState = { values: { repositoryKey: "demo" }, isLoading: false };
+    }
+  });
+
+  it("keeps the selected repository when a registry write changes the settings identity", async () => {
+    const { FactoryView } = await import("../src/ui/FactoryView.js");
+    const rpc = {
+      ...baseRpc(),
+      factory_repositories: vi.fn((input: { selectedRepositoryKey?: string | null }) => repositorySelectionForSwitch(input.selectedRepositoryKey)),
+      factory_snapshot: vi.fn(({ repositoryKey }: { repositoryKey: string }) => snapshotForSwitch(repositoryKey)),
+      factory_settings: vi.fn(({ repositoryKey }: { repositoryKey: string }) => settingsForSwitch(repositoryKey)),
+      factory_health: vi.fn(({ repositoryKey }: { repositoryKey: string }) => healthForSwitch(repositoryKey)),
+      factory_interactions: vi.fn(({ repositoryKey }: { repositoryKey: string }) => ({ repositoryKey, interactions: [] })),
+      factory_runs: vi.fn(({ repositoryKey }: { repositoryKey: string }) => runsForSwitch(repositoryKey)),
+    } as unknown as PluginRpcTestHandlers<FactoryRpcContract> & { factory_repositories: ReturnType<typeof vi.fn> };
+    const registry = JSON.stringify({
+      repositories: [
+        { configuration: monorepoRepository, projectId: "project-monorepo", environmentId: "environment-monorepo" },
+        { configuration: dataRepository, projectId: "project-data", environmentId: "environment-data" },
+      ],
+      defaultRepositoryKey: "monorepo",
+    });
+    controlledSettingsState = { values: { repositoryRegistry: registry }, isLoading: false };
+    const slot = renderSlot<FactoryViewProps, FactoryRpcContract>(
+      { component: FactoryView },
+      { subPath: "work", panelPath: "factory" },
+      { rpc, settings: { repositoryRegistry: registry } },
+    );
+    try {
+      await slot.findByText("Ready work");
+      const switcher = (await slot.findByRole("group", { name: "Configured repository" })) as HTMLElement;
+      fireEvent.click(within(switcher).getByRole("button", { name: "data" }));
+      await vi.waitFor(() => {
+        expect(rpc.factory_repositories).toHaveBeenLastCalledWith({ selectedRepositoryKey: "data" });
+      });
+      const callsAfterSelect = rpc.factory_repositories.mock.calls.length;
+
+      // A registry write (e.g. a dispatch-pause toggle or an added repo) changes
+      // the registry JSON. The selection override must survive it.
+      const rewritten = JSON.stringify({
+        repositories: [
+          { configuration: monorepoRepository, projectId: "project-monorepo", environmentId: "environment-monorepo", dispatchPaused: true },
+          { configuration: dataRepository, projectId: "project-data", environmentId: "environment-data" },
+        ],
+        defaultRepositoryKey: "monorepo",
+      });
+      await act(async () => {
+        controlledSettingsState = { values: { repositoryRegistry: rewritten }, isLoading: false };
+        for (const subscriber of controlledSettingsSubscribers) subscriber();
+      });
+      await vi.waitFor(() => {
+        expect(rpc.factory_repositories.mock.calls.length).toBeGreaterThan(callsAfterSelect);
+      });
+      expect(rpc.factory_repositories).toHaveBeenLastCalledWith({ selectedRepositoryKey: "data" });
+      const selectedPill = within((await slot.findByRole("group", { name: "Configured repository" })) as HTMLElement)
+        .getByRole("button", { name: "data" });
+      expect(selectedPill.getAttribute("aria-pressed")).toBe("true");
+    } finally {
+      slot.lifecycle.unmount();
+      controlledSettingsState = { values: { repositoryKey: "demo" }, isLoading: false };
+    }
+  });
+
+  it("ignores realtime invalidations that name a different repository", async () => {
+    const { FactoryView } = await import("../src/ui/FactoryView.js");
+    const rpc = {
+      ...baseRpc(),
+      factory_snapshot: vi.fn(() => snapshotForSwitch("demo")),
+    } as unknown as PluginRpcTestHandlers<FactoryRpcContract> & { factory_snapshot: ReturnType<typeof vi.fn> };
+    const slot = renderSlot<FactoryViewProps, FactoryRpcContract>(
+      { component: FactoryView },
+      { subPath: "work", panelPath: "factory" },
+      { rpc, settings: { repositoryKey: "demo" } },
+    );
+    try {
+      await slot.findByText("Ready work");
+      const initialCalls = rpc.factory_snapshot.mock.calls.length;
+      await slot.behavior.emitRealtime("factory", { channel: "factory", kind: "run.changed", repositoryKey: "other-repo", revision, reason: "unrelated", durableReloadRequired: true });
+      await act(async () => undefined);
+      expect(rpc.factory_snapshot.mock.calls.length).toBe(initialCalls);
+      await slot.behavior.emitRealtime("factory", { channel: "factory", kind: "repository.changed", repositoryKey: "demo", revision, reason: "mine", durableReloadRequired: true });
+      await vi.waitFor(() => {
+        expect(rpc.factory_snapshot.mock.calls.length).toBeGreaterThan(initialCalls);
+      });
+    } finally {
+      slot.lifecycle.unmount();
+    }
+  });
+
   it("reloads every durable projection after recovery and invalidation", async () => {
     const { FactoryView } = await import("../src/ui/FactoryView.js");
     const slot = renderSlot<FactoryViewProps, FactoryRpcContract>(

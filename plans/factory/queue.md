@@ -307,3 +307,20 @@ validate:
 - pnpm test
 - pnpm typecheck
 notes: Reported live: the card is a grid of CopyText fields; the only mutable input is dispatchPaused (updateRepositoryInputSchema accepts repositoryKey + dispatchPaused only, src/contracts.ts:1276-1279). Identity fields are registration-time config, so they collapse into a Disclosure like the run detail's Technical details pattern (src/ui/views/runs.ts:297-307).
+
+## BBF-0020 Repository selection is dead and the panel thrashes
+status: done (orchestrated session 2026-09-11)
+priority: 1
+depends_on: none
+risk: medium
+plan: src/ui/FactoryView.ts, src/ui/shell.ts
+approved: user direction 2026-09-11 (filed and orchestrated on instruction)
+acceptance:
+- Repo pill and select clicks made while the landing is rendered (repositories, not-found, add-repository routes) select AND navigate to overview; clicks on repo-scoped tabs keep the current tab.
+- A selection change no longer unmounts the switcher: the previous repositories projection stays rendered while the reload runs, and repositorySelectionLoading drives a subtle busy state instead of the pills vanishing.
+- The repository override is keyed to the configured repositoryKey only, so registry writes (dispatch toggle, add repository) no longer snap the selection back to the default repo.
+- Realtime invalidations that name a different repositoryKey do not reload the selected repository's projections; settings/host-scoped events still do.
+validate:
+- pnpm test
+- pnpm typecheck
+notes: Review of cbcdfe4 found the live-reported glitch: on the landing the Overview tab is highlighted by scopeSection, repo pills call onRepositorySelect with no navigation, and repositoriesActive guarantees they can never appear active, so every click fires a full load() that resets data.repositories to loading, unmounts the whole pill strip, and repaints the identical landing. Secondary: load() empties the switcher on every reload; onRealtime reloads on every factory event including other repos' (invalidationEventSchema carries repositoryKey, src/contracts.ts:1003); repositoryOverride is keyed to settingsIdentity which includes the raw registry JSON, so any registry write clears it and snaps back to the default repo (src/ui/FactoryView.ts:125-129,189-197).

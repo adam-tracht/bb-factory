@@ -36,3 +36,24 @@ Four more live-UI defects, orchestrated as three parallel workers (0016+0017 sha
 Validation: `pnpm test` 300 passing, `pnpm typecheck`, `pnpm lint`, `pnpm build` clean.
 
 state: success
+
+## BBF-0020: repository selection dead controls and panel thrash
+
+Live report after cbcdfe4: repo pills on the landing never navigate and can
+never appear active (repositoriesActive forces them dark) while every click
+reset the whole panel and unmounted the switcher. Two review passes
+(spec compliance + code quality) converged on the same mechanism plus two
+amplifiers (settingsIdentity-keyed override snapping back on registry writes;
+unfiltered realtime events for other repositories reloading everything).
+
+Fix: pill/select clicks on landing-scoped routes now select + navigate to
+overview; load() preserves the ready repositories projection so pills stay
+mounted, with repositorySelectionPending driving an aria-busy + opacity dim;
+the override keys on configuredRepositoryKey only; onRealtime skips events
+naming another repositoryKey (global/null events still reload).
+
+Validation: pnpm test 304 passing (4 new integration tests: pill navigates on
+landing, pills stay mounted mid-load, selection survives a registry write,
+cross-repo invalidations ignored), typecheck, lint, build clean.
+
+state: success
