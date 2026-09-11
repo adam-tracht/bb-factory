@@ -245,3 +245,65 @@ validate:
 - pnpm test
 - pnpm typecheck
 notes: Reported live on diggs-data-platform DATA-0007.04: Q6 was half-answered by observation (property resolved, BigQuery pipe still human), so the protocol counted the gate resolved while human work remained, and the entry sat in Blocked with no action. Data fix landed in diggs-data-platform-factory acc6097 (Q18 re-filed, entry re-pointed).
+
+## BBF-0016 "All" repository switcher pill never shows active state
+status: ready
+priority: 3
+depends_on: none
+risk: low
+plan: src/ui/shell.ts, src/ui/FactoryView.ts
+approved: user direction 2026-09-11 (filed and orchestrated on instruction)
+acceptance:
+- When the repositories landing route is showing, the "All" control renders the same active treatment a selected repository pill gets, and no repository pill renders active.
+- In the >4-repository select fallback the "All" control also reflects the active repositories view.
+- Selecting a repository pill still marks it active on non-landing routes.
+validate:
+- pnpm test
+- pnpm typecheck
+notes: Reported live: on the repositories landing the previously selected repo keeps the active pill because the switcher keys off selectedRepositoryKey, which stays set while route.section is "repositories". Pass a repositories-active signal from FactoryView (src/ui/shell.ts:121-149 segmented variant and line 106 select variant).
+
+## BBF-0017 Selecting a repository leaves the route on the landing view
+status: ready
+priority: 2
+depends_on: none
+risk: low
+plan: src/ui/FactoryView.ts
+approved: user direction 2026-09-11 (filed and orchestrated on instruction)
+acceptance:
+- Clicking a repository card on the landing view selects it AND navigates to its overview, so the body never shows the repositories list under the highlighted Overview tab.
+- The same applies when selection changes while on any repositories-scoped route.
+validate:
+- pnpm test
+- pnpm typecheck
+notes: Reported live: RepositoryLandingView onSelect calls onRepositorySelect only (src/ui/FactoryView.ts:573), which sets the override but never navigates, so route.section stays "repositories" and the landing re-renders while the tab scope maps it to the Overview highlight (src/ui/FactoryView.ts:316-318). Wire the landing onSelect through the existing onOpenRepository path (select + navigate, src/ui/FactoryView.ts:481).
+
+## BBF-0018 Run detail cannot open the worker thread
+status: ready
+priority: 3
+depends_on: none
+risk: low
+plan: src/ui/views/runs.ts
+approved: user direction 2026-09-11 (filed and orchestrated on instruction)
+acceptance:
+- RunDetailView renders an "Open thread" control that calls ctx.onOpenThread(run.workerThreadId) whenever a workerThreadId exists, placed in the run header next to the status/id cluster.
+- Attempt rows link their own workerThreadId the same way when present.
+- Runs with no worker thread show no dead control.
+validate:
+- pnpm test
+- pnpm typecheck
+notes: Reported live: run list rows already offer a Thread button (src/ui/views/runs.ts:93-101) but RunDetailView only surfaces the thread id as copyable text inside the collapsed Technical details disclosure (src/ui/views/runs.ts:227,306). ctx.onOpenThread already navigates to the bb thread.
+
+## BBF-0019 Settings Repository card is all read-only fields
+status: ready
+priority: 3
+depends_on: none
+risk: low
+plan: src/ui/views/settings.ts
+approved: user direction 2026-09-11 (filed and orchestrated on instruction)
+acceptance:
+- The Repository card shows the mutable controls (the per-repo dispatch toggle) and host status inline, and moves the read-only identity fields (key, root, checkout, branch, main ref, host id, project, environment) into a collapsed disclosure labelled so it reads as details, not settings.
+- No field that factory_update_repository cannot mutate remains presented as an editable setting.
+validate:
+- pnpm test
+- pnpm typecheck
+notes: Reported live: the card is a grid of CopyText fields; the only mutable input is dispatchPaused (updateRepositoryInputSchema accepts repositoryKey + dispatchPaused only, src/contracts.ts:1276-1279). Identity fields are registration-time config, so they collapse into a Disclosure like the run detail's Technical details pattern (src/ui/views/runs.ts:297-307).
