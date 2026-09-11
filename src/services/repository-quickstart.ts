@@ -62,7 +62,7 @@ export async function pickRepositoryFolder(sdk: QuickstartSdk, hostId?: string):
 
 /** Remote default branch: `symbolic-ref refs/remotes/origin/HEAD`, then the loose ref file, then origin/main. */
 async function probeMainRef(sdk: QuickstartSdk, hostId: string, root: string): Promise<string> {
-  const symbolic = await runHostCommand(sdk.terminals, {
+  const symbolic = await runHostCommand(sdk, {
     hostId,
     cwd: root,
     command: `git -C ${shellQuote(root)} symbolic-ref --quiet --short refs/remotes/origin/HEAD`,
@@ -83,7 +83,7 @@ async function probeMainRef(sdk: QuickstartSdk, hostId: string, root: string): P
 }
 
 async function probeFactoryBranchState(sdk: QuickstartSdk, hostId: string, root: string): Promise<FactoryBranchState> {
-  const listed = await runHostCommand(sdk.terminals, {
+  const listed = await runHostCommand(sdk, {
     hostId,
     cwd: root,
     command: `git -C ${shellQuote(root)} worktree list --porcelain`,

@@ -40,7 +40,7 @@ function makeSdk(overrides: {
         pickFolder,
       },
       projects: { list: projectsList, create: projectsCreate },
-      terminals: overrides.terminals ?? makeHostTerminals(),
+      terminals: overrides.terminals ?? makeHostTerminals(files),
     } as never,
     files,
     pickFolder,
@@ -103,8 +103,9 @@ describe("pickRepositoryFolder", () => {
 
 describe("probeRepository", () => {
   it("returns isGitRepo=false for a non-git folder without running host commands", async () => {
-    const terminals = makeHostTerminals();
-    const { sdk } = makeSdk({ terminals });
+    const files = new FakeFileSystem();
+    const terminals = makeHostTerminals(files);
+    const { sdk } = makeSdk({ files, terminals });
     const result = await probeRepository(sdk, { hostId: "host-1", path: "/work/empty" });
     expect(result.isGitRepo).toBe(false);
     expect(result.hasProtocol).toBe(false);
@@ -119,7 +120,7 @@ describe("probeRepository", () => {
     const files = new FakeFileSystem();
     files.seed(".git/HEAD", "ref: refs/heads/main\n", REPO);
     files.seed("plans/factory/foreman.md", "# Foreman\n", REPO);
-    const terminals = makeHostTerminals([
+    const terminals = makeHostTerminals(files, [
       { match: "symbolic-ref", response: { output: "origin/trunk\n" } },
       {
         match: "worktree list",
@@ -165,7 +166,7 @@ describe("probeRepository", () => {
     const files = new FakeFileSystem();
     files.seed(".git/HEAD", "ref: refs/heads/main\n", REPO);
     files.seed(".git/refs/remotes/origin/HEAD", "ref: refs/remotes/origin/trunk\n", REPO);
-    const terminals = makeHostTerminals([
+    const terminals = makeHostTerminals(files, [
       { match: "symbolic-ref", response: { exitCode: 1, output: "fatal\n" } },
     ]);
     const { sdk } = makeSdk({ files, terminals });
@@ -176,7 +177,7 @@ describe("probeRepository", () => {
   it("falls back to origin/main when no default branch can be resolved", async () => {
     const files = new FakeFileSystem();
     files.seed(".git/HEAD", "ref: refs/heads/main\n", REPO);
-    const terminals = makeHostTerminals([
+    const terminals = makeHostTerminals(files, [
       { match: "symbolic-ref", response: { exitCode: 1, output: "fatal\n" } },
     ]);
     const { sdk } = makeSdk({ files, terminals });
@@ -246,7 +247,7 @@ describe("quickstart RPC routing", () => {
     const files = new FakeFileSystem();
     files.seed(".git/HEAD", "ref: refs/heads/main\n", REPO);
     files.seed("plans/factory/foreman.md", "# Foreman\n", REPO);
-    const terminals = makeHostTerminals([
+    const terminals = makeHostTerminals(files, [
       { match: "symbolic-ref", response: { output: "origin/main\n" } },
     ]);
     const { sdk } = makeSdk({ files, terminals, pickPath: REPO });

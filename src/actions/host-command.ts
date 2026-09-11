@@ -1,7 +1,9 @@
+import { randomUUID } from "node:crypto";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { errorMessage } from "../errors.js";
 
-export type HostTerminals = BbPluginApi["sdk"]["terminals"];
+export type HostCommandSdk = Pick<BbPluginApi["sdk"], "files" | "terminals">;
+export type HostTerminals = HostCommandSdk["terminals"];
 type TerminalSession = Awaited<ReturnType<HostTerminals["create"]>>;
 
 const TERMINAL_COLS = 120;
@@ -45,29 +47,31 @@ export function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-function decodeOutput(output: { chunks: readonly { dataBase64: string }[] }): string {
-  return output.chunks.map((chunk) => Buffer.from(chunk.dataBase64, "base64").toString("utf8")).join("");
-}
-
 /**
  * Runs one command-mode terminal on a connected host and waits for it to
- * exit. A create failure throws HostCommandStartError (nothing ran); a
- * disconnect or timeout throws HostCommandLostError (the result is
- * ambiguous); a non-zero exit is a normal result the caller interprets. The
- * terminal is always force-closed.
+ * exit. `terminals.output` is a stream-only buffer: the server answers 409
+ * `terminal_output_unavailable` for any session not currently running, so a
+ * command that exits before the first read destroys its output. The command
+ * is therefore wrapped in a redirect to a per-run temp file, which is read
+ * back through `files` (durable at any session state) and then removed.
+ * A create failure throws HostCommandStartError (nothing ran); a
+ * disconnect, timeout, or unreadable output file throws
+ * HostCommandLostError (the result is ambiguous); a non-zero exit is a
+ * normal result the caller interprets. The terminal is always force-closed.
  */
 export async function runHostCommand(
-  terminals: HostTerminals,
+  sdk: HostCommandSdk,
   options: HostCommandOptions,
   now: () => Date = () => new Date(),
 ): Promise<HostCommandResult> {
+  const outPath = `/tmp/bb-factory-cmd-${randomUUID()}.out`;
   let terminal: TerminalSession;
   try {
-    terminal = await terminals.create({
+    terminal = await sdk.terminals.create({
       cols: TERMINAL_COLS,
       rows: TERMINAL_ROWS,
       scope: { kind: "host_path", hostId: options.hostId, cwd: options.cwd },
-      start: { mode: "command", command: options.command },
+      start: { mode: "command", command: `{ ${options.command} ; } > ${shellQuote(outPath)} 2>&1` },
       title: options.title,
     });
   } catch (error) {
@@ -81,17 +85,28 @@ export async function runHostCommand(
       await new Promise<void>((resolve) => {
         setTimeout(resolve, POLL_MS);
       });
-      session = await terminals.get({ terminalId: terminal.id });
+      session = await sdk.terminals.get({ terminalId: terminal.id });
     }
-    const output = decodeOutput(await terminals.output({ terminalId: terminal.id }));
+    let output = "";
+    let outputError: unknown;
+    try {
+      const read = await sdk.files.read({ hostId: options.hostId, path: outPath });
+      output = read.contentEncoding === "base64" ? Buffer.from(read.content, "base64").toString("utf8") : read.content;
+    } catch (error) {
+      outputError = error;
+    }
+    await sdk.files.remove({ hostId: options.hostId, path: outPath }).catch(() => undefined);
     if (session.status === "disconnected") {
       throw new HostCommandLostError(`the host command terminal disconnected mid-run. Output: ${output || "none"}`);
     }
     if (session.status !== "exited") {
       throw new HostCommandLostError(`the host command did not finish within ${Math.round(timeoutMs / 1000)}s. Output: ${output || "none"}`);
     }
+    if (outputError !== undefined) {
+      throw new HostCommandLostError(`the host command exited but its output could not be read: ${errorMessage(outputError)}`);
+    }
     return { exitCode: session.exitCode, output };
   } finally {
-    await terminals.close({ terminalId: terminal.id, mode: "force" }).catch(() => undefined);
+    await sdk.terminals.close({ terminalId: terminal.id, mode: "force" }).catch(() => undefined);
   }
 }

@@ -79,7 +79,7 @@ export function createProvisionCheckoutActionExecutor(options: ProvisionCheckout
   const sdk = options.sdk;
 
   function runGit(hostId: string, cwd: string, command: string, title: string): Promise<HostCommandResult> {
-    return runHostCommand(sdk.terminals, { hostId, cwd, command, title, timeoutMs: GIT_TIMEOUT_MS }, now);
+    return runHostCommand(sdk, { hostId, cwd, command, title, timeoutMs: GIT_TIMEOUT_MS }, now);
   }
 
   function provisionOutcome(args: {

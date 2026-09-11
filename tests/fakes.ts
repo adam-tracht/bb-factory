@@ -187,6 +187,12 @@ export class FakeFileSystem {
       .map((key) => ({ kind: "file" as const, name: posix.basename(key), path: key }));
     return { paths, truncated: false };
   }
+
+  async remove(args: { path: string }) {
+    this.files.delete(args.path);
+    this.mtimes.delete(args.path);
+    return { outcome: "removed" as const };
+  }
 }
 
 /** A hosts-area stand-in whose pathsExist answers from the fake file system. */
@@ -212,15 +218,24 @@ export interface FakeTerminalRule {
   readonly response: FakeTerminalResponse;
 }
 
+const REDIRECT_TARGET_RE = />\s+'([^']+)'\s+2>&1/;
+
 /**
  * Command-mode terminal stand-in for host-command tests: create() picks the
  * first rule whose matcher appears in the command (falling back to a clean
- * exit), sessions report "exited" immediately, and output() replays the
- * rule's text as base64 chunks. Every created command is recorded in `runs`.
+ * exit), sessions report "exited" immediately, and the rule's output text is
+ * written into `files` at the `> '<path>' 2>&1` redirect target, matching
+ * how runHostCommand captures output on a real host (the terminal's live
+ * output buffer is unreadable once the session exits). Every created
+ * command is recorded in `runs`.
  */
-export function makeHostTerminals(rules: readonly FakeTerminalRule[] = [], fallback: FakeTerminalResponse = {}) {
+export function makeHostTerminals(
+  files: FakeFileSystem,
+  rules: readonly FakeTerminalRule[] = [],
+  fallback: FakeTerminalResponse = {},
+) {
   let counter = 0;
-  const sessions = new Map<string, { session: Record<string, unknown>; output: string }>();
+  const sessions = new Map<string, Record<string, unknown>>();
   const runs: string[] = [];
   const pick = (command: string): FakeTerminalResponse => {
     const rule = rules.find((candidate) =>
@@ -234,6 +249,8 @@ export function makeHostTerminals(rules: readonly FakeTerminalRule[] = [], fallb
       runs.push(command);
       const response = pick(command);
       response.sideEffect?.();
+      const outPath = REDIRECT_TARGET_RE.exec(command)?.[1];
+      if (outPath !== undefined) files.put(outPath, response.output ?? "");
       counter += 1;
       const session = {
         id: `term-${counter}`,
@@ -251,16 +268,11 @@ export function makeHostTerminals(rules: readonly FakeTerminalRule[] = [], fallb
         lastUserInputAt: null,
         closeReason: null,
       };
-      sessions.set(session.id, { session, output: response.output ?? "" });
+      sessions.set(session.id, session);
       return session;
     },
-    get: async (args: { terminalId: string }) => sessions.get(args.terminalId)!.session,
-    output: async (args: { terminalId: string }) => ({
-      chunks: [{ dataBase64: Buffer.from(sessions.get(args.terminalId)!.output).toString("base64"), seq: 1 }],
-      nextSeq: 2,
-      truncated: false,
-    }),
-    close: async (args: { terminalId: string }) => sessions.get(args.terminalId)!.session,
+    get: async (args: { terminalId: string }) => sessions.get(args.terminalId)!,
+    close: async (args: { terminalId: string }) => sessions.get(args.terminalId)!,
   };
 }
 

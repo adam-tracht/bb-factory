@@ -67,7 +67,7 @@ export function createScaffoldProtocolActionExecutor(options: ScaffoldProtocolAc
     const command = `cd ${shellQuote(configuration.checkoutPath)} && git add plans && git commit -m "${COMMIT_MESSAGE}" && git rev-parse HEAD`;
     let run: HostCommandResult;
     try {
-      run = await runHostCommand(sdk.terminals, {
+      run = await runHostCommand(sdk, {
         hostId: configuration.connectedHostId,
         cwd: configuration.checkoutPath,
         command,

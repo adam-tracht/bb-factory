@@ -43,7 +43,7 @@ interface HarnessOptions {
 
 function makeExecutor(options: HarnessOptions = {}) {
   const files = options.files ?? new FakeFileSystem();
-  const terminals = options.terminals ?? makeHostTerminals();
+  const terminals = options.terminals ?? makeHostTerminals(files);
   const hosts = makeHostsProbe(files);
   const store = makeStore();
   const entry = makeRegistryEntry();
@@ -112,7 +112,7 @@ describe("provision-checkout executor (worktree mode)", () => {
   it("creates the worktree on a new factory branch based on origin/HEAD", async () => {
     const files = new FakeFileSystem();
     seedGitRoot(files);
-    const terminals = makeHostTerminals([
+    const terminals = makeHostTerminals(files, [
       { match: "worktree list", response: { output: LIST_MAIN_ONLY } },
       { match: "show-ref", response: { exitCode: 1, output: "" } },
       { match: "symbolic-ref", response: { output: "origin/main\n" } },
@@ -145,7 +145,7 @@ describe("provision-checkout executor (worktree mode)", () => {
   it("adds the existing factory branch without -b when it already exists", async () => {
     const files = new FakeFileSystem();
     seedGitRoot(files);
-    const terminals = makeHostTerminals([
+    const terminals = makeHostTerminals(files, [
       { match: "worktree list", response: { output: LIST_MAIN_ONLY } },
       { match: "show-ref", response: { exitCode: 0, output: `${"f".repeat(40)} refs/heads/factory\n` } },
       { match: "worktree add", response: { output: "", sideEffect: () => seedProvisionedWorktree(files) } },
@@ -165,7 +165,7 @@ describe("provision-checkout executor (worktree mode)", () => {
   it("falls back to a plain -b factory on HEAD when no remote default is identifiable", async () => {
     const files = new FakeFileSystem();
     seedGitRoot(files);
-    const terminals = makeHostTerminals([
+    const terminals = makeHostTerminals(files, [
       { match: "worktree list", response: { output: LIST_MAIN_ONLY } },
       { match: "show-ref", response: { exitCode: 1, output: "" } },
       { match: "symbolic-ref", response: { exitCode: 1, output: "" } },
@@ -187,7 +187,7 @@ describe("provision-checkout executor (worktree mode)", () => {
     const files = new FakeFileSystem();
     seedGitRoot(files);
     seedProvisionedWorktree(files);
-    const terminals = makeHostTerminals([
+    const terminals = makeHostTerminals(files, [
       { match: "worktree list", response: { output: LIST_WITH_FACTORY_WORKTREE } },
     ]);
     const { executor } = makeExecutor({ files, terminals });
@@ -207,7 +207,7 @@ describe("provision-checkout executor (worktree mode)", () => {
   it("returns a structured branch-in-use outcome when factory is checked out elsewhere", async () => {
     const files = new FakeFileSystem();
     seedGitRoot(files);
-    const terminals = makeHostTerminals([
+    const terminals = makeHostTerminals(files, [
       { match: "worktree list", response: { output: LIST_FACTORY_ELSEWHERE } },
     ]);
     const { executor } = makeExecutor({ files, terminals });
@@ -229,7 +229,7 @@ describe("provision-checkout executor (worktree mode)", () => {
   it("does not record an intent for the pre-claim branch-in-use result", async () => {
     const files = new FakeFileSystem();
     seedGitRoot(files);
-    const terminals = makeHostTerminals([
+    const terminals = makeHostTerminals(files, [
       { match: "worktree list", response: { output: LIST_FACTORY_ELSEWHERE } },
     ]);
     const { executor, store } = makeExecutor({ files, terminals });
@@ -241,7 +241,7 @@ describe("provision-checkout executor (worktree mode)", () => {
   it("refuses a root that is not a git repository without claiming an intent", async () => {
     const files = new FakeFileSystem();
     files.seed("some-file.txt", "not a repo\n");
-    const terminals = makeHostTerminals();
+    const terminals = makeHostTerminals(files);
     const { executor, store } = makeExecutor({ files, terminals });
     const request = provisionRequest();
     const result = await executor.execute(request);
@@ -253,7 +253,7 @@ describe("provision-checkout executor (worktree mode)", () => {
 
   it("refuses a root that does not exist on the host", async () => {
     const files = new FakeFileSystem();
-    const { executor } = makeExecutor({ files, terminals: makeHostTerminals() });
+    const { executor } = makeExecutor({ files, terminals: makeHostTerminals(files) });
     const result = await executor.execute(provisionRequest());
     expect(result).toMatchObject({ ok: false, error: { category: "checkout-invalid" } });
     if (!result.ok) expect(result.error.message).toContain("does not exist");
@@ -263,7 +263,7 @@ describe("provision-checkout executor (worktree mode)", () => {
     const files = new FakeFileSystem();
     seedGitRoot(files);
     files.put(`${WORKTREE}/stray.txt`, "leftover\n");
-    const terminals = makeHostTerminals([
+    const terminals = makeHostTerminals(files, [
       { match: "worktree list", response: { output: LIST_MAIN_ONLY } },
     ]);
     const { executor } = makeExecutor({ files, terminals });
@@ -277,7 +277,7 @@ describe("provision-checkout executor (worktree mode)", () => {
     seedGitRoot(files);
     const list =
       LIST_MAIN_ONLY + `worktree ${WORKTREE}\nHEAD ${"d".repeat(40)}\nbranch refs/heads/topic\n\n`;
-    const terminals = makeHostTerminals([
+    const terminals = makeHostTerminals(files, [
       { match: "worktree list", response: { output: list } },
     ]);
     const { executor } = makeExecutor({ files, terminals });
@@ -289,7 +289,7 @@ describe("provision-checkout executor (worktree mode)", () => {
   it("marks the intent for reconciliation when the worktree add cannot be observed", async () => {
     const files = new FakeFileSystem();
     seedGitRoot(files);
-    const terminals = makeHostTerminals([
+    const terminals = makeHostTerminals(files, [
       { match: "worktree list", response: { output: LIST_MAIN_ONLY } },
       { match: "show-ref", response: { exitCode: 0, output: `${"f".repeat(40)} refs/heads/factory\n` } },
       { match: "worktree add", response: { status: "disconnected", exitCode: null, output: "" } },
@@ -302,10 +302,27 @@ describe("provision-checkout executor (worktree mode)", () => {
     expect(store.getPendingActionIntent(request.idempotencyKey)?.status).toBe("reconciliation-required");
   });
 
+  it("reports host-unavailable when a command's captured output cannot be read back", async () => {
+    const files = new FakeFileSystem();
+    seedGitRoot(files);
+    const realRead = files.read.bind(files);
+    files.read = (async (args: { path: string }) => {
+      if (args.path.startsWith("/tmp/")) throw new Error("output file gone");
+      return realRead(args);
+    }) as typeof files.read;
+    const terminals = makeHostTerminals(files, [
+      { match: "worktree list", response: { output: LIST_MAIN_ONLY } },
+    ]);
+    const { executor } = makeExecutor({ files, terminals });
+    const result = await executor.execute(provisionRequest());
+    expect(result).toMatchObject({ ok: false, error: { category: "host-unavailable" } });
+    if (!result.ok) expect(result.error.message).toContain("could not be read");
+  });
+
   it("completes with the terminal output when the worktree add fails", async () => {
     const files = new FakeFileSystem();
     seedGitRoot(files);
-    const terminals = makeHostTerminals([
+    const terminals = makeHostTerminals(files, [
       { match: "worktree list", response: { output: LIST_MAIN_ONLY } },
       { match: "show-ref", response: { exitCode: 0, output: `${"f".repeat(40)} refs/heads/factory\n` } },
       { match: "worktree add", response: { exitCode: 128, output: "fatal: 'factory' is already used by worktree\n" } },
@@ -321,7 +338,7 @@ describe("provision-checkout executor (worktree mode)", () => {
   it("replays the recorded result for an idempotent retry without rerunning host commands", async () => {
     const files = new FakeFileSystem();
     seedGitRoot(files);
-    const terminals = makeHostTerminals([
+    const terminals = makeHostTerminals(files, [
       { match: "worktree list", response: { output: LIST_MAIN_ONLY } },
       { match: "show-ref", response: { exitCode: 0, output: `${"f".repeat(40)} refs/heads/factory\n` } },
       { match: "worktree add", response: { output: "", sideEffect: () => seedProvisionedWorktree(files) } },
@@ -339,7 +356,7 @@ describe("provision-checkout executor (worktree mode)", () => {
   it("provisions for an unconfigured repositoryKey when host and root are explicit", async () => {
     const files = new FakeFileSystem();
     seedGitRoot(files);
-    const terminals = makeHostTerminals([
+    const terminals = makeHostTerminals(files, [
       { match: "worktree list", response: { output: LIST_WITH_FACTORY_WORKTREE } },
     ]);
     const { executor } = makeExecutor({ files, terminals, configured: false });
@@ -358,7 +375,7 @@ describe("provision-checkout executor (direct mode)", () => {
   it("verifies a root already on the factory branch", async () => {
     const files = new FakeFileSystem();
     seedGitRoot(files, "factory");
-    const terminals = makeHostTerminals();
+    const terminals = makeHostTerminals(files);
     const { executor } = makeExecutor({ files, terminals });
     const result = await executor.execute(provisionRequest({ mode: "direct" }));
     expect(result).toMatchObject({
@@ -377,7 +394,7 @@ describe("provision-checkout executor (direct mode)", () => {
   it("reports an off-branch root without switching it", async () => {
     const files = new FakeFileSystem();
     seedGitRoot(files, "main");
-    const { executor } = makeExecutor({ files, terminals: makeHostTerminals() });
+    const { executor } = makeExecutor({ files, terminals: makeHostTerminals(files) });
     const result = await executor.execute(provisionRequest({ mode: "direct" }));
     expect(result).toMatchObject({
       ok: true,
@@ -392,7 +409,7 @@ describe("provision-checkout executor (direct mode)", () => {
   it("refuses a non-git root in direct mode too", async () => {
     const files = new FakeFileSystem();
     files.seed("readme.md", "hello\n");
-    const { executor } = makeExecutor({ files, terminals: makeHostTerminals() });
+    const { executor } = makeExecutor({ files, terminals: makeHostTerminals(files) });
     const result = await executor.execute(provisionRequest({ mode: "direct" }));
     expect(result).toMatchObject({ ok: false, error: { category: "checkout-invalid" } });
   });

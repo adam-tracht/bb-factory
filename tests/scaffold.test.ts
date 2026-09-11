@@ -18,7 +18,10 @@ afterEach(cleanupStorages);
 
 const HEAD_SHA = "f".repeat(40);
 
-function makeTerminals(options: { exitCode?: number; output?: string; status?: "exited" | "running" } = {}) {
+function makeTerminals(
+  options: { exitCode?: number; output?: string; status?: "exited" | "running" } = {},
+  files?: FakeFileSystem,
+) {
   const session = {
     id: "term-1",
     hostId: "host-1",
@@ -37,18 +40,19 @@ function makeTerminals(options: { exitCode?: number; output?: string; status?: "
   };
   const outputText = options.output ?? `[factory ${HEAD_SHA.slice(0, 7)}] ${"factory: scaffold protocol"}\n 7 files changed\n${HEAD_SHA}\n`;
   return {
-    create: vi.fn<(args: Record<string, unknown>) => Promise<typeof session>>(async () => session),
+    create: vi.fn<(args: Record<string, unknown>) => Promise<typeof session>>(async (args) => {
+      const command = (args.start as { command?: string } | undefined)?.command ?? "";
+      const outPath = />\s+'([^']+)'\s+2>&1/.exec(command)?.[1];
+      if (files !== undefined && outPath !== undefined) files.put(outPath, outputText);
+      return session;
+    }),
     get: vi.fn(async () => session),
-    output: vi.fn(async () => ({
-      chunks: [{ dataBase64: Buffer.from(outputText).toString("base64"), seq: 1 }],
-      nextSeq: 2,
-      truncated: false,
-    })),
     close: vi.fn(async () => session),
   };
 }
 
-function makeExecutor(files = new FakeFileSystem(), terminals = makeTerminals(), branch = "factory") {
+function makeExecutor(files = new FakeFileSystem(), terminals?: ReturnType<typeof makeTerminals>, branch = "factory") {
+  terminals ??= makeTerminals({}, files);
   if (files.content(".git/HEAD") === undefined) files.seed(".git/HEAD", `ref: refs/heads/${branch}\n`);
   const store = makeStore();
   const entry = makeRegistryEntry();
@@ -196,8 +200,9 @@ describe("scaffold protocol executor", () => {
   });
 
   it("surfaces the terminal output when the scaffold commit fails", async () => {
-    const terminals = makeTerminals({ exitCode: 1, output: "Author identity unknown\nfatal: unable to auto-detect email address\n" });
-    const { files, executor, store } = makeExecutor(new FakeFileSystem(), terminals);
+    const files = new FakeFileSystem();
+    const terminals = makeTerminals({ exitCode: 1, output: "Author identity unknown\nfatal: unable to auto-detect email address\n" }, files);
+    const { executor, store } = makeExecutor(files, terminals);
     const result = await executor.execute(scaffoldRequest());
     expect(result).toMatchObject({ ok: false, error: { category: "internal" } });
     if (!result.ok) expect(result.error.message).toContain("unable to auto-detect email");
@@ -207,9 +212,10 @@ describe("scaffold protocol executor", () => {
   });
 
   it("marks the intent for reconciliation when the commit result cannot be verified", async () => {
-    const terminals = makeTerminals({ status: "running" });
+    const files = new FakeFileSystem();
+    const terminals = makeTerminals({ status: "running" }, files);
     terminals.get.mockRejectedValue(new Error("host connection dropped"));
-    const { executor, store } = makeExecutor(new FakeFileSystem(), terminals);
+    const { executor, store } = makeExecutor(files, terminals);
     const result = await executor.execute(scaffoldRequest());
     expect(result).toMatchObject({ ok: false, error: { category: "conflict" } });
     if (!result.ok) expect(result.error.message).toContain("reconciliation");
