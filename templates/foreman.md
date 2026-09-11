@@ -109,6 +109,8 @@ Rules for every question:
 
 Never wait for an answer. Answers arrive as edits to `questions.md` (`answer:` line) or to the queue entry before a later run.
 
+Never leave an entry gated on a question you just answered. An answer that leaves a human step outstanding is a dead zone: the question reads resolved but the entry still cannot run. When a partial answer resolves the decision but work remains for the human, file a new `blocking` question for the remaining step and re-point the entry's `blocked-by:` at it, noting the new question id in the answered one. When a question is fully answered and no human step remains, say so in the answer so the human can re-point or re-authorize the entry themselves.
+
 ## Recovery (dirty tree at preflight)
 
 A previous run died mid-task. Find the entry marked `in-progress`.

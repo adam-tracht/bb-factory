@@ -67,6 +67,7 @@ function makeQueueEntry(overrides: Partial<QueueEntry>): QueueEntry {
     validate: [],
     notes: null,
     blockingQuestionIds: [],
+    staleBlockingQuestionIds: [],
     blockedBy: [],
     eligible: false,
     eligibilityReasons: [],

@@ -45,6 +45,7 @@ const snapshot = {
       validate: [],
       notes: null,
       blockingQuestionIds: ["Q1"],
+      staleBlockingQuestionIds: [],
       blockedBy: ["Q1"],
       eligible: false,
       eligibilityReasons: ["blocking-question" as const],

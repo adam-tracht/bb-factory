@@ -149,8 +149,13 @@ async function queueEntry(
   const openQuestions = questions.filter(
     (question) => referencedQuestionIds.has(question.id) && questionIsOpen(question),
   );
+  const openQuestionIds = new Set(openQuestions.map((question) => question.id));
   if (openQuestions.length > 0) {
     eligibilityReasons.push("blocking-question");
+  }
+  const staleBlockingQuestionIds = [...referencedQuestionIds].filter((id) => !openQuestionIds.has(id));
+  if (parsed.status.kind === "blocked-by" && !openQuestionIds.has(parsed.status.questionId)) {
+    eligibilityReasons.push("stale-question-gate");
   }
   if (parsed.approved.kind === "none" && parsed.status.kind === "ready") {
     eligibilityReasons.push(parsed.risk === "high" ? "high-risk-approval-missing" : "missing-authorization");
@@ -185,7 +190,8 @@ async function queueEntry(
     acceptance: [...parsed.acceptance],
     validate: [...parsed.validate],
     notes: parsed.notes,
-    blockingQuestionIds: [...referencedQuestionIds].filter((id) => openQuestions.some((question) => question.id === id)),
+    blockingQuestionIds: [...referencedQuestionIds].filter((id) => openQuestionIds.has(id)),
+    staleBlockingQuestionIds,
     blockedBy: [...referencedQuestionIds],
     eligible: eligibilityReasons.length === 0,
     eligibilityReasons,

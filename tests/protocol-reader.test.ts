@@ -385,6 +385,98 @@ answer:
     expect(proposed?.eligibilityReasons).toEqual(["not-ready"]);
   });
 
+  it("flags a blocked-by status whose question is answered or missing as a stale gate", async () => {
+    const files = makeFiles({
+      "plans/factory/foreman.md": "# Foreman\n",
+      "plans/factory/repo.md": "# Repo\n",
+      "plans/factory/queue.md": `# Queue
+
+## DATA-0007.04 Answered gate
+status: blocked-by: Q6 (BigQuery pipe creation outstanding)
+priority: 2
+depends_on: none
+risk: medium
+plan: plans/x.md
+approved: none
+acceptance:
+- done
+validate:
+- pnpm test
+
+## DATA-0007.05 Missing gate
+status: blocked-by: Q99
+priority: 2
+depends_on: none
+risk: low
+plan: plans/y.md
+approved: none
+acceptance:
+- done
+validate:
+- pnpm test
+
+## DATA-0007.06 Open gate
+status: blocked-by: Q13
+priority: 2
+depends_on: none
+risk: low
+plan: plans/z.md
+approved: none
+acceptance:
+- done
+validate:
+- pnpm test
+`,
+      "plans/factory/questions.md": `# Questions
+
+## Q6 2026-09-05 blocking DATA-0007.04
+question: Which property and pipe?
+context: Half answered by observation.
+answer: The property is 251473810; the pipe still needs a human.
+
+## Q13 2026-09-10 blocking DATA-0007.06
+question: Still open?
+context: Waiting on the human.
+answer:
+`,
+      "plans/factory/current.md": "# Latest\nstate: no-op\n",
+      "plans/README.md": "| id | work item | status | next action | evidence |\n|---|---|---|---|---|\n| DATA-0007.04 | gate | blocked | run | queue |\n",
+    });
+    const snapshot = await new RepositoryProtocolReader(files, {
+      mergeReader: staticMergeReader(mergeProjection),
+    }).loadSnapshot(configuration);
+
+    const answered = snapshot.queue.find((entry) => entry.id === "DATA-0007.04");
+    expect(answered).toMatchObject({
+      status: { kind: "blocked-by", questionId: "Q6", detail: "(BigQuery pipe creation outstanding)" },
+      blockingQuestionIds: [],
+      staleBlockingQuestionIds: ["Q6"],
+      blockedBy: ["Q6"],
+      eligible: false,
+    });
+    expect(answered?.eligibilityReasons).toContain("stale-question-gate");
+    expect(answered?.eligibilityReasons).not.toContain("blocking-question");
+
+    const missing = snapshot.queue.find((entry) => entry.id === "DATA-0007.05");
+    expect(missing).toMatchObject({
+      status: { kind: "blocked-by", questionId: "Q99" },
+      blockingQuestionIds: [],
+      staleBlockingQuestionIds: ["Q99"],
+      eligible: false,
+    });
+    expect(missing?.eligibilityReasons).toContain("stale-question-gate");
+
+    const open = snapshot.queue.find((entry) => entry.id === "DATA-0007.06");
+    expect(open).toMatchObject({
+      status: { kind: "blocked-by", questionId: "Q13" },
+      blockingQuestionIds: ["Q13"],
+      staleBlockingQuestionIds: [],
+      eligible: false,
+    });
+    expect(open?.eligibilityReasons).toContain("blocking-question");
+    expect(open?.eligibilityReasons).not.toContain("stale-question-gate");
+  });
+
   it("supports base64 file responses and compact or colonized run timestamps", async () => {
     const content = "# A UTF-8 protocol file\n";
     const files: ProtocolFiles = {

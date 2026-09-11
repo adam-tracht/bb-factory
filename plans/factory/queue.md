@@ -215,7 +215,7 @@ validate:
 notes: Reported live: a draft entry rendered as an "Unrecognized status" danger badge inside the Blocked group. The shipped template and this queue's format header now list `draft` in the status set.
 
 ## BBF-0014 Blocked-by badge drops the question id when a detail exists
-status: draft
+status: done (orchestrated session 2026-09-11)
 priority: 3
 depends_on: none
 risk: low
@@ -228,3 +228,20 @@ validate:
 - pnpm test
 - pnpm typecheck
 notes: Reported live on diggs-data-platform DATA-0007.04: `blocked-by: Q6 (property id now known; ...)` rendered as "Blocked: (property id now known; ...)", which reads like an error and hides the question reference. queueStatusLabel at src/ui/primitives.ts:500 prefers detail over questionId.
+
+## BBF-0015 Stale question gates strand blocked entries
+status: done (orchestrated session 2026-09-11)
+priority: 2
+depends_on: none
+risk: low
+plan: src/protocol/reader.ts, src/contracts.ts, src/ui/views/work.ts, src/ui/attention.ts, src/ui/primitives.ts, templates/foreman.md
+approved: none
+acceptance:
+- A `blocked-by` status whose question is answered or missing produces a `stale-question-gate` eligibility reason and a `staleBlockingQuestionIds` field instead of silently clearing the gate.
+- Stale-gated entries land in Needs you with a Review Q<n> CTA that opens the referenced question, and the detail keeps the reference reachable.
+- The attention model surfaces stale-gated items as an action item on the Work tab.
+- The shipped foreman protocol tells foremen to re-file remaining human work as a new question instead of leaving an entry gated on a question they just answered.
+validate:
+- pnpm test
+- pnpm typecheck
+notes: Reported live on diggs-data-platform DATA-0007.04: Q6 was half-answered by observation (property resolved, BigQuery pipe still human), so the protocol counted the gate resolved while human work remained, and the entry sat in Blocked with no action. Data fix landed in diggs-data-platform-factory acc6097 (Q18 re-filed, entry re-pointed).

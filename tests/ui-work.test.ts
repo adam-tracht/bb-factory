@@ -76,6 +76,7 @@ function makeEntry(overrides: Partial<QueueEntry> & { id: string }): QueueEntry 
     validate: [],
     notes: null,
     blockingQuestionIds: [],
+    staleBlockingQuestionIds: [],
     blockedBy: [],
     eligible: false,
     eligibilityReasons: [],
@@ -241,6 +242,40 @@ describe("WorkView rows", () => {
     })], ctx);
     fireEvent.click(screen.getByRole("button", { name: "Answer Q13" }));
     expect(ctx.onOpenSection).toHaveBeenCalledWith("questions", "question-Q13");
+  });
+
+  it("renders a stale question gate in Needs you with a Review CTA and keeps the id in the badge", () => {
+    const ctx = makeCtx();
+    renderWork([makeEntry({
+      id: "STALE-1",
+      status: { kind: "blocked-by", questionId: "Q6", detail: "(pipe outstanding)" },
+      blockingQuestionIds: [],
+      staleBlockingQuestionIds: ["Q6"],
+      blockedBy: ["Q6"],
+      eligibilityReasons: ["not-ready", "stale-question-gate"],
+    })], ctx);
+    const row = rowOf("STALE-1");
+    expect(within(sectionOf("Needs you")).getByText("STALE-1")).toBeTruthy();
+    expect(within(row).getByText("Blocked by Q6: (pipe outstanding)")).toBeTruthy();
+    fireEvent.click(within(row).getByRole("button", { name: "Review Q6" }));
+    expect(ctx.onOpenSection).toHaveBeenCalledWith("questions", "question-Q6");
+  });
+
+  it("keeps an answered question reference visible in the blocked detail and reachable", () => {
+    const ctx = makeCtx();
+    renderWork([makeEntry({
+      id: "STALE-2",
+      status: { kind: "blocked-by", questionId: "Q6" },
+      blockingQuestionIds: [],
+      staleBlockingQuestionIds: ["Q6"],
+      blockedBy: ["Q6"],
+      eligibilityReasons: ["not-ready", "stale-question-gate"],
+    })], ctx);
+    expandRow("STALE-2");
+    const row = rowOf("STALE-2");
+    fireEvent.click(within(row).getByRole("button", { name: "Q6" }));
+    expect(ctx.onOpenSection).toHaveBeenCalledWith("questions", "question-Q6");
+    expect(within(row).getByText(/Gating question is answered or missing/)).toBeTruthy();
   });
 
   it("renders a ready item gated by open questions as blocked and prefers Answer over Approve", () => {

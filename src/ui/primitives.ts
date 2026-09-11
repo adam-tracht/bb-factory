@@ -498,7 +498,7 @@ export function queueStatusLabel(status: QueueEntry["status"]): string {
     case "done":
       return status.detail ? `Done: ${status.detail}` : "Done";
     case "blocked-by":
-      return status.detail ? `Blocked: ${status.detail}` : `Blocked by ${status.questionId}`;
+      return status.detail ? `Blocked by ${status.questionId}: ${status.detail}` : `Blocked by ${status.questionId}`;
     case "draft":
       return "Draft";
     case "unknown":
@@ -539,6 +539,7 @@ export function formatEligibilityReason(reason: QueueEntry["eligibilityReasons"]
     case "not-ready": return "Status is not ready";
     case "unmet-dependency": return "Waiting on dependencies";
     case "blocking-question": return "An open question blocks this item";
+    case "stale-question-gate": return "Gating question is answered or missing";
     case "missing-authorization": return "Needs an approved line";
     case "high-risk-approval-missing": return "High risk: needs an approved line";
     case "repository-policy": return "Blocked by repository policy";

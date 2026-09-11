@@ -50,9 +50,14 @@ function gatingQuestionIds(entry: QueueEntry): string[] {
   return [...ids];
 }
 
-/** Needs-you membership follows the spec literally: auth reasons or blockingQuestionIds. */
+/**
+ * Needs-you membership: auth reasons, open question gates, or a stale gate.
+ * A stale-question-gate means the entry's `blocked-by` question resolved or
+ * vanished while the status still names it; a human must re-triage the entry.
+ */
 function needsYou(entry: QueueEntry): boolean {
-  return approvalMissing(entry) || entry.blockingQuestionIds.length > 0;
+  return approvalMissing(entry) || entry.blockingQuestionIds.length > 0
+    || entry.eligibilityReasons.includes("stale-question-gate");
 }
 
 /**
@@ -255,6 +260,12 @@ function WorkRow(props: { entry: QueueEntry; group: WorkGroup; ctx: ViewContext;
 
   // Open questions gate first: the action layer rejects approval while any
   // blocking question is unanswered, so Approve is offered only once clear.
+  // A stale gate still needs human re-triage, so it keeps a Review CTA that
+  // jumps to the referenced question rather than stranding the row in Blocked.
+  const staleGateId = entry.status.kind === "blocked-by"
+    && entry.eligibilityReasons.includes("stale-question-gate")
+    ? entry.status.questionId
+    : null;
   const cta = openQids.length > 0
     ? h(ActionButton, {
         label: `Answer ${openQids[0]}`,
@@ -262,6 +273,13 @@ function WorkRow(props: { entry: QueueEntry; group: WorkGroup; ctx: ViewContext;
         size: "xs",
         onClick: () => ctx.onOpenSection("questions", `question-${openQids[0]}`),
       })
+    : staleGateId
+      ? h(ActionButton, {
+          label: `Review ${staleGateId}`,
+          variant: "ghost",
+          size: "xs",
+          onClick: () => ctx.onOpenSection("questions", `question-${staleGateId}`),
+        })
     : approvalNeeded
       ? h(ActionButton, {
           label: "Approve",

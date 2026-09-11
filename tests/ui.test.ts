@@ -50,6 +50,7 @@ const snapshot = {
       validate: ["pnpm test"],
       notes: null,
       blockingQuestionIds: [],
+      staleBlockingQuestionIds: [],
       blockedBy: [],
       eligible: true,
       eligibilityReasons: [],

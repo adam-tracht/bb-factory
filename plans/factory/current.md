@@ -3,8 +3,12 @@
 The 2026-09-11 orchestrated session completed BBF-0009, BBF-0010, and
 BBF-0011, the three live-UI defects reported from diggs-data-platform
 (see runs/2026-09-11-ui-defects-orchestrated.md), plus BBF-0013 which
-made `status: draft` a first-class quiet status. All are Done on the
-canonical dashboard.
+made `status: draft` a first-class quiet status. A follow-on session
+completed BBF-0014 and BBF-0015, which keep question references visible
+on blocked entries and flag `blocked-by` gates whose question resolved
+or vanished as `stale-question-gate` so they land in Needs you instead
+of stranding (see runs/2026-09-11-stale-question-gates.md). All are
+Done on the canonical dashboard.
 
 Open work:
 

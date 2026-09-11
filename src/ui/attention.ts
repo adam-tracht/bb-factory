@@ -101,6 +101,18 @@ export function computeAttention(input: AttentionInput): AttentionItem[] {
         detail: gatedItems.map((entry) => entry.id).join(", "),
       });
     }
+    const staleGated = snapshot.queue.filter(
+      (entry) => entry.eligibilityReasons.includes("stale-question-gate"),
+    );
+    if (staleGated.length > 0) {
+      items.push({
+        id: "stale-question-gates",
+        severity: "action",
+        section: "work",
+        title: `${staleGated.length} item${staleGated.length === 1 ? "" : "s"} blocked by a resolved or missing question`,
+        detail: `${staleGated.map((entry) => entry.id).join(", ")} · review the gate and re-point or mark ready`,
+      });
+    }
     const waiting = snapshot.queue.filter(
       (entry) => entry.eligibilityReasons.includes("unmet-dependency") && entry.status.kind === "ready",
     );
