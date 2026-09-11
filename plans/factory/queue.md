@@ -139,7 +139,7 @@ validate:
 notes: Publishing, tagging, and opening the marketplace PR are protected and need an `approved:` line before a run may do them.
 
 ## BBF-0009 Question deep links 404 on encoded hash
-status: ready
+status: done (orchestrated session 2026-09-11)
 priority: 2
 depends_on: none
 risk: low
