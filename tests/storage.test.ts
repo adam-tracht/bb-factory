@@ -15,6 +15,7 @@ import type {
 } from "../src/contracts.js";
 import {
   IdempotencyConflictError,
+  OPERATIONAL_STORAGE_MIGRATIONS,
   PendingActionIntentExpiredError,
   initializeOperationalStorage,
   type PendingActionFileChange,
@@ -62,6 +63,81 @@ describe("operational SQLite storage", () => {
     });
     const detail = await store.getRun({ repositoryKey: intent.repositoryKey, runId: intent.runId });
     expect(detail.run?.summary).toMatchObject({ runId: intent.runId, status: "started" });
+  });
+
+  it("rebuilds operational_runs while foreign-key child rows reference it", async () => {
+    const storage = makeStorage();
+    const db = storage.db;
+    // A live handle carries FK enforcement from the store getter at line ~708;
+    // the fake never configures the pragma itself, so simulate that state.
+    db.pragma("foreign_keys = ON");
+    // Apply the migrations a pre-rebuild install already ran, leaving the
+    // operational_runs rebuild tail unapplied for initialize to pick up.
+    const rebuildStart = OPERATIONAL_STORAGE_MIGRATIONS.findIndex((statement) =>
+      statement.startsWith("CREATE TABLE operational_runs_v2"),
+    );
+    storage.migrate(db, OPERATIONAL_STORAGE_MIGRATIONS.slice(0, rebuildStart));
+
+    const intent = makeIntent("run-legacy", "bbf:v1:monorepo:run-now:723e4567-e89b-12d3-a456-426614174000");
+    const attempt = makeAttempt(intent, "attempt-legacy");
+    const lease = makeLease(intent, "lease-legacy");
+    db.prepare(
+      `INSERT INTO operational_runs (
+         run_id, repository_key, trigger, idempotency_key, request_fingerprint,
+         requested_at, base_revision_json, queue_item_ids_json,
+         authorization_provenance_json, status, repository_revision_json,
+         canonical_records_json
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+    ).run(
+      intent.runId,
+      intent.repositoryKey,
+      intent.trigger,
+      intent.idempotencyKey,
+      "run-legacy-fingerprint",
+      intent.requestedAt,
+      JSON.stringify(intent.baseRevision),
+      JSON.stringify(intent.queueItemIds),
+      JSON.stringify(intent.authorizationProvenance),
+      JSON.stringify(intent.baseRevision),
+      "[]",
+    );
+    db.prepare(
+      `INSERT INTO dispatch_attempts (
+         attempt_id, run_id, repository_key, provider_id, model, reasoning_level, status
+       ) VALUES (?, ?, ?, ?, ?, ?, 'pending')`,
+    ).run(
+      attempt.attemptId,
+      attempt.runId,
+      attempt.repositoryKey,
+      attempt.providerId,
+      attempt.model,
+      attempt.reasoningLevel,
+    );
+    db.prepare(
+      `INSERT INTO ownership_leases (
+         lease_id, repository_key, run_id, queue_item_ids_json,
+         authorization_provenance_json, acquired_at, expires_at, status
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'held')`,
+    ).run(
+      lease.leaseId,
+      lease.repositoryKey,
+      lease.runId,
+      JSON.stringify(lease.queueItemIds),
+      JSON.stringify(lease.authorizationProvenance),
+      lease.acquiredAt,
+      lease.expiresAt,
+    );
+
+    // The rebuild drops and renames operational_runs; without an FK pause the
+    // drop fails on these referencing rows. Pragma is connection-level, so the
+    // toggle holds across the fake's per-statement migration transactions.
+    const store = initializeOperationalStorage(storage);
+
+    const detail = await store.getRun({ repositoryKey: intent.repositoryKey, runId: intent.runId });
+    expect(detail.run?.intent).toEqual(intent);
+    expect(detail.run?.attempts).toEqual([attempt]);
+    expect(detail.run?.lease).toEqual(lease);
+    expect(db.prepare<[], { foreign_keys: number }>(`PRAGMA foreign_keys`).get()).toEqual({ foreign_keys: 1 });
   });
 
   it("initializes through SDK storage, preserves run links, and reloads durably", async () => {

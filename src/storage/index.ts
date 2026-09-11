@@ -972,7 +972,14 @@ export function initializeOperationalStorage(
   options: OperationalStorageOptions = {},
 ): OperationalStateStore {
   const db = storage.database();
-  storage.migrate(db, [...OPERATIONAL_STORAGE_MIGRATIONS]);
+  // Rebuild migrations drop and rename live tables while child tables still
+  // hold REFERENCES rows; enforcement must pause for the migration window.
+  db.pragma("foreign_keys = OFF");
+  try {
+    storage.migrate(db, [...OPERATIONAL_STORAGE_MIGRATIONS]);
+  } finally {
+    db.pragma("foreign_keys = ON");
+  }
   return new OperationalSqliteStore(() => storage.database(), options.now ?? now);
 }
 
