@@ -1,10 +1,10 @@
 # bb-factory instructions
 
-This repository began as **planned, not implemented**. Phase 0 bootstrap is complete and frozen at contract `v1.2`; the reviewed Phase 1 protocol, storage, interaction, read integration, and native UI surfaces have passed local read acceptance. The separate Phase 1 rollout gate remains open for an always-on host, the remote Connect owner-session route, and a live `run_detail` path when a run exists. Phases 2 through 5 remain open. Read [PLAN.md](PLAN.md), [docs/phase-1-acceptance.md](docs/phase-1-acceptance.md), and [docs/action-implementation-gates.md](docs/action-implementation-gates.md) before implementation. Keep the build efficient and avoid speculative scaffolding.
+This repository began as **planned, not implemented**. Phase 0 bootstrap is complete and frozen at contract `v1.2`; the reviewed Phase 1 protocol, storage, interaction, read integration, and native UI surfaces have passed local read acceptance. Phase 2 guarded actions and the Phase 3 dispatch engine are implemented with dispatch paused. The separate Phase 1 rollout gate remains open for an always-on host, the remote Connect owner-session route, and a live `run_detail` path when a run exists. Phases 4, 5, and 6 remain open. Read [PLAN.md](PLAN.md), [docs/phase-1-acceptance.md](docs/phase-1-acceptance.md), and [docs/action-implementation-gates.md](docs/action-implementation-gates.md) before implementation. Keep the build efficient and avoid speculative scaffolding.
 
 ## Factory protocol
 
-This repository is the factory plugin source, not yet a factory-managed target repository. It has no `plans/factory/` protocol or queue. The managed-repository protocol below applies when operating a target checkout; Phase 0 bootstrap work here uses [PLAN.md](PLAN.md) and must not fabricate queue, lock, current, question, or run records.
+This repository is both the factory plugin source and a factory-managed target repository: `plans/factory/` carries its own foreman protocol, queue, questions, current state, and run records, and `plans/README.md` is its canonical dashboard. Unattended factory runs: see `plans/factory/foreman.md`. Human-only: setting `status: ready` in `plans/factory/queue.md`. Phase planning and contract history still live in [PLAN.md](PLAN.md) and `docs/`.
 
 For work in a factory-managed repository:
 

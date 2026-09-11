@@ -22,6 +22,7 @@ Phase 1 checkpoint: operational storage passed compliance review `thr_xb9qqm6u9f
 - [x] Phase 3 dispatch engine implemented: host preflight, ownership leases, durable run intents, worker start and lifecycle reconciliation, runtime caps, cancellation, bounded retry, startup recovery, and the night-window scheduler with spacing and provider alternation. Dispatch remains `paused` until the hosting gate closes.
 - [ ] Phase 1 rollout gate: verify an approved always-on host, the remote Connect owner-session route, and a live `run_detail` path when a run exists. The hosting decision remains pending in [docs/hosting-decision.md](docs/hosting-decision.md).
 - [ ] Phases 4 and 5 remain open: controlled cutover behind a disabled dispatch mode, then legacy shell removal after stable operation.
+- [ ] Phase 6 public quickstart and community distribution planned; queue entries seeded as drafts in `plans/factory/queue.md`.
 
 Hosting gate: [docs/hosting-decision.md](docs/hosting-decision.md) remains pending. No always-on non-personal BB server and execution host is verified, so dispatch remains disabled and no host is selected or provisioned. Data-platform work requiring Mac-local Aside/browser or dbt Studio remains gated; a general-work Linux pilot still requires separate approval and host preflight.
 
@@ -149,6 +150,41 @@ Keep rollback explicit and global at the ownership boundary: disable plugin disp
 **Dependency:** repository-by-repository rollout acceptance, not merely a successful build.
 
 Remove obsolete dispatcher scheduling and dead integration paths only after stable operation is documented. Retain migration-relevant references to the former shell configuration, defaults, and rollback procedure. Do not remove `plans/factory/` protocol files, canonical dashboards, merge-state policy, or immutable run records. Verify that `dispatch.sh`, `redeploy.sh`, and `merge-state.sh` are no longer active owners before deleting or archiving any replacement path.
+
+### Phase 6: Public quickstart and community distribution
+
+**Dependency:** Phase 1 read surfaces and the Phase 2 action layer. Independent of the Phase 4 cutover. This phase makes the plugin installable and immediately useful for repositories that have no factory protocol yet.
+
+The current add-repository flow assumes an operator who already runs the shell factory: it asks for a connected host id, an absolute repository root and checkout path, a project id, and an environment id, and it tells the user to scaffold `plans/factory/` by hand. Phase 6 replaces that with a guided quickstart and publishes the plugin to the BB Community marketplace.
+
+Verified extension points (checked against `@get-bb/plugin-sdk` 0.4.47 and live bb behavior on 2026-09-11):
+
+- `sdk.hosts.pickFolder` opens a native folder picker on a host; `sdk.hosts.list` enumerates connected hosts.
+- `sdk.projects.list` returns project sources (`local_path`, host id); `sdk.projects.create` exists; `sdk.projects.branches` supports default-branch detection.
+- `sdk.environments` exposes no list or create, so an environment id is never a user input. `threads.spawn` accepts `environment: { type: "host", workspace: { type: "unmanaged", path, branch } }`; a live probe confirmed bb auto-registers an unmanaged environment record and returns its id on the spawned thread. The existing registry environments are unmanaged worktree pointers carrying nothing beyond host, path, and branch.
+- `sdk.terminals` runs commands on a host, permitting `git worktree add`, branch creation, commits, and remote probing without any shell on the plugin host.
+- `sdk.files.write` supports `createParents` and `expectedSha256` compare-and-swap, sufficient for root-confined scaffold writes that never overwrite existing content.
+
+Deliverables:
+
+1. **Spawn contract and registry schema.** `environmentId` becomes optional on registry entries. Dispatch keeps `{ type: "reuse" }` when an entry carries an environment id (existing installations unchanged) and otherwise spawns `{ type: "host", workspace: { type: "unmanaged", path: checkoutPath, branch: { kind: "existing", name: factoryBranch } } }`, recording the returned environment id on the run for linking. Preflight gains a readable failure for a missing `factory` branch that names the scaffolder. This contract change returns to the Phase 0 review process before downstream work consumes it.
+2. **Protocol scaffolder.** The plugin ships a template set: the generic `foreman.md`, a `repo.md` skeleton (checks table, worker-model table, tracking rules), `queue.md` and `questions.md` format headers, an initial `current.md`, a `plans/README.md` dashboard seed, and a `runs/` placeholder. One guarded action writes only missing files inside the configured checkout with compare-and-swap and commits them on `factory`; it never edits existing protocol content. The bundled `foreman.md` is copied verbatim from the migration-baseline template: per the v1.2 contract the repository copy is authoritative from first write, and the shipped template carries a recorded digest so a baseline change is a deliberate update rather than drift.
+3. **Dedicated checkout provisioning.** The guided path provisions the two-checkout topology by default: `git worktree add <root>-factory` on the connected host, creating the `factory` branch when missing, then scaffolding into that worktree. `git worktree list` is checked first; when `factory` is already checked out elsewhere the flow explains the conflict and offers the direct-checkout option instead of failing obscurely. An advanced toggle registers the repository root itself as the checkout for users who keep protocol files in their main working copy.
+4. **Quickstart add-repository flow.** The wizard becomes: pick a repository folder with the native picker; the plugin validates it is a git repository, derives the repository key from the folder name, detects `mainRef` from the remote HEAD, resolves the project by matching `projects.list` sources (calling `projects.create` on a miss), defaults the host to the picked host with a picker only when several are connected, probes for an existing `plans/factory/`, and offers the scaffold. Registration always completes with dispatch paused. No field asks for an environment id, host id, or project id.
+5. **Registry-first discovery.** The `legacy` merge-state.sh discovery stays for the two existing repositories but runs only when the configured `factoryRoot` file exists, and is never surfaced in the add flow or new-user docs.
+6. **Release hygiene.** Remove `private`, add `license` and `repository`, trim `files` to the runtime artifact set, decide and implement the `dist/` strategy for git-source installs (prebuilt `dist/` committed on release tags, which git installs prefer), verify `engines.bb` and `engines.bbPluginSdk` ranges, add `bb plugin types --check` to CI, rewrite the README for a fresh install (install, add repository, dispatch prerequisites including provider sign-in and the always-on scheduling limitation), and add `PLUGIN_OVERVIEW.md`.
+7. **Marketplace listing.** A public GitHub repository serves as the `git:` source tracking `vX.Y.Z` tags. Submit `entries/bb-factory.json` (v2 schema: id, displayName, description, icon, tags, author) to `github.com/get-bb/marketplace` with a vendored icon, screenshots from a clean install, and the overview file, via fork pull request or the `bb plugin submit` intake path, whichever the registry README documents at submission time. Releases are tags on the plugin repository; listing changes go through reviewed pull requests. Publishing, tagging, and the marketplace pull request are protected actions requiring an `approved:` queue line.
+
+Acceptance checks:
+
+- On a bb install with no prior factory state, the full path works end to end: install, Add repository, pick folder, initialize protocol, one queue entry authored, and Run now produces exactly one foreman thread in the provisioned worktree.
+- A new user is never asked for an environment id, host id, project id, or file-format knowledge.
+- The scaffolder never overwrites existing protocol content; all writes stay inside the configured checkout; the scaffold commit lands on `factory`.
+- A `factory` branch checked out in another worktree produces a clear explanation, not a git error.
+- Existing registry entries with explicit environment ids behave exactly as before.
+- Registration always leaves dispatch paused.
+
+Reviews follow the standing model: each implementation task is Luna Extra High with separate Sol Medium compliance and code-quality passes, and the spawn-contract and registry-schema change returns to contract review before downstream work consumes it.
 
 ## 5. Rollout acceptance, separate from implementation
 

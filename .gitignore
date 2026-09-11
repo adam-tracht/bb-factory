@@ -32,3 +32,6 @@ build/
 out/
 dist/
 *.tsbuildinfo
+
+# Factory protocol transient claim file
+plans/factory/lock
