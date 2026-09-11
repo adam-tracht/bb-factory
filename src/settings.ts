@@ -54,7 +54,8 @@ export const factorySettingDescriptors = {
   environmentId: {
     type: "string",
     label: "BB environment",
-    description: "Required BB environment scope for this repository's threads and interactions.",
+    description:
+      "Advanced: pin a pre-existing BB environment for this repository's threads and interactions. Leave unset and bb registers an unmanaged environment for the checkout path on first dispatch.",
   },
   repositoryRegistry: {
     type: "string",

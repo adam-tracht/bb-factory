@@ -106,7 +106,7 @@ function finalizeRun(
     providerId: string;
     workerThreadId: string;
     projectId: string;
-    environmentId: string;
+    environmentId: string | null;
     revision: RepositoryRevision;
     canonicalRecords: CanonicalFileRecordLink[];
     finishedAt: string;
@@ -169,7 +169,7 @@ function markRunForReconciliation(
       status: "reconciliation-required",
       finishedAt: run.finishedAt ?? finishedAt,
       projectId: run.projectId ?? entry?.projectId ?? "unknown",
-      environmentId: run.environmentId ?? entry?.environmentId ?? "unknown",
+      environmentId: run.environmentId ?? entry?.environmentId ?? null,
     }));
     for (const attempt of detail.attempts) {
       if (attempt.status === "started" || attempt.status === "cancel-requested" || attempt.status === "pending") {
@@ -242,7 +242,7 @@ async function reconcileStartedRun(ctx: DispatchContext, detail: OperationalRunD
     providerId: run.providerId!,
     workerThreadId: threadId,
     projectId: run.projectId!,
-    environmentId: run.environmentId!,
+    environmentId: run.environmentId,
     revision,
     canonicalRecords,
     finishedAt,

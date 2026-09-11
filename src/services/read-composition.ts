@@ -94,6 +94,21 @@ function createMergeReader(
         );
       }
 
+      const environmentId = entry.environmentId;
+      if (environmentId === undefined) {
+        // No registered environment to read merge state from. An unmanaged
+        // entry still gets a usable snapshot: the commit is honestly unknown
+        // and fast-forward is conservatively unsafe until the first dispatch
+        // registers an environment for the checkout path.
+        return {
+          gitCommit: null,
+          factoryAhead: 0,
+          mainBehind: 0,
+          taskCommits: [],
+          safeFastForward: false,
+        };
+      }
+
       try {
         await validateConfiguredEnvironment(sdk, entry);
       } catch (error) {
@@ -105,7 +120,7 @@ function createMergeReader(
       }
 
       const status = await sdk.environments.status({
-        environmentId: entry.environmentId,
+        environmentId,
         mergeBaseBranch: configuration.mainRef,
       });
       if (status.outcome !== "available") {
@@ -228,7 +243,7 @@ export function createReadComposition(options: ReadCompositionOptions): ReadComp
     repositoryConfigLookup: async (repositoryKey) => {
       const entry = lookupEntry(repositoryKey);
       return entry
-        ? { repositoryKey, projectId: entry.projectId, environmentId: entry.environmentId }
+        ? { repositoryKey, projectId: entry.projectId, environmentId: entry.environmentId ?? null }
         : null;
     },
   });
@@ -268,7 +283,7 @@ export function createReadComposition(options: ReadCompositionOptions): ReadComp
         repositories: entries.map((entry) => ({
           configuration: entry.configuration,
           projectId: entry.projectId,
-          environmentId: entry.environmentId,
+          environmentId: entry.environmentId ?? null,
           dispatchPaused: entry.dispatchPaused === true,
           selected: entry.configuration.repositoryKey === selected,
           available: true,

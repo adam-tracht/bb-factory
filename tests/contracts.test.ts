@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   actionOutcomeSchema,
+  addRepositoryInputSchema,
   bbInteractionResolutionSchema,
   bbInteractionActionRequestSchema,
   factoryActionRequestSchema,
@@ -123,6 +124,33 @@ describe("Phase 0 wire contracts", () => {
     });
   });
 
+  it("accepts a registry entry without an environment id", () => {
+    const unmanagedEntry = {
+      configuration: monorepoRegistryEntry.configuration,
+      projectId: monorepoRegistryEntry.projectId,
+    };
+    const registry = {
+      repositories: [unmanagedEntry],
+      defaultRepositoryKey: "monorepo",
+    };
+    expect(repositoryRegistrySchema.parse(registry)).toEqual(registry);
+    expect(resolveRepositoryRegistry(factorySettingsSchema.parse({ repositoryRegistry: registry }))).toMatchObject({
+      status: "configured",
+      source: "registry",
+      selectedRepositoryKey: "monorepo",
+      repositories: [unmanagedEntry],
+    });
+    expect(addRepositoryInputSchema.parse({
+      configuration: {
+        repositoryKey: "monorepo",
+        repositoryRoot: "/workspace/monorepo",
+        connectedHostId: "host-1",
+        checkoutPath: "/workspace/monorepo/.factory",
+      },
+      projectId: "project-monorepo",
+    })).toMatchObject({ projectId: "project-monorepo", dispatchPaused: true });
+  });
+
   it("rejects duplicate repository keys and invalid selected keys", () => {
     const registry = {
       repositories: [monorepoRegistryEntry, dataRegistryEntry],
@@ -171,6 +199,21 @@ describe("Phase 0 wire contracts", () => {
       repositories: [monorepoRegistryEntry],
       selectedRepositoryKey: "monorepo",
     });
+
+    const withoutEnvironment = resolveRepositoryRegistry(factorySettingsSchema.parse({
+      repositoryKey: "monorepo",
+      repositoryRoot: "/workspace/monorepo",
+      connectedHostId: "host-1",
+      checkoutPath: "/workspace/monorepo/.factory",
+      projectId: "project-monorepo",
+    }));
+    expect(withoutEnvironment).toMatchObject({
+      status: "configured",
+      source: "legacy",
+      repositories: [{ configuration: { repositoryKey: "monorepo" }, projectId: "project-monorepo" }],
+      selectedRepositoryKey: "monorepo",
+    });
+    expect(withoutEnvironment.status === "configured" && withoutEnvironment.repositories[0]!.environmentId).toBeUndefined();
 
     const incomplete = resolveRepositoryRegistry(factorySettingsSchema.parse({
       repositoryKey: "monorepo",

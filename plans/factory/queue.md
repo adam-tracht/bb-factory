@@ -27,7 +27,7 @@ Rules:
 - `risk: high` entries need at least one `approved:` item or they will be skipped.
 
 ## BBF-0001 Spawn contract and registry schema
-status: ready
+status: done (orchestrated session 2026-09-11)
 priority: 1
 depends_on: none
 risk: low

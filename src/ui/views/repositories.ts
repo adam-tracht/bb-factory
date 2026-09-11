@@ -165,7 +165,6 @@ function validateAddForm(form: AddForm): Partial<Record<AddField, string>> {
   if (!ABSOLUTE_PATH_RE.test(form.repositoryRoot.trim())) errors.repositoryRoot = "Enter an absolute path.";
   if (!ABSOLUTE_PATH_RE.test(form.checkoutPath.trim())) errors.checkoutPath = "Enter an absolute path.";
   if (!form.projectId) errors.projectId = "Choose a project.";
-  if (!form.environmentId.trim()) errors.environmentId = "Enter an environment id.";
   if (!form.mainRef.trim()) errors.mainRef = "Enter the main ref.";
   return errors;
 }
@@ -180,7 +179,7 @@ function buildAddInput(form: AddForm): AddRepositoryInput {
       mainRef: form.mainRef.trim() || "origin/main",
     },
     projectId: form.projectId,
-    environmentId: form.environmentId.trim(),
+    environmentId: form.environmentId.trim() || undefined,
     dispatchPaused: form.dispatchPaused,
   };
 }
@@ -392,7 +391,7 @@ export function AddRepositoryView(props: {
               onChange: (event: { target: { value: string } }) => setField("checkoutPath", event.target.value),
             })),
           h(FormRow, { label: "Project", error: errors.projectId }, projectControl),
-          h(FormRow, { label: "Environment", error: errors.environmentId, hint: "Environment id on the selected project." },
+          h(FormRow, { label: "Environment", error: errors.environmentId, hint: "Optional. Pin a pre-existing environment on the selected project; leave empty and bb registers one for the checkout path." },
             h("input", {
               type: "text",
               "aria-label": "Environment",

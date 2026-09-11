@@ -21,14 +21,18 @@ class FakeThreads {
   public stopped: string[] = [];
   public retried: string[] = [];
   public spawnError: Error | null = null;
+  public spawnCalls: Array<{ environment?: unknown; prompt: string }> = [];
+  /** Returned on spawn results, mirroring bb's auto-registered environment id. */
+  public spawnedEnvironmentId: string | null = null;
   private counter = 0;
 
-  async spawn(input: { prompt: string; providerId?: string }) {
+  async spawn(input: { prompt: string; providerId?: string; environment?: unknown }) {
     if (this.spawnError) throw this.spawnError;
     this.counter += 1;
     const id = `thread-${this.counter}`;
+    this.spawnCalls.push({ environment: input.environment, prompt: input.prompt });
     this.threads.set(id, { id, status: "active", prompt: input.prompt, providerId: input.providerId });
-    return { id };
+    return { id, environmentId: this.spawnedEnvironmentId };
   }
 
   async get({ threadId }: { threadId: string }) {
@@ -79,6 +83,7 @@ interface HarnessOptions {
   settings?: Parameters<typeof makeSettings>[0];
   providers?: ProviderStatus[];
   preflight?: HostPreflight;
+  entry?: ReturnType<typeof makeRegistryEntry>;
 }
 
 function makeHarness(options: HarnessOptions = {}) {
@@ -88,7 +93,7 @@ function makeHarness(options: HarnessOptions = {}) {
   const threads = new FakeThreads();
   const clock = { value: options.now ?? new Date("2026-09-10T02:00:00") };
   const providers = options.providers ?? [provider("codex"), provider("claude-code")];
-  const entry = makeRegistryEntry();
+  const entry = options.entry ?? makeRegistryEntry();
   const ctx: DispatchContext = {
     sdk: { threads: threads as never, files: files as never },
     store,
@@ -134,6 +139,51 @@ describe("dispatch engine", () => {
     expect(detail.run?.attempts).toHaveLength(1);
     expect(threads.threads.get("thread-1")?.prompt).toContain("foreman.md");
     expect(store.getDispatcherState("monorepo").lastStartProvider).toBe("codex");
+  });
+
+  it("reuses the pinned environment when the registry entry carries one", async () => {
+    const { engine, threads, store } = makeHarness();
+    const result = await engine.requestRun(MANUAL_REQUEST);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(threads.spawnCalls[0]?.environment).toEqual({ type: "reuse", environmentId: "environment-1" });
+    const detail = await store.getRun({ repositoryKey: "monorepo", runId: result.result.runId! });
+    expect(detail.run?.summary.environmentId).toBe("environment-1");
+  });
+
+  it("spawns an unmanaged host workspace and records the returned environment id", async () => {
+    const { engine, threads, store } = makeHarness({
+      entry: { ...makeRegistryEntry(), environmentId: undefined },
+    });
+    threads.spawnedEnvironmentId = "env-auto-1";
+    const result = await engine.requestRun(MANUAL_REQUEST);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(threads.spawnCalls[0]?.environment).toEqual({
+      type: "host",
+      hostId: "host-1",
+      workspace: {
+        type: "unmanaged",
+        path: CHECKOUT,
+        branch: { kind: "existing", name: "factory" },
+      },
+    });
+    const detail = await store.getRun({ repositoryKey: "monorepo", runId: result.result.runId! });
+    expect(detail.run?.summary.status).toBe("started");
+    expect(detail.run?.summary.environmentId).toBe("env-auto-1");
+  });
+
+  it("records a null environment id when an unmanaged spawn fails ambiguously", async () => {
+    const harness = makeHarness({ entry: { ...makeRegistryEntry(), environmentId: undefined } });
+    harness.threads.spawnError = new Error("connection reset during spawn");
+    const result = await harness.engine.requestRun(MANUAL_REQUEST);
+    expect(result).toMatchObject({ ok: false, error: { category: "internal" } });
+    const runs = harness.store.listActiveRuns("monorepo");
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.status).toBe("reconciliation-required");
+    expect(runs[0]!.environmentId).toBeNull();
+    const detail = await harness.store.getRun({ repositoryKey: "monorepo", runId: runs[0]!.runId });
+    expect(detail.run?.summary.environmentId).toBeNull();
   });
 
   it("rejects a second run while one holds ownership", async () => {

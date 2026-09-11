@@ -13,6 +13,7 @@ import {
 } from "../contracts.js";
 import type { BbInteractionActionExecutor, PendingInteractionReader, ProtocolReader } from "../ports.js";
 import type { DispatchEngine } from "../dispatch/index.js";
+import { spawnEnvironment } from "../dispatch/types.js";
 import {
   type OperationalStateStore,
   type PendingActionIntentRecord,
@@ -27,7 +28,8 @@ type InteractionAnswers = Extract<BbInteractionResolution, { kind: "user_answer"
 
 export interface InteractionScope {
   readonly projectId: string;
-  readonly environmentId: string;
+  /** Null when the entry has no pinned environment; thread matching falls back to the project. */
+  readonly environmentId: string | null;
 }
 
 export interface BbInteractionActionExecutorOptions {
@@ -181,7 +183,7 @@ export function createBbInteractionActionExecutor(options: BbInteractionActionEx
   async function locateInteraction(scope: InteractionScope, interactionId: string): Promise<LocatedInteraction | null> {
     const listed = await threads.list({ projectId: scope.projectId, archived: false, includeHidden: true });
     for (const thread of listed) {
-      if (thread.environmentId !== scope.environmentId) continue;
+      if (scope.environmentId !== null && thread.environmentId !== scope.environmentId) continue;
       const interactions = await threads.interactions.list({ threadId: thread.id });
       const found = interactions.find((candidate) => candidate.id === interactionId);
       if (found) return { interaction: found, pending: null };
@@ -228,7 +230,7 @@ export function createBbInteractionActionExecutor(options: BbInteractionActionEx
     if (!entry) {
       return actionError("not-found", `Repository '${request.repositoryKey}' is not configured.`, request.idempotencyKey);
     }
-    const scope: InteractionScope = { projectId: entry.projectId, environmentId: entry.environmentId };
+    const scope: InteractionScope = { projectId: entry.projectId, environmentId: entry.environmentId ?? null };
     const { interaction: pending, readError: pendingReadError } = await findPending(request.repositoryKey, action.interactionId);
     if (pending) {
       const invalid = validateResolution(pending, action.resolution);
@@ -394,7 +396,7 @@ export function createBbInteractionActionExecutor(options: BbInteractionActionEx
       try {
         spawned = await threads.spawn({
           projectId: entry.projectId,
-          environment: { type: "reuse", environmentId: entry.environmentId },
+          environment: spawnEnvironment(entry),
           prompt: recommendationPrompt(entry.configuration, question, questionGates(snapshot, question.id)),
           providerId: action.providerId,
           model: action.model,

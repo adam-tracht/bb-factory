@@ -16,6 +16,29 @@ import type { FactoryHealthReader, ProtocolReader } from "../ports.js";
 
 export type DispatchSdk = Pick<BbPluginApi["sdk"], "threads" | "files">;
 
+type SpawnEnvironmentArgs = Parameters<DispatchSdk["threads"]["spawn"]>[0]["environment"];
+
+/**
+ * The spawn environment for a registry entry. A pinned environment id keeps
+ * the legacy reuse path; without one, bb spawns against the configured
+ * checkout on the factory branch and registers an unmanaged environment
+ * record for it, returning the new environment id on the spawned thread.
+ */
+export function spawnEnvironment(entry: RepositoryRegistryEntry): SpawnEnvironmentArgs {
+  if (entry.environmentId !== undefined) {
+    return { type: "reuse", environmentId: entry.environmentId };
+  }
+  return {
+    type: "host",
+    hostId: entry.configuration.connectedHostId,
+    workspace: {
+      type: "unmanaged",
+      path: entry.configuration.checkoutPath,
+      branch: { kind: "existing", name: entry.configuration.factoryBranch },
+    },
+  };
+}
+
 export interface DispatchContext {
   readonly sdk: DispatchSdk;
   readonly store: OperationalStateStore;
@@ -61,7 +84,8 @@ export function nightState(state: DispatcherState, nightKey: string): Dispatcher
 /**
  * Builds a RunDispatchUpdate from the recorded run, applying the caller's
  * overrides. Unrecorded identities fall back to explicit sentinels rather than
- * null so stored rows stay queryable.
+ * null so stored rows stay queryable; environmentId is the exception and stays
+ * honestly null when neither the run nor the update recorded one.
  */
 export function runDispatchUpdate(
   run: OperationalRunSummary,
@@ -71,7 +95,7 @@ export function runDispatchUpdate(
     providerId?: string;
     workerThreadId?: string;
     projectId?: string;
-    environmentId?: string;
+    environmentId?: string | null;
     repositoryRevision?: OperationalRunSummary["repositoryRevision"];
     canonicalRecords?: readonly CanonicalFileRecordLink[];
   },
@@ -85,7 +109,7 @@ export function runDispatchUpdate(
     providerId: update.providerId ?? run.providerId ?? "unknown",
     workerThreadId: update.workerThreadId ?? run.workerThreadId ?? "unknown-thread",
     projectId: update.projectId ?? run.projectId ?? "unknown",
-    environmentId: update.environmentId ?? run.environmentId ?? "unknown",
+    environmentId: update.environmentId === undefined ? run.environmentId : update.environmentId,
     repositoryRevision: update.repositoryRevision ?? run.repositoryRevision,
     ...(update.canonicalRecords === undefined ? {} : { canonicalRecords: update.canonicalRecords }),
   };

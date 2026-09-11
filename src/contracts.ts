@@ -56,7 +56,9 @@ export const repositoryRegistryEntrySchema = z
   .object({
     configuration: repositoryConfigurationSchema,
     projectId: nonEmptyString,
-    environmentId: nonEmptyString,
+    // Optional: when absent, dispatch spawns against the checkout path and bb
+    // registers an unmanaged environment record for it.
+    environmentId: nonEmptyString.optional(),
     dispatchPaused: z.boolean().optional(),
   })
   .strict();
@@ -230,7 +232,6 @@ export function resolveRepositoryRegistry(settings: FactorySettings): Repository
     legacyConfiguration.connectedHostId,
     legacyConfiguration.checkoutPath,
     legacyConfiguration.projectId,
-    legacyConfiguration.environmentId,
   ];
   if (!hasLegacyConfiguration) {
     return repositoryRegistryResolutionSchema.parse({
@@ -881,7 +882,7 @@ export const repositorySelectionSchema = z
   .object({
     configuration: repositoryConfigurationSchema,
     projectId: nonEmptyString,
-    environmentId: nonEmptyString,
+    environmentId: nonEmptyString.nullable(),
     dispatchPaused: z.boolean(),
     selected: z.boolean(),
     available: z.boolean(),
@@ -1066,7 +1067,9 @@ const dispatchedOperationalRunSummarySchema = z
       "reconciliation-required",
     ]),
     projectId: nonEmptyString,
-    environmentId: nonEmptyString,
+    // Nullable: an unmanaged spawn that fails ambiguously never yields an
+    // environment id, so a reconciliation-required run can honestly lack one.
+    environmentId: nonEmptyString.nullable(),
   })
   .strict();
 
@@ -1146,7 +1149,7 @@ export const addRepositoryInputSchema = z
       })
       .strict(),
     projectId: nonEmptyString,
-    environmentId: nonEmptyString,
+    environmentId: nonEmptyString.optional(),
     dispatchPaused: z.boolean().default(true),
   })
   .strict();

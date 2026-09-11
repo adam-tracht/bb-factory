@@ -28,7 +28,8 @@ export interface PendingInteractionReader {
 export interface PendingInteractionRepositoryScope {
   readonly repositoryKey: RepositoryKey;
   readonly projectId: string;
-  readonly environmentId: string;
+  /** Null when the entry has no pinned environment; scoping falls back to the project. */
+  readonly environmentId: string | null;
 }
 
 export type PendingInteractionRepositoryConfigLookup = (
@@ -325,13 +326,12 @@ function validateScope(repositoryKey: RepositoryKey, scope: PendingInteractionRe
   if (typeof scope.projectId !== "string" || scope.projectId.trim().length === 0) {
     throw new PendingInteractionReaderError("invalid-input", `Repository '${repositoryKey}' has no configured BB project.`);
   }
-  if (typeof scope.environmentId !== "string" || scope.environmentId.trim().length === 0) {
-    throw new PendingInteractionReaderError("invalid-input", `Repository '${repositoryKey}' has no configured BB environment.`);
-  }
   return {
     repositoryKey,
     projectId: scope.projectId.trim(),
-    environmentId: scope.environmentId.trim(),
+    environmentId: typeof scope.environmentId === "string" && scope.environmentId.trim().length > 0
+      ? scope.environmentId.trim()
+      : null,
   };
 }
 
@@ -385,7 +385,7 @@ export function createPendingInteractionReader(options: PendingInteractionReader
         }
         if (
           thread.projectId !== configuredScope.projectId ||
-          thread.environmentId !== configuredScope.environmentId ||
+          (configuredScope.environmentId !== null && thread.environmentId !== configuredScope.environmentId) ||
           thread.hasPendingInteraction !== true
         ) {
           continue;

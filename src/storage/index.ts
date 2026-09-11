@@ -251,6 +251,33 @@ export const OPERATIONAL_STORAGE_MIGRATIONS = [
   `INSERT INTO pending_action_intents_v2 SELECT * FROM pending_action_intents`,
   `DROP TABLE pending_action_intents`,
   `ALTER TABLE pending_action_intents_v2 RENAME TO pending_action_intents`,
+  // SQLite cannot alter a CHECK constraint, so letting a dispatched run carry
+  // a null environment id (an unmanaged spawn that fails ambiguously never
+  // yields one) rebuilds the table without the environment_id NOT NULL clause.
+  `CREATE TABLE operational_runs_v2 (
+    run_id TEXT PRIMARY KEY,
+    repository_key TEXT NOT NULL,
+    trigger TEXT NOT NULL CHECK (trigger IN ('schedule', 'manual', 'recovery')),
+    idempotency_key TEXT NOT NULL UNIQUE,
+    request_fingerprint TEXT NOT NULL,
+    requested_at TEXT NOT NULL,
+    base_revision_json TEXT NOT NULL,
+    queue_item_ids_json TEXT NOT NULL,
+    authorization_provenance_json TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'started', 'completed', 'failed-safe', 'blocked', 'no-op', 'cancel-requested', 'reconciliation-required')),
+    started_at TEXT,
+    finished_at TEXT,
+    provider_id TEXT,
+    worker_thread_id TEXT,
+    project_id TEXT,
+    environment_id TEXT,
+    repository_revision_json TEXT NOT NULL,
+    canonical_records_json TEXT NOT NULL,
+    CHECK (status = 'pending' OR (provider_id IS NOT NULL AND worker_thread_id IS NOT NULL AND project_id IS NOT NULL))
+  )`,
+  `INSERT INTO operational_runs_v2 SELECT * FROM operational_runs`,
+  `DROP TABLE operational_runs`,
+  `ALTER TABLE operational_runs_v2 RENAME TO operational_runs`,
 ] as const;
 
 export interface CreateRunIntentInput {
@@ -272,7 +299,7 @@ export interface RunDispatchUpdate {
   readonly providerId: string;
   readonly workerThreadId: string;
   readonly projectId: string;
-  readonly environmentId: string;
+  readonly environmentId: string | null;
   readonly repositoryRevision: RepositoryRevision;
   readonly canonicalRecords?: readonly CanonicalFileRecordLink[];
 }

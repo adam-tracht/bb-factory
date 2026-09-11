@@ -91,4 +91,36 @@ describe("server configuration status", () => {
       reason,
     )).toBeNull();
   });
+
+  it("matches threads by project alone when the entry has no environment id", () => {
+    const resolution = resolveRepositoryRegistry(factorySettingsSchema.parse({
+      repositoryRegistry: {
+        repositories: [{
+          configuration: {
+            repositoryKey: "monorepo",
+            repositoryRoot: "/workspace/monorepo",
+            connectedHostId: "host-1",
+            checkoutPath: "/workspace/monorepo/.factory",
+            factoryBranch: "factory",
+            mainRef: "origin/main",
+          },
+          projectId: "project-monorepo",
+        }],
+        defaultRepositoryKey: "monorepo",
+      },
+    }));
+    const reason = "A configured BB thread became active.";
+
+    // bb auto-registers the unmanaged environment, so its id is not known ahead.
+    expect(repositoryInvalidationForThread(
+      resolution,
+      { projectId: "project-monorepo", environmentId: "env-auto-registered" },
+      reason,
+    )).toMatchObject({ repositoryKey: "monorepo", reason });
+    expect(repositoryInvalidationForThread(
+      resolution,
+      { projectId: "other-project", environmentId: "env-auto-registered" },
+      reason,
+    )).toBeNull();
+  });
 });

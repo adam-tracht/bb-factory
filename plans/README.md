@@ -11,7 +11,7 @@ Unattended factory runs work on the `factory` branch and take tasks only from `p
 
 | ID | Work item | Status | Next action or remaining outcome | Evidence and canonical detail |
 |---|---|---|---|---|
-| BBF-0001 | [Spawn contract and registry schema](./factory/queue.md#bbf-0001-spawn-contract-and-registry-schema) | Active | Eligible for an unattended run once dependencies are satisfied. | Scope and acceptance are in [PLAN.md](../PLAN.md) Phase 6, deliverable 1. |
+| BBF-0001 | [Spawn contract and registry schema](./factory/queue.md#bbf-0001-spawn-contract-and-registry-schema) | Done | None. | `environmentId` is optional across registry, add-input, and dispatch; [`spawnEnvironment`](../src/dispatch/types.ts) reuses a pinned env or spawns an unmanaged host workspace and records the auto-registered env id; storage CHECK relaxed via rebuild migration; 202 tests, typecheck, and lint pass. |
 | BBF-0002 | [Protocol scaffolder](./factory/queue.md#bbf-0002-protocol-scaffolder) | Active | Eligible for an unattended run once dependencies are satisfied. | Scope and acceptance are in [PLAN.md](../PLAN.md) Phase 6, deliverable 2. |
 | BBF-0003 | [Dedicated checkout provisioning](./factory/queue.md#bbf-0003-dedicated-checkout-provisioning) | Active | Eligible for an unattended run once dependencies are satisfied. | Scope and acceptance are in [PLAN.md](../PLAN.md) Phase 6, deliverable 3. |
 | BBF-0004 | [Quickstart add-repository flow](./factory/queue.md#bbf-0004-quickstart-add-repository-flow) | Active | Eligible for an unattended run once dependencies are satisfied. | Scope and acceptance are in [PLAN.md](../PLAN.md) Phase 6, deliverable 4. |

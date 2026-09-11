@@ -31,28 +31,32 @@ export async function validateConfiguredEnvironment(
   sdk: BbSdk,
   entry: RepositoryRegistryEntry,
 ): Promise<Environment> {
-  const environment = await sdk.environments.get({ environmentId: entry.environmentId });
-  if (environment.id !== entry.environmentId) {
-    throw new Error(`BB returned environment '${environment.id}', expected '${entry.environmentId}'.`);
+  const environmentId = entry.environmentId;
+  if (environmentId === undefined) {
+    throw new Error(`Repository '${entry.configuration.repositoryKey}' has no configured BB environment.`);
+  }
+  const environment = await sdk.environments.get({ environmentId });
+  if (environment.id !== environmentId) {
+    throw new Error(`BB returned environment '${environment.id}', expected '${environmentId}'.`);
   }
   if (environment.projectId !== entry.projectId) {
     throw new Error(
-      `Configured environment '${entry.environmentId}' belongs to project '${environment.projectId}', expected '${entry.projectId}'.`,
+      `Configured environment '${environmentId}' belongs to project '${environment.projectId}', expected '${entry.projectId}'.`,
     );
   }
   if (environment.hostId !== entry.configuration.connectedHostId) {
     throw new Error(
-      `Configured environment '${entry.environmentId}' belongs to host '${environment.hostId}', expected '${entry.configuration.connectedHostId}'.`,
+      `Configured environment '${environmentId}' belongs to host '${environment.hostId}', expected '${entry.configuration.connectedHostId}'.`,
     );
   }
   if (!environment.path) {
-    throw new Error(`Configured environment '${entry.environmentId}' has no checkout path.`);
+    throw new Error(`Configured environment '${environmentId}' has no checkout path.`);
   }
   const configuredPath = normalizeAbsolutePath(entry.configuration.checkoutPath, "checkoutPath");
   const environmentPath = normalizeAbsolutePath(environment.path, "environment.path");
   if (environmentPath !== configuredPath) {
     throw new Error(
-      `Configured environment '${entry.environmentId}' is rooted at '${environmentPath}', expected checkout '${configuredPath}'.`,
+      `Configured environment '${environmentId}' is rooted at '${environmentPath}', expected checkout '${configuredPath}'.`,
     );
   }
   return environment;
@@ -166,6 +170,63 @@ function selectHost(host: HostInfo | null, hosts: readonly HostInfo[], hostId: s
   return host ?? hosts.find((candidate) => candidate.id === hostId) ?? null;
 }
 
+function branchDriftReason(factoryBranch: string, branch: string | null): string {
+  return `Configured checkout is on '${branch ?? "no branch"}', expected '${factoryBranch}'. If the '${factoryBranch}' branch does not exist yet, initialize the factory protocol and create it first (the protocol scaffolder action covers both).`;
+}
+
+const GIT_HEAD_REF = /^ref:\s*refs\/heads\/(.+?)\s*$/m;
+
+/**
+ * Reads the checked-out branch through the host file API: `.git/HEAD` for a
+ * plain checkout, or the worktree's gitdir pointer followed by its HEAD for a
+ * linked worktree. Detached HEAD yields null.
+ */
+async function readCheckoutBranch(sdk: BbSdk, hostId: string, root: string): Promise<string | null> {
+  const dotgit = `${root}/.git`;
+  let head: string | null = null;
+  try {
+    head = (await sdk.files.read({ hostId, path: `${dotgit}/HEAD` })).content;
+  } catch {
+    try {
+      const pointer = (await sdk.files.read({ hostId, path: dotgit })).content;
+      const gitdir = /^gitdir:\s*(.+?)\s*$/m.exec(pointer)?.[1];
+      if (gitdir !== undefined) {
+        const resolved = /^(?:\/|[A-Za-z]:[\\/])/.test(gitdir) ? gitdir : `${root}/${gitdir}`;
+        head = (await sdk.files.read({ hostId, path: `${resolved}/HEAD` })).content;
+      }
+    } catch {
+      head = null;
+    }
+  }
+  if (head === null) return null;
+  return GIT_HEAD_REF.exec(head.trim())?.[1] ?? null;
+}
+
+interface UnmanagedCheckoutProbe {
+  readonly pathExists: boolean;
+  readonly gitPresent: boolean;
+  readonly protocolPresent: boolean;
+  readonly branch: string | null;
+  readonly error: string | null;
+}
+
+/** Host-file checkout probe for an entry with no registered BB environment. */
+async function probeUnmanagedCheckout(sdk: BbSdk, hostId: string, checkoutPath: string): Promise<UnmanagedCheckoutProbe> {
+  const root = checkoutPath.replace(/[\\/]+$/u, "");
+  const dotgit = `${root}/.git`;
+  const protocolDir = `${root}/plans/factory`;
+  let existence: Record<string, boolean>;
+  try {
+    existence = (await sdk.hosts.pathsExist({ hostId, paths: [root, dotgit, protocolDir] })).existence;
+  } catch (error) {
+    return { pathExists: false, gitPresent: false, protocolPresent: false, branch: null, error: errorMessage(error) };
+  }
+  const pathExists = existence[root] === true;
+  const gitPresent = existence[dotgit] === true;
+  const branch = pathExists && gitPresent ? await readCheckoutBranch(sdk, hostId, root).catch(() => null) : null;
+  return { pathExists, gitPresent, protocolPresent: existence[protocolDir] === true, branch, error: null };
+}
+
 async function readHostPreflight(
   sdk: BbSdk,
   entry: RepositoryRegistryEntry,
@@ -176,9 +237,15 @@ async function readHostPreflight(
     sdk.hosts.get({ hostId }),
     sdk.hosts.list(),
   ]);
-  const environmentResult = await Promise.allSettled([
-    validateConfiguredEnvironment(sdk, entry).then(() => sdk.environments.status({ environmentId: entry.environmentId })),
-  ]).then(([result]) => result);
+  const environmentId = entry.environmentId;
+  const environmentResult = environmentId === undefined
+    ? null
+    : await Promise.allSettled([
+        validateConfiguredEnvironment(sdk, entry).then(() => sdk.environments.status({ environmentId })),
+      ]).then(([result]) => result);
+  const unmanaged = environmentId === undefined
+    ? await probeUnmanagedCheckout(sdk, hostId, configuration.checkoutPath)
+    : null;
 
   const host = hostResult.status === "fulfilled" ? hostResult.value : null;
   const hosts = hostsResult.status === "fulfilled" ? hostsResult.value : [];
@@ -196,21 +263,43 @@ async function readHostPreflight(
 
   let checkoutExists = false;
   let branch: string | null = null;
-  if (environmentResult.status === "fulfilled") {
-    const environment = environmentResult.value;
-    if (environment.outcome === "available") {
-      checkoutExists = status === "online";
-      branch = environment.workspace.branch.currentBranch;
-      if (branch !== configuration.factoryBranch) {
-        reasons.push(`Configured checkout is on '${branch ?? "no branch"}', expected '${configuration.factoryBranch}'.`);
+  let protocolReady = true;
+  if (environmentResult !== null) {
+    if (environmentResult.status === "fulfilled") {
+      const environment = environmentResult.value;
+      if (environment.outcome === "available") {
+        checkoutExists = status === "online";
+        branch = environment.workspace.branch.currentBranch;
+        if (branch !== configuration.factoryBranch) {
+          reasons.push(branchDriftReason(configuration.factoryBranch, branch));
+        }
+      } else if (environment.outcome === "unavailable") {
+        reasons.push(`BB could not inspect the configured checkout: ${environment.failure.message}`);
+      } else {
+        reasons.push(`Configured environment is not a Git checkout: ${environment.message}`);
       }
-    } else if (environment.outcome === "unavailable") {
-      reasons.push(`BB could not inspect the configured checkout: ${environment.failure.message}`);
     } else {
-      reasons.push(`Configured environment is not a Git checkout: ${environment.message}`);
+      reasons.push(`Could not inspect the configured checkout: ${errorMessage(environmentResult.reason)}`);
     }
-  } else {
-    reasons.push(`Could not inspect the configured checkout: ${errorMessage(environmentResult.reason)}`);
+  } else if (unmanaged !== null) {
+    if (unmanaged.error !== null) {
+      reasons.push(`Could not inspect the configured checkout: ${unmanaged.error}`);
+    } else {
+      checkoutExists = unmanaged.pathExists && unmanaged.gitPresent;
+      branch = unmanaged.branch;
+      protocolReady = unmanaged.protocolPresent;
+      if (!unmanaged.pathExists) {
+        reasons.push(`Configured checkout '${configuration.checkoutPath}' does not exist on host '${hostId}'.`);
+      } else if (!unmanaged.gitPresent) {
+        reasons.push(`Configured checkout '${configuration.checkoutPath}' is not a Git checkout.`);
+      } else if (branch !== configuration.factoryBranch) {
+        reasons.push(branchDriftReason(configuration.factoryBranch, branch));
+      }
+      if (!unmanaged.protocolPresent) {
+        reasons.push(`No plans/factory protocol files were found in the checkout; run the protocol scaffolder action to initialize them on '${configuration.factoryBranch}'.`);
+      }
+    }
+    reasons.push("No BB environment is registered for this checkout; the first dispatch registers one for the configured path.");
   }
 
   return {
@@ -221,7 +310,7 @@ async function readHostPreflight(
     requiredTools: {},
     browserAvailable: null,
     dbtStudioAvailable: null,
-    ok: status === "online" && checkoutExists && branch === configuration.factoryBranch,
+    ok: status === "online" && checkoutExists && branch === configuration.factoryBranch && protocolReady,
     reasons,
   };
 }

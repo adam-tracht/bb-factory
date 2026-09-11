@@ -11,7 +11,7 @@ import { PROTOCOL_PATHS } from "../protocol/paths.js";
 import { IdempotencyConflictError } from "../storage/index.js";
 import { OwnershipHeldError } from "./ownership.js";
 import { hostPreflight, selectProvider, type ProviderSelection } from "./preflight.js";
-import { dispatcherNowSeconds, nightKeyAt, nightState, type DispatchContext } from "./types.js";
+import { dispatcherNowSeconds, nightKeyAt, nightState, spawnEnvironment, type DispatchContext } from "./types.js";
 
 export interface StartRunInput {
   readonly repositoryKey: RepositoryKey;
@@ -54,7 +54,7 @@ async function markSpawnAmbiguous(
     provider: ProviderSelection;
     revision: RepositoryRevision;
     projectId: string;
-    environmentId: string;
+    environmentId: string | null;
   },
   error: unknown,
 ): Promise<StartRunResult> {
@@ -236,10 +236,13 @@ export async function startRun(ctx: DispatchContext, input: StartRunInput): Prom
   }
 
   let threadId: string;
+  // bb registers an unmanaged environment for a host-workspace spawn and
+  // returns its id on the thread; a pinned environment id reuses instead.
+  let environmentId: string | null;
   try {
     const spawned = await ctx.sdk.threads.spawn({
       projectId: entry.projectId,
-      environment: { type: "reuse", environmentId: entry.environmentId },
+      environment: spawnEnvironment(entry),
       prompt: FOREMAN_PROMPT,
       providerId: provider.providerId,
       model: provider.model,
@@ -248,6 +251,7 @@ export async function startRun(ctx: DispatchContext, input: StartRunInput): Prom
       title: runTitle(input.repositoryKey, provider.providerId),
     });
     threadId = spawned.id;
+    environmentId = entry.environmentId ?? spawned.environmentId;
   } catch (error) {
     return markSpawnAmbiguous(ctx, {
       repositoryKey: input.repositoryKey,
@@ -257,7 +261,7 @@ export async function startRun(ctx: DispatchContext, input: StartRunInput): Prom
       provider,
       revision: snapshot.revision,
       projectId: entry.projectId,
-      environmentId: entry.environmentId,
+      environmentId: entry.environmentId ?? null,
     }, error);
   }
 
@@ -272,7 +276,7 @@ export async function startRun(ctx: DispatchContext, input: StartRunInput): Prom
       providerId: provider.providerId,
       workerThreadId: threadId,
       projectId: entry.projectId,
-      environmentId: entry.environmentId,
+      environmentId,
       repositoryRevision: snapshot.revision,
     });
     transaction.updateDispatchAttempt({

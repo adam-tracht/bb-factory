@@ -116,6 +116,27 @@ describe("settings mutation handlers", () => {
     expect(registry.repositories[1]?.dispatchPaused).toBe(true);
   });
 
+  it("adds a repository entry without an environment id", async () => {
+    const { applied, handlers } = harness();
+    const result = await handlers.factory_add_repository({
+      configuration: {
+        repositoryKey: "data-platform",
+        repositoryRoot: "/work/data",
+        connectedHostId: "host-1",
+        checkoutPath: "/work/data-factory",
+        mainRef: "origin/main",
+      },
+      projectId: "project-9",
+      dispatchPaused: true,
+    });
+    expect(result).toMatchObject({ ok: true });
+    const registry = JSON.parse(String(applied[0]?.repositoryRegistry)) as {
+      repositories: Array<{ environmentId?: string; configuration: { repositoryKey: string } }>;
+    };
+    expect(registry.repositories[1]?.configuration.repositoryKey).toBe("data-platform");
+    expect(registry.repositories[1]?.environmentId).toBeUndefined();
+  });
+
   it("rejects a duplicate repository key", async () => {
     const { applied, handlers } = harness();
     const result = await handlers.factory_add_repository({

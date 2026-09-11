@@ -149,7 +149,7 @@ describe("live health reader", () => {
     expect(result.dbtStudioAvailable).toBeNull();
     expect(result.reasons).toEqual(expect.arrayContaining([
       "BB host 'host-1' is disconnected.",
-      "Configured checkout is on 'main', expected 'factory'.",
+      "Configured checkout is on 'main', expected 'factory'. If the 'factory' branch does not exist yet, initialize the factory protocol and create it first (the protocol scaffolder action covers both).",
     ]));
   });
 
@@ -176,6 +176,84 @@ describe("live health reader", () => {
         limitedUntil: "2026-09-10T12:00:00.000Z",
       }),
     ]));
+  });
+
+  it("probes the checkout through host files when the entry has no environment id", async () => {
+    const sdk = sdkFixture() as {
+      environments: { get: ReturnType<typeof vi.fn>; status: ReturnType<typeof vi.fn> };
+      hosts: { pathsExist: ReturnType<typeof vi.fn> } & Record<string, unknown>;
+      files: { read: ReturnType<typeof vi.fn> };
+    };
+    sdk.hosts.pathsExist = vi.fn().mockResolvedValue({
+      existence: {
+        "/work/demo": true,
+        "/work/demo/.git": true,
+        "/work/demo/plans/factory": true,
+      },
+    });
+    sdk.files = {
+      read: vi.fn(async ({ path }: { path: string }) => {
+        if (path === "/work/demo/.git/HEAD") {
+          return { content: "ref: refs/heads/factory\n" };
+        }
+        throw new Error(`no such file: ${path}`);
+      }),
+    };
+    const unmanagedEntry: RepositoryRegistryEntry = { ...entry, environmentId: undefined };
+    const reader = createLiveHealthReader({
+      sdk: sdk as never,
+      repositoryLookup: () => unmanagedEntry,
+    });
+
+    const result = await reader.getHostPreflight("demo");
+    expect(result).toMatchObject({ status: "online", checkoutExists: true, branch: "factory", ok: true });
+    expect(result.reasons).toEqual(expect.arrayContaining([
+      "No BB environment is registered for this checkout; the first dispatch registers one for the configured path.",
+    ]));
+    expect(sdk.environments.get).not.toHaveBeenCalled();
+    expect(sdk.environments.status).not.toHaveBeenCalled();
+    expect(sdk.hosts.pathsExist).toHaveBeenCalledWith({
+      hostId: "host-1",
+      paths: ["/work/demo", "/work/demo/.git", "/work/demo/plans/factory"],
+    });
+  });
+
+  it("names the scaffolder remedy when an unmanaged checkout is not on the factory branch", async () => {
+    const sdk = sdkFixture() as {
+      hosts: { pathsExist: ReturnType<typeof vi.fn> } & Record<string, unknown>;
+      files: { read: ReturnType<typeof vi.fn> };
+    };
+    sdk.hosts.pathsExist = vi.fn().mockResolvedValue({
+      existence: {
+        "/work/demo": true,
+        "/work/demo/.git": true,
+        "/work/demo/plans/factory": false,
+      },
+    });
+    sdk.files = {
+      read: vi.fn(async ({ path }: { path: string }) => {
+        if (path === "/work/demo/.git") {
+          return { content: "gitdir: /work/main/.git/worktrees/demo\n" };
+        }
+        if (path === "/work/main/.git/worktrees/demo/HEAD") {
+          return { content: "ref: refs/heads/main\n" };
+        }
+        throw new Error(`no such file: ${path}`);
+      }),
+    };
+    const unmanagedEntry: RepositoryRegistryEntry = { ...entry, environmentId: undefined };
+    const reader = createLiveHealthReader({
+      sdk: sdk as never,
+      repositoryLookup: () => unmanagedEntry,
+    });
+
+    const result = await reader.getHostPreflight("demo");
+    expect(result.ok).toBe(false);
+    expect(result.branch).toBe("main");
+    expect(result.reasons).toEqual(expect.arrayContaining([
+      "Configured checkout is on 'main', expected 'factory'. If the 'factory' branch does not exist yet, initialize the factory protocol and create it first (the protocol scaffolder action covers both).",
+    ]));
+    expect(result.reasons.some((reason) => reason.includes("protocol scaffolder"))).toBe(true);
   });
 
   it("does not query checkout status when the configured environment scope is wrong", async () => {
