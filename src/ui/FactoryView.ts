@@ -15,21 +15,28 @@ import {
   operationalRunDetailProjectionSchema,
   operationalRunListProjectionSchema,
   pendingInteractionsProjectionSchema,
+  pickFolderResultSchema,
   protocolSnapshotSchema,
   registryOptionsProjectionSchema,
+  repositoryProbeSchema,
   repositorySelectionProjectionSchema,
+  resolveProjectResultSchema,
   settingsMutationResultSchema,
   settingsProjectionSchema,
   type DispatchStatus,
   type FactoryActionRequest,
+  type FactoryActionResult,
   type HealthProjection,
   type OperationalRunDetailProjection,
   type OperationalRunListProjection,
   type OperationalRunSummary,
   type PendingInteractionsProjection,
+  type PickFolderInput,
+  type ProbeRepositoryInput,
   type ProtocolSnapshot,
   type RepositorySelection,
   type RepositorySelectionProjection,
+  type ResolveProjectInput,
   type SettingsMutationResult,
   type SettingsProjection,
 } from "../contracts.js";
@@ -399,6 +406,40 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
     return parseProjection(registryOptionsProjectionSchema, raw, "Registry options");
   }, []);
 
+  const pickRepositoryFolder = useCallback(async (input: PickFolderInput) => {
+    const raw = await rpcRef.current.call("factory_pick_folder", input);
+    return parseProjection(pickFolderResultSchema, raw, "Folder pick");
+  }, []);
+
+  const probeRepository = useCallback(async (input: ProbeRepositoryInput) => {
+    const raw = await rpcRef.current.call("factory_probe_repository", input);
+    return parseProjection(repositoryProbeSchema, raw, "Repository probe");
+  }, []);
+
+  const resolveRepositoryProject = useCallback(async (input: ResolveProjectInput) => {
+    const raw = await rpcRef.current.call("factory_resolve_project", input);
+    return parseProjection(resolveProjectResultSchema, raw, "Project resolution");
+  }, []);
+
+  /**
+   * Result-returning factory_action call for the add wizard's multi-step
+   * orchestration. Unlike submitAction it does not touch shell feedback; it
+   * still reloads durable projections when an accepted action changed state.
+   */
+  const runAction = useCallback(async (request: FactoryActionRequest): Promise<FactoryActionResult> => {
+    try {
+      const raw = await rpcRef.current.call("factory_action", request);
+      const parsed = factoryActionResultSchema.safeParse(raw);
+      if (!parsed.success) {
+        return { ok: false, error: { category: "internal", message: "The action result was malformed." } };
+      }
+      if (parsed.data.ok && parsed.data.result.status !== "preview") reload();
+      return parsed.data;
+    } catch (error) {
+      return { ok: false, error: { category: "internal", message: errorText(error) } };
+    }
+  }, [reload]);
+
   const loadRepositorySummary = useCallback(async (repositoryKey: string) => {
     try {
       const [snapshotResult, settingsResult, interactionsResult, runsResult] = await Promise.allSettled([
@@ -454,6 +495,10 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
         updateRepository: (input) => callMutation("factory_update_repository", input),
         addRepository: (input) => callMutation("factory_add_repository", input),
         loadRegistryOptions,
+        runAction,
+        pickRepositoryFolder,
+        probeRepository,
+        resolveRepositoryProject,
       }
     : null;
 
@@ -509,6 +554,10 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
       updateRepository: (input) => callMutation("factory_update_repository", input),
       addRepository: (input) => callMutation("factory_add_repository", input),
       loadRegistryOptions,
+      runAction,
+      pickRepositoryFolder,
+      probeRepository,
+      resolveRepositoryProject,
     };
     content = h(AddRepositoryView, {
       ctx: wizardCtx,

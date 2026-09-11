@@ -10,12 +10,18 @@ import {
   operationalRunListInputSchema,
   operationalRunListProjectionSchema,
   pendingInteractionsProjectionSchema,
+  pickFolderInputSchema,
+  pickFolderResultSchema,
+  probeRepositoryInputSchema,
   protocolSnapshotSchema,
   registryOptionsProjectionSchema,
   repositoryKeySchema,
+  repositoryProbeSchema,
   repositorySelectionInputSchema,
   repositorySelectionProjectionSchema,
   repositoryReadInputSchema,
+  resolveProjectInputSchema,
+  resolveProjectResultSchema,
   settingsMutationResultSchema,
   settingsProjectionSchema,
   updateRepositoryInputSchema,
@@ -74,6 +80,18 @@ export const factoryRpcContract = defineRpcContract({
   factory_registry_options: {
     input: z.object({}).strict(),
     output: registryOptionsProjectionSchema,
+  },
+  factory_pick_folder: {
+    input: pickFolderInputSchema,
+    output: pickFolderResultSchema,
+  },
+  factory_probe_repository: {
+    input: probeRepositoryInputSchema,
+    output: repositoryProbeSchema,
+  },
+  factory_resolve_project: {
+    input: resolveProjectInputSchema,
+    output: resolveProjectResultSchema,
   },
 });
 

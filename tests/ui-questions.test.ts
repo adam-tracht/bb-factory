@@ -181,6 +181,10 @@ function makeCtx(overrides: Partial<ViewContext> = {}): ViewContext {
     updateRepository: vi.fn(),
     addRepository: vi.fn(),
     loadRegistryOptions: vi.fn(),
+    runAction: vi.fn(),
+    pickRepositoryFolder: vi.fn(),
+    probeRepository: vi.fn(),
+    resolveRepositoryProject: vi.fn(),
     ...overrides,
   };
 }

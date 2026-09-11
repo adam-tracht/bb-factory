@@ -235,3 +235,46 @@ describe("factory action RPC router", () => {
     expect(composition.publish).not.toHaveBeenCalled();
   });
 });
+
+describe("factory_resolve_project", () => {
+  it("creates the project through the composition sdk", async () => {
+    const create = vi.fn(async (args: { name: string }) => ({ id: "proj-new", name: args.name }));
+    const sdk = {
+      projects: {
+        list: vi.fn(async () => []),
+        create,
+      },
+    };
+    const { handlers } = makeComposition({ sdk } as never);
+    const result = await handlers.factory_resolve_project({
+      hostId: "host-1",
+      path: "/work/repo",
+      name: "repo",
+    });
+    expect(create).toHaveBeenCalledWith({
+      name: "repo",
+      source: { type: "local_path", hostId: "host-1", path: "/work/repo" },
+    });
+    expect(result).toEqual({ projectId: "proj-new", label: "repo", created: true });
+  });
+
+  it("returns an existing matching project without creating one", async () => {
+    const create = vi.fn();
+    const sdk = {
+      projects: {
+        list: vi.fn(async () => [
+          { id: "proj-7", name: "Core", sources: [{ type: "local_path", hostId: "host-1", path: "/work/repo" }] },
+        ]),
+        create,
+      },
+    };
+    const { handlers } = makeComposition({ sdk } as never);
+    const result = await handlers.factory_resolve_project({
+      hostId: "host-1",
+      path: "/work/repo",
+      name: "repo",
+    });
+    expect(result).toEqual({ projectId: "proj-7", label: "Core", created: false });
+    expect(create).not.toHaveBeenCalled();
+  });
+});

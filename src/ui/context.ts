@@ -1,12 +1,20 @@
 import type {
   AddRepositoryInput,
   BbInteractionActionRequest,
+  FactoryActionRequest,
+  FactoryActionResult,
   FactorySettingsPatch,
+  PickFolderInput,
+  PickFolderResult,
+  ProbeRepositoryInput,
   RegistryOptionsProjection,
   RepositoryActionRequest,
   RepositoryConfiguration,
   RepositoryKey,
+  RepositoryProbe,
   RepositoryRevision,
+  ResolveProjectInput,
+  ResolveProjectResult,
   SettingsMutationResult,
   UpdateRepositoryInput,
 } from "../contracts.js";
@@ -43,4 +51,13 @@ export interface ViewContext {
   updateRepository(input: UpdateRepositoryInput): Promise<SettingsMutationResult>;
   addRepository(input: AddRepositoryInput): Promise<SettingsMutationResult>;
   loadRegistryOptions(): Promise<RegistryOptionsProjection>;
+  /**
+   * Result-returning variant of onAction for multi-step flows (the add wizard
+   * orchestrates provision and scaffold itself; onAction is fire-and-forget
+   * shell feedback). Failed transports surface as internal-error results.
+   */
+  runAction(request: FactoryActionRequest): Promise<FactoryActionResult>;
+  pickRepositoryFolder(input: PickFolderInput): Promise<PickFolderResult>;
+  probeRepository(input: ProbeRepositoryInput): Promise<RepositoryProbe>;
+  resolveRepositoryProject(input: ResolveProjectInput): Promise<ResolveProjectResult>;
 }

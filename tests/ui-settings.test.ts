@@ -13,7 +13,7 @@ import type {
 import type { ViewContext } from "../src/ui/context.js";
 import type { FileLinkRenderer } from "../src/ui/primitives.js";
 import { SettingsView } from "../src/ui/views/settings.js";
-import { AddRepositoryView, RepositoryLandingView } from "../src/ui/views/repositories.js";
+import { RepositoryLandingView } from "../src/ui/views/repositories.js";
 
 const h = createElement;
 
@@ -114,6 +114,10 @@ function makeCtx(overrides: Partial<ViewContext> = {}): ViewContext {
     updateRepository: vi.fn(async () => ({ ok: true as const, message: "saved" })),
     addRepository: vi.fn(async () => ({ ok: true as const, message: "saved" })),
     loadRegistryOptions: vi.fn(async () => registryOptions),
+    runAction: vi.fn(),
+    pickRepositoryFolder: vi.fn(),
+    probeRepository: vi.fn(),
+    resolveRepositoryProject: vi.fn(),
     ...overrides,
   };
 }
@@ -317,95 +321,5 @@ describe("RepositoryLandingView", () => {
     expect(screen.getByText("No repositories configured")).toBeTruthy();
     fireEvent.click(screen.getAllByRole("button", { name: "Add repository" })[0]);
     expect(onAddRepository).toHaveBeenCalled();
-  });
-});
-
-describe("AddRepositoryView", () => {
-  it("loads options, validates, confirms, and reports onDone", async () => {
-    const ctx = makeCtx();
-    const onDone = vi.fn();
-    const onCancel = vi.fn();
-    render(h(AddRepositoryView, { ctx, onDone, onCancel }));
-
-    const keyInput = await screen.findByLabelText("Repository key");
-    fireEvent.change(keyInput, { target: { value: "newrepo" } });
-    fireEvent.change(screen.getByLabelText("Connected host"), { target: { value: "host-1" } });
-    fireEvent.change(screen.getByLabelText("Repository root"), { target: { value: "/work/newrepo" } });
-    fireEvent.change(screen.getByLabelText("Checkout path"), { target: { value: "/work/newrepo-factory" } });
-    fireEvent.change(screen.getByLabelText("Project"), { target: { value: "proj-1" } });
-    fireEvent.change(screen.getByLabelText("Environment"), { target: { value: "env_1" } });
-    expect((screen.getByLabelText("Main ref") as HTMLInputElement).value).toBe("origin/main");
-    expect(screen.getByText("New repositories start paused until you turn dispatch on.")).toBeTruthy();
-    expect(screen.getByText(/"repositoryKey": "newrepo"/)).toBeTruthy();
-
-    fireEvent.click(screen.getByRole("button", { name: "Add repository" }));
-    const dialog = screen.getByRole("alertdialog");
-    expect(dialog.textContent).toContain("Creates a registry entry.");
-    fireEvent.click(within(dialog).getByRole("button", { name: "Add repository" }));
-
-    expect(ctx.addRepository).toHaveBeenCalledWith({
-      configuration: {
-        repositoryKey: "newrepo",
-        repositoryRoot: "/work/newrepo",
-        connectedHostId: "host-1",
-        checkoutPath: "/work/newrepo-factory",
-        mainRef: "origin/main",
-      },
-      projectId: "proj-1",
-      environmentId: "env_1",
-      dispatchPaused: true,
-    });
-    await waitFor(() => expect(onDone).toHaveBeenCalledWith("newrepo"));
-  });
-
-  it("blocks submission on invalid input without calling addRepository", async () => {
-    const ctx = makeCtx();
-    render(h(AddRepositoryView, { ctx, onDone: vi.fn(), onCancel: vi.fn() }));
-    await screen.findByLabelText("Repository key");
-
-    fireEvent.change(screen.getByLabelText("Repository key"), { target: { value: "BadKey" } });
-    fireEvent.click(screen.getByRole("button", { name: "Add repository" }));
-
-    expect(screen.getByText(/Lowercase letters/)).toBeTruthy();
-    expect(screen.getByText("Choose a connected host.")).toBeTruthy();
-    expect(screen.queryByRole("alertdialog")).toBeNull();
-    expect(ctx.addRepository).not.toHaveBeenCalled();
-  });
-
-  it("shows server errors and maps fieldErrors onto fields", async () => {
-    const ctx = makeCtx({
-      addRepository: vi.fn(async () => ({
-        ok: false as const,
-        error: {
-          category: "conflict" as const,
-          message: "Registry conflict",
-          fieldErrors: { "configuration.repositoryKey": ["already registered"] },
-        },
-      })),
-    });
-    render(h(AddRepositoryView, { ctx, onDone: vi.fn(), onCancel: vi.fn() }));
-    await screen.findByLabelText("Repository key");
-
-    fireEvent.change(screen.getByLabelText("Repository key"), { target: { value: "demo" } });
-    fireEvent.change(screen.getByLabelText("Connected host"), { target: { value: "host-1" } });
-    fireEvent.change(screen.getByLabelText("Repository root"), { target: { value: "/work/demo" } });
-    fireEvent.change(screen.getByLabelText("Checkout path"), { target: { value: "/work/demo-factory" } });
-    fireEvent.change(screen.getByLabelText("Project"), { target: { value: "proj-1" } });
-    fireEvent.change(screen.getByLabelText("Environment"), { target: { value: "env_1" } });
-    fireEvent.click(screen.getByRole("button", { name: "Add repository" }));
-    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Add repository" }));
-
-    expect(await screen.findByText("Registry conflict")).toBeTruthy();
-    expect(await screen.findByText("already registered")).toBeTruthy();
-  });
-
-  it("renders an error notice when registry options fail to load", async () => {
-    const ctx = makeCtx({
-      loadRegistryOptions: vi.fn(async () => {
-        throw new Error("options unavailable");
-      }),
-    });
-    render(h(AddRepositoryView, { ctx, onDone: vi.fn(), onCancel: vi.fn() }));
-    expect(await screen.findByText("options unavailable")).toBeTruthy();
   });
 });

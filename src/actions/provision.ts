@@ -59,11 +59,11 @@ export function parseWorktreeList(porcelain: string): WorktreeListEntry[] {
   return entries;
 }
 
-function normalizeHostPath(value: string): string {
+export function normalizeHostPath(value: string): string {
   return value.replace(/[\\/]+$/u, "");
 }
 
-function sameHostPath(left: string, right: string): boolean {
+export function sameHostPath(left: string, right: string): boolean {
   return normalizeHostPath(left) === normalizeHostPath(right);
 }
 

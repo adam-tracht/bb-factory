@@ -58,6 +58,10 @@ function makeCtx(overrides: Partial<ViewContext> = {}): ViewContext {
     updateRepository: vi.fn(() => Promise.resolve({ ok: true as const, message: "saved" })),
     addRepository: vi.fn(() => Promise.resolve({ ok: true as const, message: "saved" })),
     loadRegistryOptions: vi.fn(() => Promise.resolve({ hosts: [], projects: [] })),
+    runAction: vi.fn(),
+    pickRepositoryFolder: vi.fn(),
+    probeRepository: vi.fn(),
+    resolveRepositoryProject: vi.fn(),
     ...overrides,
   };
 }

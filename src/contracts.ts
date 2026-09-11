@@ -1310,3 +1310,95 @@ export const registryOptionsProjectionSchema = z
   })
   .strict();
 export type RegistryOptionsProjection = z.infer<typeof registryOptionsProjectionSchema>;
+
+/**
+ * Add-repository quickstart reads. The wizard never asks for environment,
+ * host, or project ids: the folder picker runs on a resolved host, the probe
+ * derives every registration field, and project resolution matches a source
+ * or creates the project server-side.
+ */
+export const pickFolderInputSchema = z
+  .object({
+    /** Host that shows the picker; absent means the sole connected host. */
+    hostId: nonEmptyString.optional(),
+  })
+  .strict();
+export type PickFolderInput = z.infer<typeof pickFolderInputSchema>;
+
+export const pickFolderResultSchema = z
+  .object({
+    /** The host the picker ran on after resolution. */
+    hostId: nonEmptyString,
+    /** The picked folder; null when the user canceled. */
+    path: absolutePath.nullable(),
+  })
+  .strict();
+export type PickFolderResult = z.infer<typeof pickFolderResultSchema>;
+
+export const probeRepositoryInputSchema = z
+  .object({
+    hostId: nonEmptyString,
+    path: absolutePath,
+  })
+  .strict();
+export type ProbeRepositoryInput = z.infer<typeof probeRepositoryInputSchema>;
+
+export const projectSourceMatchSchema = z
+  .object({
+    projectId: nonEmptyString,
+    label: nonEmptyString.nullable(),
+  })
+  .strict();
+export type ProjectSourceMatch = z.infer<typeof projectSourceMatchSchema>;
+
+/** Where the factory branch is checked out, from `git worktree list`. */
+export const factoryBranchStateSchema = z
+  .object({
+    exists: z.boolean(),
+    checkedOutPath: absolutePath.nullable(),
+  })
+  .strict();
+export type FactoryBranchState = z.infer<typeof factoryBranchStateSchema>;
+
+export const repositoryProbeSchema = z
+  .object({
+    hostId: nonEmptyString,
+    path: absolutePath,
+    isGitRepo: z.boolean(),
+    /** True when plans/factory/foreman.md already exists inside the path. */
+    hasProtocol: z.boolean(),
+    /** The branch the picked checkout is on; null when unreadable or detached. */
+    currentBranch: nonEmptyString.nullable(),
+    suggestedKey: repositoryKeySchema,
+    mainRef: nonEmptyString,
+    /** The dedicated worktree target: `<path>-factory`. */
+    checkoutSuggestion: absolutePath,
+    projectMatch: projectSourceMatchSchema.nullable(),
+    factoryBranchState: factoryBranchStateSchema,
+  })
+  .strict();
+export type RepositoryProbe = z.infer<typeof repositoryProbeSchema>;
+
+/**
+ * Resolves the BB project for a picked folder: a source local_path match wins,
+ * otherwise the handler creates the project (name + local_path source). This
+ * is the only wizard call that mutates BB state, so it sits on the action
+ * router rather than the read-only route set.
+ */
+export const resolveProjectInputSchema = z
+  .object({
+    hostId: nonEmptyString,
+    path: absolutePath,
+    name: nonEmptyString,
+  })
+  .strict();
+export type ResolveProjectInput = z.infer<typeof resolveProjectInputSchema>;
+
+export const resolveProjectResultSchema = z
+  .object({
+    projectId: nonEmptyString,
+    label: nonEmptyString.nullable(),
+    created: z.boolean(),
+  })
+  .strict();
+export type ResolveProjectResult = z.infer<typeof resolveProjectResultSchema>;

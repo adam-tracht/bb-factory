@@ -152,6 +152,10 @@ function makeCtx(overrides: Partial<ViewContext> = {}): ViewContext {
     updateRepository: vi.fn(async () => ({ ok: true as const, message: "saved" })),
     addRepository: vi.fn(async () => ({ ok: true as const, message: "saved" })),
     loadRegistryOptions: vi.fn(async () => ({ hosts: [], projects: [] })),
+    runAction: vi.fn(),
+    pickRepositoryFolder: vi.fn(),
+    probeRepository: vi.fn(),
+    resolveRepositoryProject: vi.fn(),
     ...overrides,
   };
 }

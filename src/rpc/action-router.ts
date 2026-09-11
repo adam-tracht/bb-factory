@@ -13,6 +13,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { actionError } from "../actions/results.js";
 import { errorMessage } from "../errors.js";
 import type { FactoryComposition } from "../services/action-composition.js";
+import { resolveRepositoryProject } from "../services/repository-quickstart.js";
 import { createSettingsMutationHandlers } from "../services/settings-mutations.js";
 import type { FactoryReadRpcHandlers } from "./read-router.js";
 import { createFactoryReadRpcHandlers } from "./read-router.js";
@@ -60,6 +61,10 @@ export function createFactoryRpcHandlers(
     },
     async factory_registry_options() {
       return getComposition().listRegistryOptions();
+    },
+    async factory_resolve_project(input) {
+      // projects.create can run here, so this wizard call is not a read route.
+      return resolveRepositoryProject(getComposition().sdk, input);
     },
     async factory_action(input) {
       const composition = getComposition();

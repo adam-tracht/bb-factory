@@ -9,6 +9,7 @@ import {
 import { errorMessage } from "../errors.js";
 import { factoryRpcContract, type FactoryRpcContract } from "../rpc.js";
 import type { ReadComposition } from "../services/read-composition.js";
+import { pickRepositoryFolder, probeRepository } from "../services/repository-quickstart.js";
 
 export type FactoryReadRpcHandlers = PluginRpcHandlers<FactoryRpcContract>;
 export type FactoryReadOnlyRpcHandlers = Pick<
@@ -21,6 +22,8 @@ export type FactoryReadOnlyRpcHandlers = Pick<
   | "factory_interactions"
   | "factory_runs"
   | "factory_run_detail"
+  | "factory_pick_folder"
+  | "factory_probe_repository"
 >;
 
 function missingRepository(repositoryKey: RepositoryKey): Error {
@@ -135,6 +138,15 @@ export function createFactoryReadRpcHandlers(
       const composition = getComposition();
       requireEntry(composition, input.repositoryKey);
       return composition.operationalState.getRun(input);
+    },
+
+    // Add-wizard probes create no durable state, so they live with the reads.
+    async factory_pick_folder(input) {
+      return pickRepositoryFolder(getComposition().sdk, input.hostId);
+    },
+
+    async factory_probe_repository(input) {
+      return probeRepository(getComposition().sdk, input);
     },
   };
 }

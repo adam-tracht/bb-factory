@@ -73,7 +73,7 @@ validate:
 - pnpm typecheck
 
 ## BBF-0004 Quickstart add-repository flow
-status: ready
+status: done (orchestrated session 2026-09-11)
 priority: 2
 depends_on: BBF-0001, BBF-0003
 risk: medium

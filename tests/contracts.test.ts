@@ -17,7 +17,13 @@ import {
   operationalRunListProjectionSchema,
   pendingInteractionsProjectionSchema,
   pendingInteractionMetadataSchema,
+  pickFolderInputSchema,
+  pickFolderResultSchema,
+  probeRepositoryInputSchema,
   questionSchema,
+  repositoryProbeSchema,
+  resolveProjectInputSchema,
+  resolveProjectResultSchema,
   queueStatusSchema,
   repositorySelectionInputSchema,
   repositorySelectionProjectionSchema,
@@ -723,5 +729,73 @@ describe("Phase 0 wire contracts", () => {
     expect(() => bbInteractionResolutionSchema.parse({ kind: "approval", decision: "allow" })).toThrow();
     expect(() => bbInteractionResolutionSchema.parse({ kind: "approval", decision: "deny", grantedPermissions: null })).toThrow();
     expect(() => bbInteractionResolutionSchema.parse({ kind: "request_answer", value: { arbitrary: true } })).toThrow();
+  });
+});
+
+describe("repository quickstart contracts", () => {
+  it("accepts pick folder input with an optional host and returns a nullable path", () => {
+    expect(pickFolderInputSchema.parse({})).toEqual({});
+    expect(pickFolderInputSchema.parse({ hostId: "host-1" })).toEqual({ hostId: "host-1" });
+    expect(() => pickFolderInputSchema.parse({ hostId: 42 })).toThrow();
+    expect(pickFolderResultSchema.parse({ hostId: "host-1", path: "/work/repo" }))
+      .toEqual({ hostId: "host-1", path: "/work/repo" });
+    expect(pickFolderResultSchema.parse({ hostId: "host-1", path: null }))
+      .toEqual({ hostId: "host-1", path: null });
+    expect(() => pickFolderResultSchema.parse({ hostId: "host-1" })).toThrow();
+  });
+
+  it("accepts probe input and the full probe result shape", () => {
+    expect(() => probeRepositoryInputSchema.parse({ hostId: "host-1" })).toThrow();
+    expect(probeRepositoryInputSchema.parse({ hostId: "host-1", path: "/work/repo" }))
+      .toEqual({ hostId: "host-1", path: "/work/repo" });
+    const probe = repositoryProbeSchema.parse({
+      hostId: "host-1",
+      path: "/work/repo",
+      isGitRepo: true,
+      hasProtocol: true,
+      currentBranch: "main",
+      suggestedKey: "repo",
+      mainRef: "origin/main",
+      checkoutSuggestion: "/work/repo-factory",
+      projectMatch: { projectId: "proj-1", label: "Core" },
+      factoryBranchState: { exists: true, checkedOutPath: "/work/repo-factory" },
+    });
+    expect(probe.projectMatch).toEqual({ projectId: "proj-1", label: "Core" });
+    // Nulls and absent matches are part of the contract.
+    expect(repositoryProbeSchema.parse({
+      hostId: "host-1",
+      path: "/work/repo",
+      isGitRepo: false,
+      hasProtocol: false,
+      currentBranch: null,
+      suggestedKey: "repo",
+      mainRef: "origin/main",
+      checkoutSuggestion: "/work/repo-factory",
+      projectMatch: null,
+      factoryBranchState: { exists: false, checkedOutPath: null },
+    }).factoryBranchState.exists).toBe(false);
+    expect(() => repositoryProbeSchema.parse({
+      hostId: "host-1",
+      path: "/work/repo",
+      isGitRepo: true,
+      hasProtocol: false,
+      currentBranch: null,
+      suggestedKey: "Repo!",
+      mainRef: "origin/main",
+      checkoutSuggestion: "/work/repo-factory",
+      projectMatch: null,
+      factoryBranchState: { exists: false, checkedOutPath: null },
+    })).toThrow();
+  });
+
+  it("accepts resolve-project input and both result shapes", () => {
+    expect(() => resolveProjectInputSchema.parse({ hostId: "host-1", path: "/work/repo" })).toThrow();
+    expect(resolveProjectInputSchema.parse({ hostId: "host-1", path: "/work/repo", name: "repo" }))
+      .toEqual({ hostId: "host-1", path: "/work/repo", name: "repo" });
+    expect(resolveProjectResultSchema.parse({ projectId: "proj-1", label: "Core", created: false }))
+      .toEqual({ projectId: "proj-1", label: "Core", created: false });
+    expect(resolveProjectResultSchema.parse({ projectId: "proj-1", label: null, created: true }))
+      .toEqual({ projectId: "proj-1", label: null, created: true });
+    expect(() => resolveProjectResultSchema.parse({ projectId: "proj-1", created: true })).toThrow();
   });
 });
