@@ -137,3 +137,49 @@ acceptance:
 validate:
 - marketplace repo CI validation
 notes: Publishing, tagging, and opening the marketplace PR are protected and need an `approved:` line before a run may do them.
+
+## BBF-0009 Question deep links 404 on encoded hash
+status: draft
+priority: 2
+depends_on: none
+risk: low
+plan: src/ui/routes.ts, src/ui/FactoryView.ts, src/ui/views/work.ts
+approved: none
+acceptance:
+- Clicking a gating-question chip or "Answer Qn" on a Work row opens the Questions tab focused on that question card.
+- No `onOpenSection(..., anchor)` caller can produce "No factory view matched": anchors survive navigate.toPluginPanel without the `#` being percent-encoded into the section segment.
+- Round-trip coverage for the anchor encoding plus a UI test that exercises a question-chip click.
+validate:
+- pnpm test
+- pnpm typecheck
+notes: Root cause: `sectionPath` builds `questions#question-Q3`, but `toPluginPanel` percent-encodes the subPath, so the plugin receives `questions%23question-Q3` and `parseFactoryRoute` (which only splits a literal `#`) matches no section. Reported live on diggs-data-platform DATA-0008.03's Q3 chip. Every anchor caller is affected: work.ts question chips and Answer CTAs, questions.ts gated-item links, runs.ts work links.
+
+## BBF-0010 Refresh glyph renders rotated
+status: draft
+priority: 4
+depends_on: none
+risk: low
+plan: src/ui/shell.ts
+approved: none
+acceptance:
+- The "refreshed Nm ago" indicator shows a correctly oriented refresh icon instead of the raw U+21BB text glyph.
+validate:
+- pnpm typecheck
+- pnpm lint
+notes: src/ui/shell.ts appends the literal character `↻`, which renders misrotated in the app font (user screenshot). Replace with a real icon (the shell's existing icon set or an inline SVG) at the correct orientation.
+
+## BBF-0011 Question-gated ready entries show "Ready" and Approve
+status: draft
+priority: 1
+depends_on: none
+risk: low
+plan: src/ui/views/work.ts, src/protocol/reader.ts
+approved: none
+acceptance:
+- A `status: ready` entry with unresolved `blocked-by:` questions no longer displays "Ready" as its state and no longer offers an enabled Approve CTA that the action layer will reject; the row surfaces the question gating and the CTA answers the question.
+- Entries whose blocked-by questions are all answered keep Ready/Approve behavior.
+- Regression coverage for `status: ready` combined with `blocked-by` fields.
+validate:
+- pnpm test
+- pnpm typecheck
+notes: Reported live: DATA-0009.01 on diggs-data-platform shows "Ready" plus Approve while its expanded detail lists "Blocked by: Q13 and Q17"; approval is then rejected by the blocked-by-question guard (src/actions/repository.ts). The WorkRow CTA prefers Approve over Answer whenever approval is missing, and the status badge renders the raw parsed status instead of the question-gated state.
