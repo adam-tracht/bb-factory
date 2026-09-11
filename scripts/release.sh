@@ -53,5 +53,5 @@ Gate passed and dist/ is staged. Finish the release by hand:
 
 Installable afterwards with:
 
-  bb plugin install git:github.com/adamdiggs/bb-factory@${TAG}
+  bb plugin install git:github.com/adam-tracht/bb-factory@${TAG}
 EOF

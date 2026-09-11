@@ -25,7 +25,7 @@ force-adds it.
    `git push` commands. Run them yourself; nothing is committed, tagged,
    or pushed for you.
 4. Users install or pin the release with
-   `bb plugin install git:github.com/adamdiggs/bb-factory@vX.Y.Z`;
+   `bb plugin install git:github.com/adam-tracht/bb-factory@vX.Y.Z`;
    tracking installs pick it up via `bb plugin update bb-factory`.
 
 CI (`.github/workflows/ci.yml`) runs the same gate on pushes and pull
