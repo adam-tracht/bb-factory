@@ -1,11 +1,12 @@
-import { Markdown } from "@get-bb/plugin-sdk/app";
-import { createElement, useEffect, useMemo, useState, type ReactNode } from "react";
+import { Markdown, experimental_ProviderModelPicker } from "@get-bb/plugin-sdk/app";
+import { createElement, useEffect, useMemo, useState, type ComponentProps, type ComponentType, type ReactNode } from "react";
 import type {
   ApprovalDecision,
   BbInteractionResolution,
   PendingInteraction,
   PendingInteractionsProjection,
   ProtocolSnapshot,
+  ProviderStatus,
   Question,
 } from "../../contracts.js";
 import type { ViewContext } from "../context.js";
@@ -26,6 +27,34 @@ const h = createElement;
 const inputClass =
   "rounded-md border border-border bg-background px-2 py-1 text-sm text-foreground placeholder:text-muted-foreground";
 const labelClass = "text-xs font-medium uppercase tracking-wide text-muted-foreground";
+
+type PickerValue = ComponentProps<NonNullable<typeof experimental_ProviderModelPicker>>["value"];
+type PickerRouting = ComponentProps<NonNullable<typeof experimental_ProviderModelPicker>>["routing"];
+
+// The host only binds the picker on runtimes new enough to ship it.
+const ProviderModelPicker = experimental_ProviderModelPicker as ComponentType<{
+  value: PickerValue;
+  onChange(value: PickerValue): void;
+  routing?: PickerRouting;
+  disabled?: boolean;
+}> | undefined;
+
+/** Seed the picker from live health: the configured preference, then the first available provider. */
+function seedPickerValue(
+  providers: readonly ProviderStatus[],
+  preferredProviderId: string | null,
+): PickerValue | null {
+  const usable = providers.filter(
+    (provider) => provider.model !== "unavailable" && provider.availability !== "unavailable",
+  );
+  const pick = (preferredProviderId === null ? undefined : usable.find((provider) => provider.providerId === preferredProviderId))
+    ?? usable.find((provider) => provider.availability === "available")
+    ?? usable[0]
+    ?? null;
+  return pick === null
+    ? null
+    : { providerId: pick.providerId, model: pick.model, reasoningLevel: pick.reasoningLevel };
+}
 
 type KindFilter = "all" | "blocking" | "assumption";
 type StateFilter = "all" | "open" | "answered";
@@ -83,14 +112,22 @@ function RepositoryQuestionCard(props: {
   question: Question;
   gates: string[];
   pending: boolean;
+  providers: readonly ProviderStatus[];
+  preferredProviderId: string | null;
+  pickerRouting: PickerRouting;
   onRecord: (questionId: string, answer: string) => void;
+  onRecommend: (questionId: string, selection: PickerValue) => void;
   onOpenGated: (queueItemId: string) => void;
 }) {
   const { question, gates, pending } = props;
   const assumed = question.assumed;
   const [draft, setDraft] = useState("");
   const [confirmAnswer, setConfirmAnswer] = useState<string | null>(null);
+  const [askOpen, setAskOpen] = useState(false);
+  const [selection, setSelection] = useState<PickerValue | null>(null);
   const trimmed = draft.trim();
+  const askSeed = seedPickerValue(props.providers, props.preferredProviderId);
+  const canAsk = ProviderModelPicker !== undefined && askSeed !== null;
 
   return h(
     "section",
@@ -148,24 +185,69 @@ function RepositoryQuestionCard(props: {
       }),
       h(
         "div",
-        { className: "mt-2 flex flex-wrap justify-end gap-2" },
-        question.classification === "assumption" && assumed
-          ? h(ActionButton, {
-              label: "Accept assumption",
-              variant: "secondary",
-              disabled: pending,
-              onClick: () => setConfirmAnswer(assumed),
-            })
-          : null,
+        { className: "mt-2 flex flex-wrap items-center gap-2" },
         h(ActionButton, {
-          label: "Record answer",
-          variant: "primary",
-          disabled: pending || !trimmed,
-          busy: pending,
-          onClick: () => setConfirmAnswer(trimmed),
+          label: "Ask an agent",
+          variant: "ghost",
+          disabled: pending || !canAsk,
+          title: canAsk
+            ? "Start a chat that recommends an answer"
+            : "The provider catalog is unavailable, so no agent can be picked.",
+          onClick: () => {
+            setSelection(askSeed);
+            setAskOpen(true);
+          },
         }),
+        h(
+          "div",
+          { className: "ml-auto flex flex-wrap gap-2" },
+          question.classification === "assumption" && assumed
+            ? h(ActionButton, {
+                label: "Accept assumption",
+                variant: "secondary",
+                disabled: pending,
+                onClick: () => setConfirmAnswer(assumed),
+              })
+            : null,
+          h(ActionButton, {
+            label: "Record answer",
+            variant: "primary",
+            disabled: pending || !trimmed,
+            busy: pending,
+            onClick: () => setConfirmAnswer(trimmed),
+          }),
+        ),
       ),
     ),
+    h(ConfirmDialog, {
+      open: askOpen,
+      title: `Ask an agent about ${question.id}`,
+      body: h(
+        "div",
+        { className: "space-y-3" },
+        h(
+          "p",
+          null,
+          "Starts a chat in this repository's environment that recommends an answer. Advisory only: it cannot edit the repository.",
+        ),
+        ProviderModelPicker !== undefined && selection !== null
+          ? h(ProviderModelPicker, {
+              value: selection,
+              onChange: (next: PickerValue) => setSelection(next),
+              routing: props.pickerRouting,
+              disabled: pending,
+            })
+          : null,
+      ),
+      confirmLabel: "Start chat",
+      busy: pending,
+      onConfirm: () => {
+        const picked = selection;
+        setAskOpen(false);
+        if (picked) props.onRecommend(question.id, picked);
+      },
+      onCancel: () => setAskOpen(false),
+    }),
     h(ConfirmDialog, {
       open: confirmAnswer !== null,
       title: `Record ${question.id} answer`,
@@ -464,6 +546,8 @@ export function QuestionsView(props: {
   interactions: PendingInteractionsProjection | null;
   ctx: ViewContext;
   focusQuestionId?: string | null;
+  providers?: readonly ProviderStatus[];
+  preferredProviderId?: string | null;
 }): ReactNode {
   const { snapshot, interactions, ctx } = props;
   const focusQuestionId = props.focusQuestionId ?? null;
@@ -516,6 +600,21 @@ export function QuestionsView(props: {
       return next;
     });
   };
+
+  const recommend = (questionId: string, selection: PickerValue) => {
+    ctx.onAction({
+      kind: "recommend-question",
+      questionId,
+      providerId: selection.providerId,
+      model: selection.model,
+      reasoningLevel: selection.reasoningLevel,
+      ...(selection.serviceTier === undefined ? {} : { serviceTier: selection.serviceTier }),
+    });
+  };
+
+  const pickerRouting: PickerRouting = ctx.environmentId
+    ? { kind: "environment", environmentId: ctx.environmentId }
+    : { kind: "host", hostId: ctx.repository.connectedHostId };
 
   const pendingInteractions = interactions?.interactions ?? [];
   const filtersActive = query.trim() !== "" || kindFilter !== "all" || stateFilter !== "all";
@@ -588,7 +687,11 @@ export function QuestionsView(props: {
               question,
               gates: questionGates(snapshot, question.id),
               pending: ctx.pendingTarget === `question:${question.id}`,
+              providers: props.providers ?? [],
+              preferredProviderId: props.preferredProviderId ?? null,
+              pickerRouting,
               onRecord: recordAnswer,
+              onRecommend: recommend,
               onOpenGated: (queueItemId) => ctx.onOpenSection("work", `work-${queueItemId}`),
             }),
           ),

@@ -224,6 +224,33 @@ export const OPERATIONAL_STORAGE_MIGRATIONS = [
     last_start_provider TEXT NOT NULL,
     limits_json TEXT NOT NULL
   )`,
+  // SQLite cannot alter a CHECK constraint, so widening action_kind for
+  // recommend-question rebuilds the table. The unapplied tail runs in one
+  // migration transaction.
+  `CREATE TABLE pending_action_intents_v2 (
+    idempotency_key TEXT PRIMARY KEY,
+    repository_key TEXT NOT NULL,
+    action_kind TEXT NOT NULL CHECK (action_kind IN ('run-now', 'pause', 'resume', 'answer-question', 'approve-queue', 'recommend-question', 'retry', 'stop')),
+    request_fingerprint TEXT NOT NULL,
+    request_json TEXT NOT NULL,
+    expected_revision_json TEXT NOT NULL,
+    target_json TEXT NOT NULL,
+    file_change_json TEXT,
+    entry_point TEXT NOT NULL CHECK (entry_point IN ('action-executor', 'native-ui-initial-ready')),
+    one_shot INTEGER NOT NULL CHECK (one_shot IN (0, 1)),
+    status TEXT NOT NULL CHECK (status IN ('pending', 'resolving', 'completed', 'reconciliation-required')),
+    submitted_at TEXT NOT NULL,
+    expires_at TEXT,
+    last_attempt_at TEXT,
+    completed_at TEXT,
+    result_json TEXT,
+    observed_status TEXT CHECK (observed_status IS NULL OR observed_status IN ('pending', 'resolving', 'resolved', 'interrupted', 'written', 'conflict', 'verified')),
+    observed_resolution_json TEXT,
+    last_error TEXT
+  )`,
+  `INSERT INTO pending_action_intents_v2 SELECT * FROM pending_action_intents`,
+  `DROP TABLE pending_action_intents`,
+  `ALTER TABLE pending_action_intents_v2 RENAME TO pending_action_intents`,
 ] as const;
 
 export interface CreateRunIntentInput {
@@ -954,6 +981,12 @@ function assertPendingActionTarget(
   if (action.kind === "answer-question") {
     if (target.kind !== "bb-interaction" || target.interactionId !== action.interactionId) {
       throw new Error("BB interaction target does not match the action request");
+    }
+    return;
+  }
+  if (action.kind === "recommend-question") {
+    if (target.kind !== "repository-question" || target.questionId !== action.questionId) {
+      throw new Error("repository-question target does not match the action request");
     }
     return;
   }

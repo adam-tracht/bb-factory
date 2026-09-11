@@ -555,6 +555,7 @@ export const actionKindSchema = z.enum([
   "resume",
   "answer-question",
   "approve-queue",
+  "recommend-question",
   "retry",
   "stop",
   "integration-report",
@@ -669,11 +670,28 @@ export const repositoryActionSchema = z.union([
 ]);
 export type RepositoryAction = z.infer<typeof repositoryActionSchema>;
 
+/**
+ * Advisory only: spawns a BB thread that recommends an answer for a repository
+ * question. Writes nothing to the repository; the operator still records the
+ * answer through answer-question.
+ */
+const recommendQuestionActionSchema = z
+  .object({
+    kind: z.literal("recommend-question"),
+    questionId: nonEmptyString,
+    providerId: providerIdSchema,
+    model: nonEmptyString,
+    reasoningLevel: reasoningLevelSchema,
+    serviceTier: z.enum(["default", "fast"]).optional(),
+  })
+  .strict();
+
 export const bbInteractionActionSchema = z.union([
   z.object({ kind: z.literal("run-now") }).strict(),
   z.object({ kind: z.literal("pause") }).strict(),
   z.object({ kind: z.literal("resume") }).strict(),
   bbInteractionAnswerActionSchema,
+  recommendQuestionActionSchema,
   z.object({ kind: z.literal("retry"), attemptId: nonEmptyString }).strict(),
   z.object({ kind: z.literal("stop") }).strict(),
 ]);
@@ -803,8 +821,21 @@ export const nonAnswerActionOutcomeSchema = z
   .strict();
 export type NonAnswerActionOutcome = z.infer<typeof nonAnswerActionOutcomeSchema>;
 
+/** Accepted recommendation spawns carry the thread the UI should open. */
+export const recommendQuestionOutcomeSchema = z
+  .object({
+    ...actionOutcomeFields,
+    action: z.literal("recommend-question"),
+    questionId: nonEmptyString,
+    interactionId: z.null().optional(),
+    threadId: nonEmptyString,
+  })
+  .strict();
+export type RecommendQuestionOutcome = z.infer<typeof recommendQuestionOutcomeSchema>;
+
 export const actionOutcomeSchema = z.union([
   answerQuestionOutcomeSchema,
+  recommendQuestionOutcomeSchema,
   nonAnswerActionOutcomeSchema,
 ]);
 export type ActionOutcome = z.infer<typeof actionOutcomeSchema>;

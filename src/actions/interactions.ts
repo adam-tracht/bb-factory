@@ -5,9 +5,13 @@ import {
   type BbInteractionResolution,
   type FactoryActionResult,
   type PendingInteraction,
+  type ProtocolSnapshot,
+  type Question,
+  type RepositoryConfiguration,
   type RepositoryKey,
+  type RepositoryRegistryEntry,
 } from "../contracts.js";
-import type { BbInteractionActionExecutor, PendingInteractionReader } from "../ports.js";
+import type { BbInteractionActionExecutor, PendingInteractionReader, ProtocolReader } from "../ports.js";
 import type { DispatchEngine } from "../dispatch/index.js";
 import {
   type OperationalStateStore,
@@ -30,7 +34,8 @@ export interface BbInteractionActionExecutorOptions {
   readonly threads: ThreadsApi;
   readonly store: OperationalStateStore;
   readonly interactionReader: PendingInteractionReader;
-  readonly scopeLookup: (repositoryKey: RepositoryKey) => InteractionScope | null;
+  readonly protocolReader: ProtocolReader;
+  readonly repositoryLookup: (repositoryKey: RepositoryKey) => RepositoryRegistryEntry | null;
   readonly dispatch: DispatchEngine;
   readonly setDispatchMode: (mode: "enabled" | "paused") => Promise<void>;
 }
@@ -120,8 +125,43 @@ function validateResolution(interaction: PendingInteraction, resolution: BbInter
   return actionError("unsupported", `Interaction kind '${interaction.kind}' cannot be resolved through the factory contract.`);
 }
 
+/** Queue items a question gates, resolved via blockedBy and blocked-by status. */
+function questionGates(snapshot: ProtocolSnapshot, questionId: string): string[] {
+  return snapshot.queue
+    .filter(
+      (entry) =>
+        entry.blockedBy.includes(questionId) ||
+        (entry.status.kind === "blocked-by" && entry.status.questionId === questionId),
+    )
+    .map((entry) => entry.id);
+}
+
+function recommendationPrompt(
+  configuration: RepositoryConfiguration,
+  question: Question,
+  gates: readonly string[],
+): string {
+  const lines = [
+    `The factory operator asked for a recommendation on question ${question.id} in repository "${configuration.repositoryKey}".`,
+    "",
+    `Question (${question.date}, ${question.classification}): ${question.question}`,
+    "",
+    "Context:",
+    question.context,
+  ];
+  if (question.assumed) lines.push("", `Working assumption: ${question.assumed}`);
+  if (gates.length > 0) lines.push("", `Answering this unblocks queue items: ${gates.join(", ")}.`);
+  lines.push(
+    "",
+    `The repository checkout is at ${configuration.checkoutPath} on the "factory" branch. Read plans/factory/questions.md for the full question record and plans/factory/repo.md for repository protocol rules before answering.`,
+    "",
+    "Reply with (1) the recommended answer, (2) the reasoning, and (3) the main risk or tradeoff. Advisory only: do not edit files and do not record the answer in questions.md; the operator records it.",
+  );
+  return lines.join("\n");
+}
+
 export function createBbInteractionActionExecutor(options: BbInteractionActionExecutorOptions): BbInteractionActionExecutor {
-  const { threads, store, interactionReader, scopeLookup, dispatch, setDispatchMode } = options;
+  const { threads, store, interactionReader, protocolReader, repositoryLookup, dispatch, setDispatchMode } = options;
 
   /**
    * Reads the local pending-interaction projection. A read failure is kept as
@@ -184,10 +224,11 @@ export function createBbInteractionActionExecutor(options: BbInteractionActionEx
     request: BbInteractionActionRequest,
   ): Promise<FactoryActionResult> {
     const action = request.action as Extract<BbInteractionActionRequest["action"], { kind: "answer-question" }>;
-    const scope = scopeLookup(request.repositoryKey);
-    if (!scope) {
+    const entry = repositoryLookup(request.repositoryKey);
+    if (!entry) {
       return actionError("not-found", `Repository '${request.repositoryKey}' is not configured.`, request.idempotencyKey);
     }
+    const scope: InteractionScope = { projectId: entry.projectId, environmentId: entry.environmentId };
     const { interaction: pending, readError: pendingReadError } = await findPending(request.repositoryKey, action.interactionId);
     if (pending) {
       const invalid = validateResolution(pending, action.resolution);
@@ -316,6 +357,79 @@ export function createBbInteractionActionExecutor(options: BbInteractionActionEx
     });
   }
 
+  /**
+   * Spawns an advisory thread for a repository question. The question text is
+   * re-read from the canonical protocol snapshot at execution time; a spawn
+   * that fails ambiguously goes to reconciliation rather than a blind retry,
+   * which could orphan a second thread.
+   */
+  async function recommendQuestion(request: BbInteractionActionRequest): Promise<FactoryActionResult> {
+    const action = request.action as Extract<BbInteractionActionRequest["action"], { kind: "recommend-question" }>;
+    const entry = repositoryLookup(request.repositoryKey);
+    if (!entry) {
+      return actionError("not-found", `Repository '${request.repositoryKey}' is not configured.`, request.idempotencyKey);
+    }
+    const target: PendingActionIntentTarget = { kind: "repository-question", questionId: action.questionId };
+    return guarded(request, target, async (record) => {
+      let snapshot: ProtocolSnapshot;
+      try {
+        snapshot = await protocolReader.loadSnapshot(entry.configuration);
+      } catch (error) {
+        return completeIntent(store, record, actionError(
+          "internal",
+          `Could not read the repository protocol: ${errorMessage(error)}`,
+          request.idempotencyKey,
+        ));
+      }
+      const question = snapshot.questions.find((candidate) => candidate.id === action.questionId);
+      if (!question) {
+        return completeIntent(store, record, actionError(
+          "not-found",
+          `Question '${action.questionId}' is not in plans/factory/questions.md.`,
+          request.idempotencyKey,
+        ));
+      }
+
+      let spawned: { id: string };
+      try {
+        spawned = await threads.spawn({
+          projectId: entry.projectId,
+          environment: { type: "reuse", environmentId: entry.environmentId },
+          prompt: recommendationPrompt(entry.configuration, question, questionGates(snapshot, question.id)),
+          providerId: action.providerId,
+          model: action.model,
+          reasoningLevel: action.reasoningLevel,
+          ...(action.serviceTier === undefined ? {} : { serviceTier: action.serviceTier }),
+          permissionMode: "auto",
+          title: `factory recommend: ${entry.configuration.repositoryKey} ${question.id}`,
+          // Marks the picked values caller-explicit so the server does not
+          // re-derive the project's stored execution defaults over them.
+          executionInputSources: {
+            providerId: "explicit",
+            model: "explicit",
+            reasoningLevel: "explicit",
+            ...(action.serviceTier === undefined ? {} : { serviceTier: "explicit" as const }),
+          },
+        });
+      } catch (error) {
+        return reconcileIntent(store, record, `Recommendation thread spawn for ${question.id} failed ambiguously: ${errorMessage(error)}. The thread may exist.`);
+      }
+
+      return completeIntent(store, record, actionSuccess({
+        status: "accepted",
+        message: `Started a recommendation chat for ${question.id} on ${action.providerId} (${action.model}).`,
+        revision: request.expectedRevision ?? null,
+        runId: null,
+        leaseId: null,
+        queueItemId: null,
+        action: "recommend-question",
+        questionId: question.id,
+        interactionId: null,
+        threadId: spawned.id,
+      }, request.expectedRevision ?? null));
+    });
+  }
+
   async function execute(request: BbInteractionActionRequest): Promise<FactoryActionResult> {
     const parsed = bbInteractionActionRequestSchema.safeParse(request);
     if (!parsed.success) {
@@ -332,6 +446,14 @@ export function createBbInteractionActionExecutor(options: BbInteractionActionEx
         return await answerInteraction(valid);
       } catch (error) {
         return actionError("internal", `Could not answer the BB interaction: ${errorMessage(error)}`, valid.idempotencyKey);
+      }
+    }
+
+    if (action.kind === "recommend-question") {
+      try {
+        return await recommendQuestion(valid);
+      } catch (error) {
+        return actionError("internal", `Could not spawn the recommendation thread: ${errorMessage(error)}`, valid.idempotencyKey);
       }
     }
 

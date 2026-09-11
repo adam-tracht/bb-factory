@@ -72,10 +72,8 @@ export function createActionComposition(options: ActionCompositionOptions): Acti
     threads: sdk.threads,
     store,
     interactionReader: composition.interactionReader,
-    scopeLookup: (repositoryKey) => {
-      const entry = composition.getRepositoryEntry(repositoryKey);
-      return entry ? { projectId: entry.projectId, environmentId: entry.environmentId } : null;
-    },
+    protocolReader: composition.protocolReader,
+    repositoryLookup: (repositoryKey) => composition.getRepositoryEntry(repositoryKey),
     dispatch: dispatchEngine,
     setDispatchMode,
   });

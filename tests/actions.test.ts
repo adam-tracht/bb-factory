@@ -347,6 +347,8 @@ function pendingContract(interaction: FakePendingInteraction): PendingInteractio
 
 function makeInteractionHarness(interactions: FakePendingInteraction[] = []) {
   const store = makeStore();
+  const files = new FakeFileSystem();
+  files.seedProtocol();
   const resolve = vi.fn(async ({ interactionId, resolution }: { threadId: string; interactionId: string; resolution: unknown }) => {
     const target = interactions.find((item) => item.id === interactionId);
     if (!target) throw new Error("not found");
@@ -354,8 +356,10 @@ function makeInteractionHarness(interactions: FakePendingInteraction[] = []) {
     target.resolution = resolution;
     return target;
   });
+  const spawn = vi.fn<(args: Record<string, unknown>) => Promise<{ id: string }>>(async () => ({ id: "thr_recommend" }));
   const threads = {
     list: vi.fn(async () => [{ id: "thread-1", environmentId: "environment-1" }]),
+    spawn,
     interactions: {
       list: vi.fn(async () => interactions),
       get: vi.fn(async ({ interactionId }: { threadId: string; interactionId: string }) => {
@@ -388,16 +392,17 @@ function makeInteractionHarness(interactions: FakePendingInteraction[] = []) {
     reconcile: vi.fn(async () => undefined),
   };
   const setDispatchMode = vi.fn(async () => undefined);
+  const entry = makeRegistryEntry();
   const executor = createBbInteractionActionExecutor({
     threads: threads as never,
     store,
     interactionReader,
-    scopeLookup: (key) => key === "monorepo" ? { projectId: "project-1", environmentId: "environment-1" } : null,
+    protocolReader: makeProtocolReader(files),
+    repositoryLookup: (key) => (key === "monorepo" ? entry : null),
     dispatch,
     setDispatchMode,
   });
-  const entry = makeRegistryEntry();
-  return { store, threads, resolve, dispatch, setDispatchMode, executor, entry };
+  return { store, files, spawn, threads, resolve, dispatch, setDispatchMode, executor, entry };
 }
 
 let interactionUuid = 0;
@@ -435,7 +440,8 @@ describe("BB interaction action executor", () => {
       threads: harness.threads as never,
       store: harness.store,
       interactionReader: failingReader,
-      scopeLookup: (key) => key === "monorepo" ? { projectId: "project-1", environmentId: "environment-1" } : null,
+      protocolReader: makeProtocolReader(harness.files),
+      repositoryLookup: (key) => (key === "monorepo" ? harness.entry : null),
       dispatch: harness.dispatch,
       setDispatchMode: harness.setDispatchMode,
     });
@@ -569,5 +575,74 @@ describe("BB interaction action executor", () => {
     const second = await harness.executor.execute(request);
     expect(second).toEqual(first);
     expect(harness.dispatch.requestRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("spawns an advisory recommendation thread scoped to the repository", async () => {
+    const harness = makeInteractionHarness([]);
+    const request = bbRequest({
+      kind: "recommend-question",
+      questionId: "Q6",
+      providerId: "claude-code",
+      model: "claude-sonnet-4",
+      reasoningLevel: "high",
+      serviceTier: "fast",
+    });
+    const result = await harness.executor.execute(request);
+    expect(result).toMatchObject({
+      ok: true,
+      result: { status: "accepted", action: "recommend-question", questionId: "Q6", threadId: "thr_recommend" },
+    });
+    expect(harness.spawn).toHaveBeenCalledTimes(1);
+    const spawned = vi.mocked(harness.spawn).mock.calls[0]![0];
+    expect(spawned).toMatchObject({
+      projectId: "project-1",
+      environment: { type: "reuse", environmentId: "environment-1" },
+      providerId: "claude-code",
+      model: "claude-sonnet-4",
+      reasoningLevel: "high",
+      serviceTier: "fast",
+      permissionMode: "auto",
+      executionInputSources: { providerId: "explicit", model: "explicit", reasoningLevel: "explicit", serviceTier: "explicit" },
+    });
+    const prompt = spawned.prompt as string;
+    expect(prompt).toContain("Which provider should run this?");
+    expect(prompt).toContain("Q6");
+    expect(prompt).toContain("T1");
+    expect(prompt).toContain("Advisory only");
+
+    const replay = await harness.executor.execute(request);
+    expect(replay).toMatchObject({ ok: true, result: { threadId: "thr_recommend" } });
+    expect(harness.spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a recommendation for a question missing from the protocol", async () => {
+    const harness = makeInteractionHarness([]);
+    const result = await harness.executor.execute(bbRequest({
+      kind: "recommend-question",
+      questionId: "Q99",
+      providerId: "codex",
+      model: "gpt-5",
+      reasoningLevel: "medium",
+    }));
+    expect(result).toMatchObject({ ok: false, error: { category: "not-found" } });
+    expect(harness.spawn).not.toHaveBeenCalled();
+  });
+
+  it("marks an ambiguous recommendation spawn for reconciliation without respawning", async () => {
+    const harness = makeInteractionHarness([]);
+    vi.mocked(harness.spawn).mockRejectedValue(new Error("spawn lost"));
+    const request = bbRequest({
+      kind: "recommend-question",
+      questionId: "Q6",
+      providerId: "codex",
+      model: "gpt-5",
+      reasoningLevel: "medium",
+    });
+    const result = await harness.executor.execute(request);
+    expect(result).toMatchObject({ ok: false, error: { category: "conflict" } });
+    expect(harness.store.getPendingActionIntent(request.idempotencyKey)?.status).toBe("reconciliation-required");
+    const replay = await harness.executor.execute(request);
+    expect(replay).toMatchObject({ ok: false, error: { category: "conflict" } });
+    expect(harness.spawn).toHaveBeenCalledTimes(1);
   });
 });

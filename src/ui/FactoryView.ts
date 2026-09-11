@@ -155,6 +155,8 @@ function actionTarget(action: FactoryAction, routeRunId: string | null): string 
       return action.source === "bb-interaction"
         ? `interaction:${action.interactionId}`
         : `question:${action.questionId}`;
+    case "recommend-question":
+      return `question:${action.questionId}`;
     case "retry":
     case "stop":
       return `run:${routeRunId ?? "?"}`;
@@ -363,6 +365,9 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
         setActionState({ pendingTarget: null, feedback: { pending: false, target, message: null, error: "The action result was malformed.", scope: actionScope } });
       } else if (parsed.data.ok) {
         setActionState({ pendingTarget: null, feedback: { pending: false, target, message: parsed.data.result.message, error: null, scope: actionScope } });
+        if (parsed.data.result.action === "recommend-question") {
+          navigate.toThread(parsed.data.result.threadId);
+        }
       } else {
         setActionState({ pendingTarget: null, feedback: { pending: false, target, message: null, error: parsed.data.error.message, scope: actionScope } });
       }
@@ -551,7 +556,14 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
         : h(LoadingNotice, { label: "Loading repository work" });
   } else if (route.section === "questions") {
     content = snapshot
-      ? h(QuestionsView, { snapshot, interactions, ctx, focusQuestionId: route.anchor?.replace(/^question-/u, "") ?? null })
+      ? h(QuestionsView, {
+          snapshot,
+          interactions,
+          ctx,
+          focusQuestionId: route.anchor?.replace(/^question-/u, "") ?? null,
+          providers: health?.providers ?? [],
+          preferredProviderId: preferredProvider,
+        })
       : data.snapshot.status === "error"
         ? h(ErrorNotice, { message: data.snapshot.error, onRetry })
         : h(LoadingNotice, { label: "Loading questions" });

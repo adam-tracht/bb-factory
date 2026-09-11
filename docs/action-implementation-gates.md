@@ -21,10 +21,17 @@ actor identity. Verified against the installed `@get-bb/plugin-sdk@0.4.47`.
   (`claimInitialReadyIntent`, 10-minute expiry, native UI entry point only).
 - The BB interaction executor (`src/actions/interactions.ts`) implements the
   durable answer state machine below, plus run-now, pause, resume, retry, and
-  stop routing through the dispatch engine.
+  stop routing through the dispatch engine. It also owns `recommend-question`,
+  an advisory action that re-reads the question from the canonical protocol
+  snapshot and spawns a permission-`auto` BB chat thread in the repository's
+  project and environment with the caller-picked provider and model marked
+  explicit; the outcome carries the spawned thread id so the UI can open it.
+  It writes nothing to the repository.
 - The `pending_action_intents` table stores typed request, target, expected
   revision, single-file change, entry point, one-shot, lifecycle status,
-  result, and reconciliation metadata, and both executors consume it.
+  result, and reconciliation metadata, and both executors consume it. Its
+  `action_kind` constraint was widened for `recommend-question` by an
+  append-only table rebuild migration.
 - The dispatch engine (`src/dispatch/`) owns preflight, ownership leases,
   durable run intents, worker start, lifecycle reconciliation, runtime caps,
   cancellation, bounded retry, and startup recovery. The scheduler

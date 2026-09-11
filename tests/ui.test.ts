@@ -458,6 +458,50 @@ describe("Factory guarded actions", () => {
     }
   });
 
+  it("sends a question to an agent and opens the spawned chat", async () => {
+    const { FactoryView } = await import("../src/ui/FactoryView.js");
+    const rpc = baseRpc();
+    rpc.factory_action = vi.fn(() => ({
+      ok: true as const,
+      revision,
+      result: {
+        status: "accepted" as const,
+        message: "Started a recommendation chat for Q1 on codex (gpt-5).",
+        revision,
+        runId: null,
+        leaseId: null,
+        queueItemId: null,
+        action: "recommend-question" as const,
+        questionId: "Q1",
+        interactionId: null,
+        threadId: "thr_rec",
+      },
+    }));
+    const slot = renderSlot<FactoryViewProps, FactoryRpcContract>(
+      { component: FactoryView },
+      { subPath: "questions", panelPath: "factory" },
+      { rpc, settings: { repositoryKey: "demo" } },
+    );
+    try {
+      const ask = await slot.findByRole("button", { name: "Ask an agent" });
+      fireEvent.click(ask);
+      const dialog = await slot.findByRole("alertdialog");
+      fireEvent.click(within(dialog as HTMLElement).getByRole("button", { name: "Start chat" }));
+      await vi.waitFor(() => {
+        expect(rpc.factory_action).toHaveBeenCalledWith(expect.objectContaining({
+          repositoryKey: "demo",
+          expectedRevision: revision,
+          action: { kind: "recommend-question", questionId: "Q1", providerId: "codex", model: "gpt-5", reasoningLevel: "medium" },
+        }));
+      });
+      await vi.waitFor(() => {
+        expect(slot.inspection.navigateCalls).toContainEqual({ method: "toThread", threadId: "thr_rec" });
+      });
+    } finally {
+      slot.lifecycle.unmount();
+    }
+  });
+
   it("keeps ready queue entries free of approval controls", async () => {
     const { FactoryView } = await import("../src/ui/FactoryView.js");
     const slot = renderSlot<FactoryViewProps, FactoryRpcContract>(

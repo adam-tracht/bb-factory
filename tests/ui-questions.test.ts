@@ -7,6 +7,7 @@ import type {
   PendingInteraction,
   PendingInteractionsProjection,
   ProtocolSnapshot,
+  ProviderStatus,
   Question,
   QueueEntry,
 } from "../src/contracts.js";
@@ -189,6 +190,8 @@ function renderView(overrides: {
   interactions?: PendingInteractionsProjection | null;
   ctx?: ViewContext;
   focusQuestionId?: string | null;
+  providers?: readonly ProviderStatus[];
+  preferredProviderId?: string | null;
 } = {}) {
   const ctx = overrides.ctx ?? makeCtx();
   const view = render(
@@ -197,6 +200,8 @@ function renderView(overrides: {
       interactions: overrides.interactions ?? null,
       ctx,
       focusQuestionId: overrides.focusQuestionId ?? null,
+      providers: overrides.providers,
+      preferredProviderId: overrides.preferredProviderId,
     }),
   );
   return { ...view, ctx };
@@ -316,6 +321,54 @@ describe("QuestionsView repository questions", () => {
     const row = container.querySelector("#question-Q4") as HTMLElement;
     const rowDetails = row.querySelector("details") as HTMLDetailsElement | null;
     expect(rowDetails?.open).toBe(true);
+  });
+});
+
+describe("QuestionsView agent recommendation", () => {
+  const providers: ProviderStatus[] = [
+    { providerId: "codex", model: "gpt-5", reasoningLevel: "medium", availability: "available", limitedUntil: null, activeThreadCount: 0, lastError: null },
+    { providerId: "claude-code", model: "claude-sonnet-4", reasoningLevel: "high", availability: "limited", limitedUntil: "2026-09-11T00:00:00Z", activeThreadCount: 0, lastError: null },
+  ];
+
+  it("opens the provider picker and dispatches the recommend-question action", () => {
+    const { container, ctx } = renderView({ providers });
+    const q1 = within(container.querySelector("#question-Q1") as HTMLElement);
+
+    fireEvent.click(q1.getByRole("button", { name: "Ask an agent" }));
+    const dialog = screen.getByRole("alertdialog");
+    const picker = within(dialog).getByTestId("bb-provider-model-picker");
+    expect(picker.getAttribute("data-routing-kind")).toBe("environment");
+    expect(picker.getAttribute("data-routing-id")).toBe("env-1");
+
+    fireEvent.change(within(picker).getByLabelText("Provider ID"), { target: { value: "claude-code" } });
+    fireEvent.change(within(picker).getByLabelText("Model"), { target: { value: "claude-sonnet-4" } });
+    fireEvent.change(within(picker).getByLabelText("Reasoning level"), { target: { value: "high" } });
+    fireEvent.click(within(picker).getByRole("button", { name: "Apply execution selection" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Start chat" }));
+
+    expect(ctx.onAction).toHaveBeenCalledWith({
+      kind: "recommend-question",
+      questionId: "Q1",
+      providerId: "claude-code",
+      model: "claude-sonnet-4",
+      reasoningLevel: "high",
+    });
+  });
+
+  it("seeds the picker with the preferred provider", () => {
+    const { container } = renderView({ providers, preferredProviderId: "claude-code" });
+    const q1 = within(container.querySelector("#question-Q1") as HTMLElement);
+    fireEvent.click(q1.getByRole("button", { name: "Ask an agent" }));
+    const picker = screen.getByTestId("bb-provider-model-picker");
+    expect(within(picker).getByLabelText("Provider ID")).toHaveProperty("value", "claude-code");
+    expect(within(picker).getByLabelText("Model")).toHaveProperty("value", "claude-sonnet-4");
+  });
+
+  it("keeps the ask action disabled without a provider catalog", () => {
+    const { container } = renderView({ providers: [] });
+    const q1 = within(container.querySelector("#question-Q1") as HTMLElement);
+    const button = q1.getByRole("button", { name: "Ask an agent" });
+    expect(button.hasAttribute("disabled")).toBe(true);
   });
 });
 

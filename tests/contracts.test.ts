@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  actionOutcomeSchema,
   bbInteractionResolutionSchema,
   bbInteractionActionRequestSchema,
   factoryActionRequestSchema,
@@ -242,6 +243,39 @@ describe("Phase 0 wire contracts", () => {
       idempotencyKey: "bbf:v1:monorepo:integration-report:123e4567-e89b-12d3-a456-426614174000",
     };
     expect(factoryActionRequestSchema.parse(integrationReport)).toEqual(integrationReport);
+
+    const recommend = {
+      repositoryKey: "monorepo",
+      action: { kind: "recommend-question", questionId: "Q6", providerId: "claude-code", model: "claude-sonnet-4", reasoningLevel: "high" },
+      idempotencyKey: "bbf:v1:monorepo:recommend-question:123e4567-e89b-12d3-a456-426614174000",
+      expectedRevision: repositoryRevision,
+    };
+    expect(factoryActionRequestSchema.parse(recommend)).toEqual(recommend);
+    expect(() => factoryActionRequestSchema.parse({
+      ...recommend,
+      action: { ...recommend.action, providerId: "Not A Provider" },
+    })).toThrow();
+  });
+
+  it("carries the spawned thread id on accepted recommendation outcomes", () => {
+    const outcome = {
+      status: "accepted",
+      message: "Started a recommendation chat.",
+      revision: repositoryRevision,
+      runId: null,
+      leaseId: null,
+      queueItemId: null,
+      action: "recommend-question",
+      questionId: "Q6",
+      interactionId: null,
+      threadId: "thr_rec",
+    };
+    expect(actionOutcomeSchema.parse(outcome)).toEqual(outcome);
+    expect(factoryActionResultSchema.parse({ ok: true, revision: repositoryRevision, result: outcome }))
+      .toEqual({ ok: true, revision: repositoryRevision, result: outcome });
+    const missingThread = { ...outcome };
+    delete (missingThread as Record<string, unknown>).threadId;
+    expect(() => actionOutcomeSchema.parse(missingThread)).toThrow();
   });
 
   it("binds idempotency repository and action segments to the request", () => {
