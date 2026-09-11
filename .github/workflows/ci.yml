@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main, factory]
+  pull_request:
+    branches: [main, factory]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.3
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm test
+
+      # The bb CLI ships inside the BB desktop app and is not published as a
+      # standalone package. The documented CI path (`bb guide plugins`) is the
+      # published bb-app npm package, whose `bb` bin builds plugins and checks
+      # SDK types with no bb server. Pinned to the same 0.42.x line as
+      # engines.bb (>=0.42) and local development.
+      - name: Install bb CLI
+        run: |
+          npm install --global bb-app@0.42.1
+          bb --version
+
+      - name: Check plugin SDK types
+        run: bb plugin types --check .
+
+      # `bb plugin build` talks to no server; it only needs the bb binary and
+      # network access for the pinned esbuild + Tailwind toolchain download.
+      - name: Build plugin bundles
+        run: pnpm build

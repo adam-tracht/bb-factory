@@ -1,7 +1,11 @@
 {
   "name": "bb-factory",
   "version": "0.1.0",
-  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/adamdiggs/bb-factory.git"
+  },
   "type": "module",
   "engines": {
     "bb": ">=0.42",
@@ -20,18 +24,18 @@
     "dist",
     "server.ts",
     "src",
-    "tests",
+    "templates",
     "docs",
     "README.md",
-    "CLAUDE.md",
-    "PLAN.md",
-    "architecture-notes.md"
+    "LICENSE",
+    "PLUGIN_OVERVIEW.md"
   ],
   "scripts": {
     "build": "bb plugin build .",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "vitest run --config vitest.config.ts"
+    "test": "vitest run --config vitest.config.ts",
+    "release": "bash scripts/release.sh"
   },
   "dependencies": {
     "zod": "^4.3.6"

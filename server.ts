@@ -21,7 +21,7 @@ export function reportConfigurationStatus(
 ): void {
   if (composition.resolution.status !== "disabled" || composition.resolution.reason === "explicitly-empty") return;
   const message = composition.resolution.reason === "legacy-incomplete"
-    ? `Factory legacy repository settings are incomplete. Configure repositoryRegistry, or provide repositoryKey, repositoryRoot, connectedHostId, checkoutPath, projectId, and environmentId. Then run: bb plugin reload ${bb.pluginId}.`
+    ? `Factory legacy repository settings are incomplete. Configure repositoryRegistry, or provide repositoryKey, repositoryRoot, connectedHostId, checkoutPath, and projectId. Then run: bb plugin reload ${bb.pluginId}.`
     : `Factory repository configuration is missing. Configure repositoryRegistry, or complete the legacy repository settings. Then run: bb plugin reload ${bb.pluginId}.`;
   bb.status.needsConfiguration(message);
 }
@@ -38,9 +38,12 @@ export function repositoryKeyForThread(
   if (!resolution || resolution.status !== "configured") return null;
   if (typeof thread !== "object" || thread === null) return null;
   const value = thread as { projectId?: unknown; environmentId?: unknown };
-  if (typeof value.projectId !== "string" || typeof value.environmentId !== "string") return null;
+  if (typeof value.projectId !== "string") return null;
+  const threadEnvironmentId = typeof value.environmentId === "string" ? value.environmentId : null;
   return resolution.repositories.find(
-    (entry) => entry.projectId === value.projectId && entry.environmentId === value.environmentId,
+    (entry) =>
+      entry.projectId === value.projectId &&
+      (entry.environmentId === undefined || entry.environmentId === threadEnvironmentId),
   )?.configuration.repositoryKey ?? null;
 }
 

@@ -106,7 +106,7 @@ validate:
 - pnpm typecheck
 
 ## BBF-0006 Release hygiene
-status: ready
+status: done (orchestrated session 2026-09-11)
 priority: 3
 depends_on: none
 risk: low
