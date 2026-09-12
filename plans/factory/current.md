@@ -1,27 +1,12 @@
 # Current factory run
 
-The 2026-09-11 orchestrated session completed BBF-0009, BBF-0010, and
-BBF-0011, the three live-UI defects reported from diggs-data-platform
-(see runs/2026-09-11-ui-defects-orchestrated.md), plus BBF-0013 which
-made `status: draft` a first-class quiet status. A follow-on session
-completed BBF-0014 and BBF-0015, which keep question references visible
-on blocked entries and flag `blocked-by` gates whose question resolved
-or vanished as `stale-question-gate` so they land in Needs you instead
-of stranding, and BBF-0016 through BBF-0019, four live-UI fixes
-(switcher All state, landing-card navigation, run-detail thread links,
-and a collapsed Repository details disclosure in Settings), plus BBF-0020
-which fixed dead repo pills on the landing, switcher unmounts during
-reloads, selection snap-back on registry writes, and cross-repo realtime
-reload churn, and BBF-0021 which stops repo-scoped header chrome (chips,
-run controls, and the section tab bar) from rendering over the
-Repositories landing. All are Done on the canonical dashboard; see
-runs/2026-09-11-stale-question-gates.md.
-
-BBF-0012 is also Done: `approve-queue` now attaches an `approved:` line to a
-ready entry that lacks one instead of conflicting, so the Approve CTA the UI
-offers always succeeds (open question gates still reject). BBF-0022 is Done:
-the plugin SDK pin was repinned 0.4.47 to 0.4.84 to match the host, with two
-small type fixes for the new surface.
+The 2026-09-12 orchestrated session completed BBF-0023: the factory run
+provider preference now accepts `alternate` or any provider id the host
+reports (pi, acp-*, etc.), the Settings dropdown lists the whole host
+catalog, and `alternate` rotates deterministically across all usable
+providers instead of only codex and claude-code. Providers that report
+permission modes must support `full` to be dispatch-eligible. Details in
+runs/2026-09-12-provider-catalog-preference.md.
 
 Open work:
 
