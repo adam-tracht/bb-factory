@@ -9,7 +9,7 @@
     {
       "template": "repo.md",
       "target": "plans/factory/repo.md",
-      "sha256": "cd53bc1ec5c09e91e4682b8c9e946fc01a3cc1a61924c477b2fc08cf388a6363"
+      "sha256": "11226d20853845c8a2416c14b8c0337fb615815b05290287d67f5e2fff84428c"
     },
     {
       "template": "queue.md",

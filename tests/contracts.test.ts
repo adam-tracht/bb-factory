@@ -19,6 +19,8 @@ import {
   pendingInteractionMetadataSchema,
   pickFolderInputSchema,
   pickFolderResultSchema,
+  providerPreferenceSchema,
+  providerStatusSchema,
   probeRepositoryInputSchema,
   questionSchema,
   repositoryProbeSchema,
@@ -75,6 +77,32 @@ describe("Phase 0 wire contracts", () => {
     const valid = "bbf:v1:monorepo:run-now:123e4567-e89b-12d3-a456-426614174000";
     expect(idempotencyKeySchema.parse(valid)).toBe(valid);
     expect(() => idempotencyKeySchema.parse("run-now-monorepo")).toThrow();
+  });
+
+  it("accepts arbitrary provider ids while rejecting malformed preferences", () => {
+    expect(providerPreferenceSchema.parse("acp-opencode")).toBe("acp-opencode");
+    expect(providerPreferenceSchema.parse("alternate")).toBe("alternate");
+    expect(() => providerPreferenceSchema.parse("ACP-OpenCode")).toThrow();
+    expect(() => providerPreferenceSchema.parse("acp opencode")).toThrow();
+  });
+
+  it("keeps provider status permission modes optional for stored health values", () => {
+    const status = {
+      providerId: "codex",
+      model: "gpt-5",
+      reasoningLevel: "medium",
+      availability: "available",
+      limitedUntil: null,
+      activeThreadCount: 0,
+      lastError: null,
+    } as const;
+    expect(providerStatusSchema.parse(status)).toEqual(status);
+    expect(providerStatusSchema.parse({ ...status, permissionModes: ["full"] })).toMatchObject({ permissionModes: ["full"] });
+  });
+
+  it("describes provider preference as a host-reported string", () => {
+    expect(factorySettingDescriptors.providerPreference.type).toBe("string");
+    expect("options" in factorySettingDescriptors.providerPreference).toBe(false);
   });
 
   it("preserves live queue status detail and omitted question recommendations", () => {

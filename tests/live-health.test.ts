@@ -126,6 +126,23 @@ describe("live health reader", () => {
       .toHaveBeenCalledWith({ environmentId: "environment-1" });
   });
 
+  it("carries host permission modes onto provider status", async () => {
+    const sdk = sdkFixture() as {
+      providers: { list: ReturnType<typeof vi.fn> };
+    };
+    sdk.providers.list.mockResolvedValue([
+      { id: "codex", available: true, capabilities: { permissionModes: ["auto"] } },
+    ]);
+    const reader = createLiveHealthReader({
+      sdk: sdk as never,
+      repositoryLookup: () => entry,
+    });
+
+    const statuses = await reader.listProviderStatus("demo");
+    expect(statuses.find((status) => status.providerId === "codex")?.permissionModes).toEqual(["auto"]);
+    expect(statuses.find((status) => status.providerId === "claude-code")).not.toHaveProperty("permissionModes");
+  });
+
   it("reports disconnected hosts and branch drift without inventing tool availability", async () => {
     const sdk = sdkFixture() as {
       hosts: { get: ReturnType<typeof vi.fn>; list: ReturnType<typeof vi.fn> };

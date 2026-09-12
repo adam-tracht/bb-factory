@@ -39,6 +39,16 @@ describe("settings mutation handlers", () => {
     expect(applied).toEqual([{ scheduleCron: "*/15 1-5 * * *", concurrencyLimit: 2, providerPreference: "alternate" }]);
   });
 
+  it("accepts a host-reported provider id as the dispatch preference", async () => {
+    const { applied, handlers } = harness();
+    const result = await handlers.factory_update_settings({
+      repositoryKey: "monorepo",
+      patch: { providerPreference: "acp-opencode" },
+    });
+    expect(result).toMatchObject({ ok: true });
+    expect(applied).toEqual([{ providerPreference: "acp-opencode" }]);
+  });
+
   it("unsets optional fields with null and rejects invalid merges", async () => {
     const { applied, handlers } = harness();
     expect(await handlers.factory_update_settings({

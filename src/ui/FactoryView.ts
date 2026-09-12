@@ -533,7 +533,7 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
     : null;
   const providerLine = preferredProvider
     ? `Provider: ${preferredProvider}${preferredStatus ? ` (${preferredStatus.availability})` : ""}.`
-    : "Provider: alternates between codex and claude-code.";
+    : "Provider: rotates between available providers.";
   const runNowDisabledReason = !settings
     ? null
     : settings.dispatch.mode !== "enabled"

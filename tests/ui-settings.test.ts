@@ -277,6 +277,40 @@ describe("SettingsView", () => {
     fireEvent.change(screen.getByLabelText("Concurrency limit"), { target: { value: "3" } });
     expect(screen.getByText("The preferred provider is limited; >1 may still serialize")).toBeTruthy();
   });
+
+  it("lists every reported provider in the preference dropdown", () => {
+    const health: HealthProjection = {
+      ...healthProjection,
+      providers: [...healthProjection.providers, {
+        providerId: "acp-opencode",
+        model: "opencode",
+        reasoningLevel: "high",
+        availability: "available",
+        limitedUntil: null,
+        activeThreadCount: 0,
+        lastError: null,
+      }],
+    };
+    renderSettings({ health });
+    const options = Array.from((screen.getByLabelText("Provider preference") as HTMLSelectElement).options)
+      .map((option) => option.textContent);
+    expect(options).toEqual([
+      "alternate (rotate providers)",
+      "codex (available)",
+      "claude-code (limited)",
+      "acp-opencode (available)",
+    ]);
+  });
+
+  it("keeps a stored provider preference when it is no longer reported", () => {
+    renderSettings({
+      projection: {
+        ...settingsProjection,
+        settings: { ...settingsProjection.settings, providerPreference: "acp-devin" },
+      },
+    });
+    expect(screen.getByRole("option", { name: "acp-devin (not reported)" })).toBeTruthy();
+  });
 });
 
 describe("RepositoryLandingView", () => {

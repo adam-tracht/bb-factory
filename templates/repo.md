@@ -22,6 +22,8 @@ Run from the repo root. All are required for every task unless noted. Replace th
 | Implementation, debugging | gpt-5.6-luna, reasoning xhigh | claude-opus-5[1m], reasoning high |
 | Tests, docs, mechanical edits | gpt-5.4-mini, reasoning medium | claude-sonnet-5, reasoning medium |
 
+A foreman on any other provider (pi, acp-*, or future ids) uses the codex column by default.
+
 `--reasoning-level` accepts `low`, `medium`, `high`, `xhigh`, `max`.
 
 ## Tracking rules

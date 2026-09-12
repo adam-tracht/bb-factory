@@ -1,6 +1,5 @@
 import { createElement, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
-  providerPreferenceSchema,
   type FactorySettings,
   type FactorySettingsPatch,
   type HealthProjection,
@@ -350,21 +349,19 @@ function DispatchCard(props: {
     ? `Preferred provider is ${preferred.availability}${preferred.lastError ? `: ${preferred.lastError}` : ""}.`
     : null;
 
-  const selectableProviders = useMemo(
-    () => new Set<string>(providerPreferenceSchema.options),
-    [],
-  );
   const providerOptions = useMemo(() => {
     const options: Array<{ value: string; label: string }> = [
       { value: "alternate", label: "alternate (rotate providers)" },
     ];
     const seen = new Set<string>(["alternate"]);
     for (const provider of providers) {
-      // The contract pins preference to a fixed enum; other reported provider
-      // ids are shown as status text in the row warning, never as options.
-      if (seen.has(provider.providerId) || !selectableProviders.has(provider.providerId)) continue;
+      if (seen.has(provider.providerId)) continue;
       seen.add(provider.providerId);
-      options.push({ value: provider.providerId, label: `${provider.providerId} (${provider.availability})` });
+      const full = provider.permissionModes === undefined || provider.permissionModes.includes("full");
+      options.push({
+        value: provider.providerId,
+        label: `${provider.providerId} (${provider.availability}${full ? "" : ", lacks full permission"})`,
+      });
     }
     if (draft.providerPreference !== "alternate" && !seen.has(draft.providerPreference)) {
       options.push({ value: draft.providerPreference, label: `${draft.providerPreference} (not reported)` });

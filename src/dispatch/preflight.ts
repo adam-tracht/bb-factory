@@ -1,8 +1,7 @@
-import type { HostPreflight, ProviderStatus, RepositoryKey } from "../contracts.js";
+import type { HostPreflight, ProviderId, ProviderStatus, ProviderPreference, RepositoryKey } from "../contracts.js";
 import { errorMessage } from "../errors.js";
 import type { DispatcherState } from "../storage/index.js";
 import type { DispatchContext } from "./types.js";
-import { FACTORY_PROVIDERS, otherProvider, type FactoryProviderId } from "./types.js";
 
 export type HostPreflightResult = HostPreflight | { ok: false; reasons: string[]; hostId: string };
 
@@ -19,59 +18,57 @@ export async function hostPreflight(ctx: DispatchContext, repositoryKey: Reposit
 }
 
 export interface ProviderSelection {
-  readonly providerId: FactoryProviderId;
+  readonly providerId: ProviderId;
   readonly model: string;
   readonly reasoningLevel: ProviderStatus["reasoningLevel"];
   readonly reason: string;
 }
 
 /**
- * Provider policy ported from the shell dispatcher: `providerPreference` pins
- * the lead; `alternate` takes the other provider from the night's previous
- * start, or the night-parity lead on the first start. A provider is usable
- * when the live catalog reports it available and no durable limit mark is
- * still in force. A limited lead falls back to the other provider; both
- * limited means no dispatch.
+ * A provider is usable when the live catalog reports it available, has a
+ * configured model, is not durably limited, and supports full permissions
+ * when the host reports permission modes.
  */
 export function selectProvider(
   providers: readonly ProviderStatus[],
   state: DispatcherState,
-  preference: "alternate" | "codex" | "claude-code" | undefined,
+  preference: ProviderPreference | undefined,
   nightKey: string,
   nowS: number,
 ): ProviderSelection | null {
-  const usable = new Map<FactoryProviderId, ProviderStatus>();
-  for (const providerId of FACTORY_PROVIDERS) {
-    const status = providers.find((candidate) => candidate.providerId === providerId);
-    if (!status || status.availability !== "available" || status.model === "unavailable") continue;
-    const limitedUntil = state.limits[providerId] ?? 0;
-    if (limitedUntil > nowS) continue;
-    usable.set(providerId, status);
-  }
-  if (usable.size === 0) return null;
+  const isUsable = (provider: ProviderStatus): boolean => {
+    const limitedUntil = state.limits[provider.providerId] ?? 0;
+    return provider.availability === "available"
+      && provider.model !== "unavailable"
+      && limitedUntil <= nowS
+      && (provider.permissionModes === undefined || provider.permissionModes.includes("full"));
+  };
+  const usable = providers.filter(isUsable);
+  if (usable.length === 0) return null;
 
-  const lastStart = state.lastStartProvider;
-  let lead: FactoryProviderId;
-  let reason: string;
-  if (preference === "codex" || preference === "claude-code") {
-    lead = preference;
-    reason = `providerPreference=${preference}`;
-  } else if (lastStart === "codex" || lastStart === "claude-code") {
-    lead = otherProvider(lastStart);
-    reason = `alternate after ${lastStart}`;
-  } else {
-    const nightDay = Number(nightKey.slice(-2));
-    lead = nightDay % 2 === 0 ? "codex" : "claude-code";
-    reason = `alternate lead, night ${nightKey}`;
-  }
-
-  const fallback = otherProvider(lead);
-  const picked = usable.get(lead) ?? usable.get(fallback);
-  if (!picked) return null;
-  return {
-    providerId: picked.providerId as FactoryProviderId,
+  const selection = (picked: ProviderStatus, reason: string): ProviderSelection => ({
+    providerId: picked.providerId,
     model: picked.model,
     reasoningLevel: picked.reasoningLevel,
-    reason: picked.providerId === lead ? reason : `fallback, ${lead} limited`,
-  };
+    reason,
+  });
+
+  if (preference !== undefined && preference !== "alternate") {
+    const picked = usable.find((provider) => provider.providerId === preference) ?? usable[0]!;
+    return selection(picked, picked.providerId === preference
+      ? `providerPreference=${preference}`
+      : `fallback, ${preference} unusable`);
+  }
+
+  const lastStart = state.lastStartProvider;
+  const lastIndex = providers.findIndex((provider) => provider.providerId === lastStart);
+  if (lastIndex >= 0) {
+    for (let offset = 1; offset <= providers.length; offset += 1) {
+      const picked = providers[(lastIndex + offset) % providers.length]!;
+      if (isUsable(picked)) return selection(picked, `alternate after ${lastStart}`);
+    }
+  }
+
+  const nightDay = Number(nightKey.slice(-2));
+  return selection(usable[nightDay % usable.length]!, `alternate lead, night ${nightKey}`);
 }

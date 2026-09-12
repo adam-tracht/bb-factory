@@ -358,7 +358,7 @@ validate:
 notes: The host SDK moved 0.4.47 to 0.4.84 between 2026-09-11 and 2026-09-12. `bb plugin types` repinned the devDependency; `pnpm install` installed it (local dev uses pnpm, never npm). The 0.4.84 surface added `connectMachineId` on hosts.get (HostInfo now binds to the hosts.list element in src/services/live-health.ts) and three nullable environment fields on the thread list type (test fixture updated).
 
 ## BBF-0023 Provider preference accepts any reported provider
-status: ready
+status: done (orchestrated session 2026-09-12)
 priority: 3
 depends_on: none
 risk: medium

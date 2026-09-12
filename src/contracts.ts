@@ -10,14 +10,14 @@ export const repositoryKeySchema = z
   .regex(/^[a-z0-9][a-z0-9._-]{0,63}$/, "must be a lowercase repository key");
 export type RepositoryKey = z.infer<typeof repositoryKeySchema>;
 
-export const providerPreferenceSchema = z.enum(["alternate", "codex", "claude-code"]);
-export type ProviderPreference = z.infer<typeof providerPreferenceSchema>;
-
 export const providerIdSchema = nonEmptyString.regex(
   /^[a-z0-9][a-z0-9._-]{0,63}$/,
   "must be a lowercase provider id",
 );
 export type ProviderId = z.infer<typeof providerIdSchema>;
+
+export const providerPreferenceSchema = z.union([z.literal("alternate"), providerIdSchema]);
+export type ProviderPreference = z.infer<typeof providerPreferenceSchema>;
 
 export const reasoningLevelSchema = z.enum([
   "none",
@@ -477,6 +477,7 @@ export const providerStatusSchema = z
     limitedUntil: isoTimestamp.nullable(),
     activeThreadCount: z.number().int().nonnegative(),
     lastError: z.string().nullable(),
+    permissionModes: z.array(nonEmptyString).optional(),
   })
   .strict();
 export type ProviderStatus = z.infer<typeof providerStatusSchema>;
