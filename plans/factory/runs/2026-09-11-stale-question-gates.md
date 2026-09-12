@@ -57,3 +57,29 @@ landing, pills stay mounted mid-load, selection survives a registry write,
 cross-repo invalidations ignored), typecheck, lint, build clean.
 
 state: success
+
+## BBF-0021: repo chrome stuck over the repositories landing
+
+Live QA after c29f3cc: clicking "All" left the previous repo's sub-header
+(branch/commit chip, dispatch badge, running badge, Pause/Resume, Run now,
+and the section tab bar) rendered above the Repositories landing.
+
+Fix: `FactoryShell` derives `repoChrome = !repositoriesActive` and gates the
+branch/commit chip, dispatch chip, running/idle badge, Pause/Resume, Run now,
+its confirm dialog, and the SECTION_TABS nav on it (src/ui/shell.ts). Title,
+switcher, refreshed indicator, legend, and connection/malformed banners always
+render. The add-repository route is excluded from `repositoriesActive`, so the
+wizard keeps the chrome; unchanged.
+
+Validation: pnpm test 306 passing (new integration test: chrome absent on the
+landing and present on a repo view; new shell unit test), typecheck, lint,
+build, `bb plugin types --check`, `git diff --check` clean. Commit 5fd679e,
+pushed to origin/factory; installed plugin rebuilt and reloaded.
+
+Live re-verify (Aside repl, direct DOM assertions on http://127.0.0.1:38886):
+after clicking All, the tab bar, dispatch chip, branch/commit chip, Resume,
+and Run now are absent while the switcher, refreshed indicator, and legend
+remain; after clicking the bb-factory pill the tab bar and chips return.
+Confirmed fixed.
+
+state: success
