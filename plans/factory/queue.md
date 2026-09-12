@@ -345,14 +345,14 @@ validate:
 notes: Reported by live QA after c29f3cc: clicking "All" left the previous repo's sub-header (chips, run controls, tab bar) rendered above the Repositories landing. Fix gates all repo-scoped chrome in FactoryShell on the existing repositoriesActive prop (src/ui/FactoryView.ts:671), which is true exactly when the landing is the content (repositories route, no repos, or no selected entry).
 
 ## BBF-0022 Plugin SDK pin drifted from host (0.4.47 vs 0.4.84)
-status: draft
+status: done (orchestrated session 2026-09-12)
 priority: 3
 depends_on: none
 risk: low
 plan: package.json (@get-bb/plugin-sdk devDependency)
-approved: none
+approved: dependency repin (user direction 2026-09-12)
 acceptance:
 - `bb plugin types --check .` passes again (pin matches the running host SDK).
 validate:
 - bb plugin types --check .
-notes: The host SDK moved 0.4.47 to 0.4.84 between 2026-09-11 and 2026-09-12. `bb plugin types` repins the devDependency and re-syncs the bundled declarations; it is a dependency change, so it needs an `approved:` line before it runs.
+notes: The host SDK moved 0.4.47 to 0.4.84 between 2026-09-11 and 2026-09-12. `bb plugin types` repinned the devDependency; `pnpm install` installed it (local dev uses pnpm, never npm). The 0.4.84 surface added `connectMachineId` on hosts.get (HostInfo now binds to the hosts.list element in src/services/live-health.ts) and three nullable environment fields on the thread list type (test fixture updated).

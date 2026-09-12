@@ -19,7 +19,7 @@ type ProviderModel = ExecutionOptions["models"][number];
 type ProviderState = Awaited<ReturnType<BbSdk["system"]["providerStates"]>>["providers"][number];
 type ProviderUsage = Awaited<ReturnType<BbSdk["system"]["usageLimits"]>>[string];
 type UsageWindow = Extract<ProviderUsage, { status: "ok" }>["windows"][number];
-type HostInfo = Awaited<ReturnType<BbSdk["hosts"]["get"]>>;
+type HostInfo = Awaited<ReturnType<BbSdk["hosts"]["list"]>>[number];
 type Environment = Awaited<ReturnType<BbSdk["environments"]["get"]>>;
 
 export interface LiveHealthOptions {

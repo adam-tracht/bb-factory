@@ -19,7 +19,9 @@ runs/2026-09-11-stale-question-gates.md.
 
 BBF-0012 is also Done: `approve-queue` now attaches an `approved:` line to a
 ready entry that lacks one instead of conflicting, so the Approve CTA the UI
-offers always succeeds (open question gates still reject).
+offers always succeeds (open question gates still reject). BBF-0022 is Done:
+the plugin SDK pin was repinned 0.4.47 to 0.4.84 to match the host, with two
+small type fixes for the new surface.
 
 Open work:
 
@@ -27,8 +29,5 @@ Open work:
   `approved:` line before any tag, publish, or marketplace submission.
 - BBF-0008 rollout gate is Blocked on the always-on host, remote Connect
   owner-session route, and live run_detail path (docs/hosting-decision.md).
-- BBF-0022 SDK pin drift is filed as a draft: the host SDK moved to 0.4.84
-  while the plugin pins 0.4.47, so `bb plugin types --check` fails until the
-  pin is repinned under an `approved:` line.
 
 state: success
