@@ -356,3 +356,26 @@ acceptance:
 validate:
 - bb plugin types --check .
 notes: The host SDK moved 0.4.47 to 0.4.84 between 2026-09-11 and 2026-09-12. `bb plugin types` repinned the devDependency; `pnpm install` installed it (local dev uses pnpm, never npm). The 0.4.84 surface added `connectMachineId` on hosts.get (HostInfo now binds to the hosts.list element in src/services/live-health.ts) and three nullable environment fields on the thread list type (test fixture updated).
+
+## BBF-0023 Provider preference accepts any reported provider
+status: ready
+priority: 3
+depends_on: none
+risk: medium
+plan: src/contracts.ts (providerPreferenceSchema, providerStatusSchema), src/dispatch/preflight.ts, src/dispatch/types.ts, src/settings.ts, src/ui/views/settings.ts, src/ui/FactoryView.ts, src/services/live-health.ts
+approved: user direction 2026-09-12 (filed and orchestrated on instruction); contract seam widening reviewed in-thread before filing
+acceptance:
+- `providerPreference` accepts `alternate` or any provider-id-shaped string end to end (factorySettingsSchema, the update-settings patch, the settings UI); all previously stored values still parse.
+- The Settings provider dropdown lists every provider the host reports, labeled with availability, keeps `alternate` first, and still renders a stored id the host no longer reports.
+- Dispatch can start a run on any usable provider (pi, acp-*, ...): usable means the host reports it `available` with a model, it is not marked limited, and, when the host reports permission modes, it supports `full` (spawn passes `permissionMode: "full"`).
+- `alternate` rotates deterministically across all usable providers, and a pinned-but-unusable provider falls back to another usable provider with a recorded reason; with only codex and claude-code usable the behavior matches today.
+- The plugin settings descriptor no longer limits the value to a static option list.
+- UI copy no longer describes rotation as codex and claude-code specifically.
+validate:
+- pnpm test
+- pnpm typecheck
+- pnpm lint
+- pnpm build
+- bb plugin types --check .
+- git diff --check
+notes: Wire contract v1.2 is frozen; this widens providerPreferenceSchema from a fixed enum to `alternate` | providerIdSchema (backward compatible: every stored value still parses) and may add an optional capability field to providerStatusSchema. User direction: every provider available in a regular session should be selectable. Host catalog on 2026-09-12 reports codex, claude-code, pi, acp-cursor, acp-opencode, acp-devin, acp-prime-agent.
