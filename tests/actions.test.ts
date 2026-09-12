@@ -197,6 +197,98 @@ describe("repository action executor", () => {
     expect(matching).toMatchObject({ ok: true, result: { status: "accepted" } });
   });
 
+  it("attaches an approved line to an already-ready entry that lacks one", async () => {
+    const files = new FakeFileSystem();
+    const { executor } = makeExecutor(files);
+    files.seed(PROTOCOL_PATHS.questions, "# Questions\n");
+    files.seed(PROTOCOL_PATHS.queue, [
+      "# Queue",
+      "",
+      "## T1 Sample task",
+      "status: ready",
+      "priority: 2",
+      "depends_on: none",
+      "risk: low",
+      "plan: plans/factory/plan-t1.md",
+      "approved: none",
+      "acceptance:",
+      "- the task is done",
+      "validate:",
+      "- pnpm test",
+      "notes: none",
+      "",
+    ].join("\n"));
+    const revision = await revisionOf({ files });
+    const result = await executor.execute(approveRequest(revision));
+    expect(result).toMatchObject({ ok: true, result: { status: "accepted", action: "approve-queue", queueItemId: "T1" } });
+    const content = files.content(PROTOCOL_PATHS.queue)!;
+    expect(content).toContain("status: ready");
+    expect(content).toContain("approved: no gated actions");
+    expect(files.writes).toHaveLength(1);
+  });
+
+  it("still rejects approval on a ready entry while a gating question is open", async () => {
+    const files = new FakeFileSystem();
+    const { executor } = makeExecutor(files);
+    files.seed(PROTOCOL_PATHS.queue, [
+      "# Queue",
+      "",
+      "## T1 Sample task",
+      "status: ready",
+      "priority: 2",
+      "depends_on: none",
+      "risk: low",
+      "plan: plans/factory/plan-t1.md",
+      "approved: none",
+      "acceptance:",
+      "- the task is done",
+      "validate:",
+      "- pnpm test",
+      "notes: none",
+      "",
+    ].join("\n"));
+    const revision = await revisionOf({ files });
+    const result = await executor.execute(approveRequest(revision));
+    expect(result).toMatchObject({ ok: false, error: { category: "blocked-by-question" } });
+    expect(files.writes).toHaveLength(0);
+    expect(files.content(PROTOCOL_PATHS.queue)).toContain("approved: none");
+  });
+
+  it("replays matching approval on a ready entry and conflicts on different authorization", async () => {
+    const files = new FakeFileSystem();
+    const { executor } = makeExecutor(files);
+    files.seed(PROTOCOL_PATHS.questions, "# Questions\n");
+    files.seed(PROTOCOL_PATHS.queue, [
+      "# Queue",
+      "",
+      "## T1 Sample task",
+      "status: ready",
+      "priority: 2",
+      "depends_on: none",
+      "risk: low",
+      "plan: plans/factory/plan-t1.md",
+      "approved: dependency add",
+      "acceptance:",
+      "- the task is done",
+      "validate:",
+      "- pnpm test",
+      "notes: none",
+      "",
+    ].join("\n"));
+    const revision = await revisionOf({ files });
+    const same = await executor.execute(approveRequest(revision, "dependency add"));
+    expect(same).toMatchObject({ ok: true, result: { status: "already-applied" } });
+    const different = await executor.execute(repositoryActionRequestSchema.parse({
+      repositoryKey: "monorepo",
+      action: { kind: "approve-queue", queueItemId: "T1", approvedText: "other text" },
+      idempotencyKey: "bbf:v1:monorepo:approve-queue:623e4567-e89b-12d3-a456-426614174000",
+      expectedRevision: revision,
+    }));
+    expect(different).toMatchObject({ ok: false, error: { category: "conflict" } });
+    if (!different.ok) expect(different.error.message).toContain("different authorization");
+    expect(files.writes).toHaveLength(0);
+  });
+
   it("replays the recorded result for an idempotent retry without a second write", async () => {
     const { files, executor } = makeExecutor();
     const revision = await revisionOf({ files });

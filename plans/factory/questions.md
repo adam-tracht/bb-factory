@@ -11,3 +11,9 @@ recommended: <your preferred answer, so the human can reply "yes">
 answer:
 ```
 
+## Q1 2026-09-12 assumption BBF-0012
+question: When `approve-queue` runs on a `status: ready` entry that has no `approved:` line, should it attach the line or keep conflicting?
+context: planRepositoryAction ready branch in src/actions/repository.ts; the reader emits missing-authorization only for ready entries without approved:, which is the only state where the UI offers Approve.
+assumed: approve-queue attaches the approved: line to ready entries lacking one; open question gates still reject, matching text stays already-applied, different text still conflicts.
+recommended: Keep this semantics.
+answer:

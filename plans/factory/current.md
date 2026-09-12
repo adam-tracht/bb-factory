@@ -17,13 +17,18 @@ run controls, and the section tab bar) from rendering over the
 Repositories landing. All are Done on the canonical dashboard; see
 runs/2026-09-11-stale-question-gates.md.
 
+BBF-0012 is also Done: `approve-queue` now attaches an `approved:` line to a
+ready entry that lacks one instead of conflicting, so the Approve CTA the UI
+offers always succeeds (open question gates still reject).
+
 Open work:
 
 - BBF-0007 marketplace listing is Active but requires an explicit
   `approved:` line before any tag, publish, or marketplace submission.
 - BBF-0008 rollout gate is Blocked on the always-on host, remote Connect
   owner-session route, and live run_detail path (docs/hosting-decision.md).
-- BBF-0012 approve-on-ready dead end is filed as a draft pending
-  authorization.
+- BBF-0022 SDK pin drift is filed as a draft: the host SDK moved to 0.4.84
+  while the plugin pins 0.4.47, so `bb plugin types --check` fails until the
+  pin is repinned under an `approved:` line.
 
 state: success

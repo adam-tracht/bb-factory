@@ -185,19 +185,19 @@ validate:
 notes: Reported live: DATA-0009.01 on diggs-data-platform shows "Ready" plus Approve while its expanded detail lists "Blocked by: Q13 and Q17"; approval is then rejected by the blocked-by-question guard (src/actions/repository.ts). The WorkRow CTA prefers Approve over Answer whenever approval is missing, and the status badge renders the raw parsed status instead of the question-gated state.
 
 ## BBF-0012 Approve on an already-ready entry is a dead end
-status: draft
+status: done (orchestrated session 2026-09-12)
 priority: 2
 depends_on: BBF-0011
 risk: low
 plan: src/actions/repository.ts, src/protocol/reader.ts, src/ui/views/work.ts
-approved: none
+approved: user direction 2026-09-12 (queued and orchestrated on instruction)
 acceptance:
 - The intended semantics are decided: either `approve-queue` may attach an `approved:` line to a `status: ready` entry that lacks one, or the reader/UI stops offering Approve on ready entries.
 - The chosen path is implemented so the UI never offers an approval the action layer will reject.
 validate:
 - pnpm test
 - pnpm typecheck
-notes: Found during BBF-0011 review. `approve-queue` on a ready entry returns conflict "already ready with different authorization" (src/actions/repository.ts:90-95) before the blocked-by-question guard runs, while the reader still emits `missing-authorization` for ready entries without an `approved:` line, so the UI offers an Approve that always fails.
+notes: Found during BBF-0011 review. `approve-queue` on a ready entry returns conflict "already ready with different authorization" (src/actions/repository.ts:90-95) before the blocked-by-question guard runs, while the reader still emits `missing-authorization` for ready entries without an `approved:` line, so the UI offers an Approve that always fails. Decision: `approve-queue` attaches the `approved:` line to a ready entry that lacks one (the only state the UI flags for approval), keeping the blocked-by-question guard; matching text stays idempotent already-applied and different text still conflicts.
 
 ## BBF-0013 First-class draft queue status
 status: done (orchestrated session 2026-09-11)
@@ -343,3 +343,16 @@ validate:
 - pnpm lint
 - pnpm build
 notes: Reported by live QA after c29f3cc: clicking "All" left the previous repo's sub-header (chips, run controls, tab bar) rendered above the Repositories landing. Fix gates all repo-scoped chrome in FactoryShell on the existing repositoriesActive prop (src/ui/FactoryView.ts:671), which is true exactly when the landing is the content (repositories route, no repos, or no selected entry).
+
+## BBF-0022 Plugin SDK pin drifted from host (0.4.47 vs 0.4.84)
+status: draft
+priority: 3
+depends_on: none
+risk: low
+plan: package.json (@get-bb/plugin-sdk devDependency)
+approved: none
+acceptance:
+- `bb plugin types --check .` passes again (pin matches the running host SDK).
+validate:
+- bb plugin types --check .
+notes: The host SDK moved 0.4.47 to 0.4.84 between 2026-09-11 and 2026-09-12. `bb plugin types` repins the devDependency and re-syncs the bundled declarations; it is a dependency change, so it needs an `approved:` line before it runs.
