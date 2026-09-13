@@ -1,13 +1,9 @@
 # Current factory run
 
-The 2026-09-12 interactive session completed BBF-0024 and BBF-0025.
-BBF-0024 fixed malformed multi-id question headings in both managed
-repositories and hardened the authoring docs and error message. BBF-0025
-gave the Approve composer an explainer, a "Draft with agent" advisory
-spawn (new `recommend-approval` action, additive to the v1.2 contract),
-and a "Routine scope only" preset, plus a storage fix for claims without
-`expectedRevision`. Details in runs/2026-09-12-multi-id-question-headings.md
-and runs/2026-09-12-approve-composer.md.
+The 2026-09-13 interactive session completed BBF-0026. The run detail
+header dropped the redundant copyable run id (still in Technical
+details) and "Open thread" is now a bordered button instead of a ghost
+link. Details in runs/2026-09-13-run-detail-header.md.
 
 Open work:
 

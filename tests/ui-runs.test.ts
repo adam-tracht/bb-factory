@@ -233,6 +233,21 @@ describe("RunDetailView", () => {
     expect(ctx.onOpenThread).toHaveBeenCalledWith("thr_abc");
   });
 
+  it("keeps the run id inside Technical details and renders Open thread as a bordered button", () => {
+    const ctx = makeCtx();
+    const detail = makeDetail(makeRun({ workerThreadId: "thr_abc" }));
+    render(h(RunDetailView, { detail, ctx }));
+
+    expect(screen.queryByText("run-1")).toBeNull();
+
+    fireEvent.click(screen.getByText("Technical details").closest("details")!.querySelector("summary")!);
+    const runId = screen.getByText("run-1");
+    expect(runId.closest("details")).not.toBeNull();
+
+    const button = screen.getByRole("button", { name: "Open thread" });
+    expect(button.className).toContain("border");
+  });
+
   it("renders a Thread button on attempt rows that carry a workerThreadId", () => {
     const ctx = makeCtx();
     // Two attempts keep the collapsible Attempts section open by default.

@@ -419,3 +419,19 @@ validate:
 - bb plugin types --check .
 - git diff --check
 notes: User report: the Approve form asked for free-text approval scope with no explanation even though the entry already carries plan, risk, and acceptance. Mirrors the questions flow's Ask-an-agent advisory spawn. Wire contract v1.2: additive action kind and outcome only; no existing member changed.
+
+## BBF-0026 Run detail header declutter and visible thread button
+status: done (interactive session 2026-09-13)
+priority: 4
+depends_on: none
+risk: low
+plan: src/ui/views/runs.ts, tests/ui-runs.test.ts
+approved: user direction 2026-09-13 (reported live via run-detail screenshot, fixed in-thread)
+acceptance:
+- The RunDetailView header no longer renders the run id; the id remains reachable inside the Technical details disclosure.
+- The Open thread control renders as a bordered button (secondary variant, default size, pinned to the header's right edge) instead of a ghost text affordance.
+- Regression coverage asserts the run id renders only inside a details element and the Open thread button carries the bordered styling.
+validate:
+- pnpm test
+- pnpm typecheck
+notes: Reported live: the run detail header mixed a long copyable run id, metadata, and a nearly invisible ghost "Open thread" link, so the page's primary action read as metadata text. Attempt-row "Thread" buttons stay ghost by design; they are row-level affordances inside the collapsible Attempts section.

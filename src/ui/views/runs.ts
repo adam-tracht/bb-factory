@@ -249,7 +249,6 @@ export function RunDetailView(props: { detail: OperationalRunDetail; ctx: ViewCo
     h(FeedbackNotice, { feedback: ctx.feedback }),
     h("div", { className: "flex flex-wrap items-center gap-x-3 gap-y-2" },
       h(Badge, { label: runStatusLabel(run.status), tone: runStatusTone(run.status) }),
-      h(CopyText, { value: run.runId, mono: true }),
       when ? h("span", { className: "text-xs text-muted-foreground" }, when) : null,
       run.providerId ? h("span", { className: "text-xs text-muted-foreground" }, run.providerId) : null,
       h("span", { className: "text-xs text-muted-foreground" }, `${detail.intent.trigger} trigger`),
@@ -257,8 +256,8 @@ export function RunDetailView(props: { detail: OperationalRunDetail; ctx: ViewCo
       threadId
         ? h(ActionButton, {
             label: "Open thread",
-            variant: "ghost",
-            size: "xs",
+            variant: "secondary",
+            className: "ml-auto",
             title: `Open worker thread ${threadId}`,
             onClick: () => ctx.onOpenThread(threadId),
           })
