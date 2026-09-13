@@ -224,6 +224,7 @@ approved: none
 acceptance:
 - A `blocked-by` status with a detail renders the question id plus the detail (e.g. "Blocked by Q6: property id now known"), never the detail alone.
 - The row still offers a way to reach the referenced question.
+- Superseded 2026-09-13 by the mobile layout pass: the badge is now `Blocked by Q<n>` only and the detail renders as a muted line under the row, so the id still never drops.
 validate:
 - pnpm test
 - pnpm typecheck

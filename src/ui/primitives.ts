@@ -29,7 +29,7 @@ const TONE_DOT: Record<Tone, string> = {
 
 export function Badge({ label, tone, title }: { label: string; tone: Tone; title?: string }) {
   return h("span", {
-    className: `inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium ${TONE_BADGE[tone]}`,
+    className: `inline-flex items-center gap-1.5 whitespace-nowrap rounded-md px-2 py-0.5 text-xs font-medium leading-tight ${TONE_BADGE[tone]}`,
     ...(title ? { title } : {}),
   }, label);
 }
@@ -496,9 +496,9 @@ export function queueStatusLabel(status: QueueEntry["status"]): string {
     case "in-progress":
       return "In progress";
     case "done":
-      return status.detail ? `Done: ${status.detail}` : "Done";
+      return "Done";
     case "blocked-by":
-      return status.detail ? `Blocked by ${status.questionId}: ${status.detail}` : `Blocked by ${status.questionId}`;
+      return `Blocked by ${status.questionId}`;
     case "draft":
       return "Draft";
     case "unknown":

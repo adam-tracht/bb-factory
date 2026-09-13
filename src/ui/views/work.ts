@@ -390,13 +390,17 @@ function WorkRow(props: {
         })
       : null;
 
+  const statusDetail = "detail" in displayStatus ? displayStatus.detail : undefined;
+  const statusDetailId = `work-${entry.id}-status-detail`;
+
   return h("div", { id: `work-${entry.id}`, className: "py-2" },
-    h("div", { className: "flex items-center gap-2" },
+    h("div", { className: "flex items-end gap-2 sm:items-center" },
       h("div", {
         role: "button",
         tabIndex: 0,
         "aria-expanded": expanded,
-        className: "flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md px-1 py-1 hover:bg-state-hover",
+        "aria-describedby": statusDetail ? statusDetailId : undefined,
+        className: "flex min-w-0 flex-1 cursor-pointer flex-wrap items-baseline gap-x-2 gap-y-1 rounded-md px-1 py-1 hover:bg-state-hover sm:flex-nowrap sm:items-center",
         onClick: () => setExpanded((value) => !value),
         onKeyDown: (event: { key: string; preventDefault(): void }) => {
           if (event.key === "Enter" || event.key === " ") {
@@ -407,10 +411,17 @@ function WorkRow(props: {
       },
         h(Badge, { label: queueStatusLabel(displayStatus), tone: STATUS_TONE[displayStatus.kind] }),
         h("code", { className: "shrink-0 font-mono text-xs text-muted-foreground" }, entry.id),
-        h("span", { className: "min-w-0 truncate text-sm text-foreground" }, entry.title),
+        h("span", {
+          className: "order-last min-w-0 basis-full truncate text-sm text-foreground sm:order-none sm:basis-auto",
+        }, entry.title),
         h("span", { className: "shrink-0 text-xs text-muted-foreground" }, `P${entry.priority}`),
-        entry.risk !== "low" ? h(Badge, { label: `${entry.risk} risk`, tone: RISK_TONE[entry.risk] }) : null),
+        entry.risk !== "low"
+          ? h(Badge, { label: entry.risk, tone: RISK_TONE[entry.risk], title: `${entry.risk} risk` })
+          : null),
       cta),
+    statusDetail
+      ? h("p", { id: statusDetailId, className: "mt-0.5 px-1 text-xs text-muted-foreground" }, statusDetail)
+      : null,
     expanded ? h(WorkRowDetail, {
       entry,
       group,

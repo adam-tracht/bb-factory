@@ -80,7 +80,7 @@ describe("FactoryShell", () => {
   it("renders the refresh affordance with an inline icon, not the ↻ glyph", () => {
     const markup = renderToStaticMarkup(h(FactoryShell, shellProps({ children: "body" })));
     expect(markup).not.toContain("↻");
-    expect(markup).toMatch(/<button[^>]*title="Refresh now"[^>]*>refreshed [^<]*<svg[^>]*viewBox="0 0 24 24"/);
+    expect(markup).toMatch(/<button[^>]*title="Refresh now"[^>]*aria-label="refreshed [^"]*"[^>]*><span class="hidden sm:inline">refreshed [^<]*<\/span><svg[^>]*viewBox="0 0 24 24"/);
     expect(markup).toContain('aria-hidden="true"');
   });
 
@@ -189,6 +189,21 @@ describe("FactoryShell", () => {
     expect(markup).toContain("Repo paused");
     expect(markup).toContain("Running");
     expect(markup).toContain("codex");
+  });
+
+  it("scrolls the tab strip horizontally and renders the select switcher under sm", () => {
+    const markup = renderToStaticMarkup(h(FactoryShell, shellProps({
+      repositories: switcherRepositories("alpha", "beta"),
+      selectedRepositoryKey: "alpha",
+      children: "body",
+    })));
+    const nav = /<nav[^>]*role="tablist"[^>]*>/.exec(markup)?.[0] ?? "";
+    expect(nav).toContain("overflow-x-auto");
+    expect(markup.match(/role="tab"[^>]*class="[^"]*shrink-0/g)).toHaveLength(5);
+    // Both switcher variants render; responsive classes pick one per breakpoint.
+    expect(markup).toContain("<select");
+    expect(markup).toMatch(/<div[^>]*class="[^"]*sm:hidden[^"]*"[^>]*aria-busy/);
+    expect(markup).toMatch(/<div[^>]*class="[^"]*hidden[^"]*sm:flex[^"]*"[^>]*role="group"/);
   });
 });
 

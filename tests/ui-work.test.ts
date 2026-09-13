@@ -275,7 +275,10 @@ describe("WorkView rows", () => {
     })], ctx);
     const row = rowOf("STALE-1");
     expect(within(sectionOf("Needs you")).getByText("STALE-1")).toBeTruthy();
-    expect(within(row).getByText("Blocked by Q6: (pipe outstanding)")).toBeTruthy();
+    expect(within(row).getByText("Blocked by Q6")).toBeTruthy();
+    expect(within(row).queryByText("Blocked by Q6: (pipe outstanding)")).toBeNull();
+    const detail = within(row).getByText("(pipe outstanding)");
+    expect(within(row).getByRole("button", { expanded: false }).getAttribute("aria-describedby")).toBe(detail.id);
     fireEvent.click(within(row).getByRole("button", { name: "Review Q6" }));
     expect(ctx.onOpenSection).toHaveBeenCalledWith("questions", "question-Q6");
   });
