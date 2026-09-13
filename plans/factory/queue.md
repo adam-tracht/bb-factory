@@ -379,3 +379,22 @@ validate:
 - bb plugin types --check .
 - git diff --check
 notes: Wire contract v1.2 is frozen; this widens providerPreferenceSchema from a fixed enum to `alternate` | providerIdSchema (backward compatible: every stored value still parses) and may add an optional capability field to providerStatusSchema. User direction: every provider available in a regular session should be selectable. Host catalog on 2026-09-12 reports codex, claude-code, pi, acp-cursor, acp-opencode, acp-devin, acp-prime-agent.
+
+## BBF-0024 Multi-id question headings fail the whole protocol read
+status: done (interactive session 2026-09-12)
+priority: 3
+depends_on: none
+risk: low
+plan: src/protocol/markdown.ts, templates/questions.md, templates/foreman.md, tests/protocol-reader.test.ts
+approved: user direction 2026-09-12 (reported live on diggs-data-platform and monorepo, diagnosed and fixed in-thread)
+acceptance:
+- A question heading carrying more than one dashboard id fails `parseQuestions` with malformed-protocol and a message naming the expected `Q<n> <YYYY-MM-DD> <blocking|assumption> <dashboard-id>` shape and the single-id rule.
+- `templates/questions.md` documents the one-token dashboard id and the multi-entry pattern: lead id in the heading, each other gated entry carries its own `blocked-by: Q<n>` reference in queue.md, the rest named in `context:`.
+- `templates/foreman.md` states the same rule in the question-authoring checklist.
+- `templates/MANIFEST.json` digests match the edited templates.
+validate:
+- pnpm test
+- pnpm typecheck
+- pnpm lint
+- git diff --check
+notes: Reported live: `Q14 2026-09-10 blocking DATA-0064 and DATA-0009.01` in diggs-data-platform and `Q15 2026-09-12 blocking MON-0080.06 and MON-0080.08 through MON-0080.13` in monorepo both threw malformed-protocol and degraded the whole Work tab. Data fixes shipped in diggs-data-platform-factory 8da79bc (Q14 now names DATA-0064, the entry it gates via dashboardId; DATA-0009.01 stays gated by its own `blocked-by: Q14` field) and monorepo-factory 1b21e2e (Q15 now names MON-0080, matching Q14's parent-row convention). Wire contract v1.2 untouched: dashboardId remains a single string; only docs, the error message, and a test changed.

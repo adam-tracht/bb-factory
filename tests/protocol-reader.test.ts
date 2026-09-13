@@ -214,6 +214,13 @@ answer: yes
     );
     expect(() => parseQuestions("## Q1 2026-09-10 blocking TASK-1\nquestion: missing context\n", "plans/factory/questions.md"))
       .toThrowError(expect.objectContaining({ code: "malformed-protocol" }));
+    expect(() => parseQuestions(
+      "## Q1 2026-09-10 blocking TASK-1 and TASK-2\nquestion: q\ncontext: c\n",
+      "plans/factory/questions.md",
+    )).toThrowError(expect.objectContaining({
+      code: "malformed-protocol",
+      message: expect.stringContaining("single id"),
+    }));
     expect(() => parseCurrentState("# run\nstate: unknown\n", "plans/factory/current.md")).toThrowError(
       expect.objectContaining({ code: "malformed-protocol" }),
     );

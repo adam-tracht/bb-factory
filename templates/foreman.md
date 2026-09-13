@@ -106,6 +106,7 @@ Rules for every question:
 - Facts are never questions. Anything checkable from the repo, logs, a running request, env, or a docs site is resolved by checking. Examples that are not questions: trusted-proxy hop count, rate-limit budgets, a table shape choice, which existing helper to copy.
 - Default to a stated assumption. Pick the option a careful senior engineer would pick, record it as `assumption`, keep going. Reserve `blocking` for: customer-facing wording or behavior, money and accounting policy, vendor choice, secrets, destructive or irreversible external changes, production deploys. Everything else is an assumption.
 - Every question, blocking or assumption, includes a `recommended:` line with your preferred answer, so the human can reply "yes".
+- The heading holds exactly one dashboard id. When one decision gates several entries, put the lead entry's id in the heading, name the rest in `context:`, and give each other gated entry its own `blocked-by: Q<n>` reference in `queue.md`. A heading that lists several ids is malformed and fails the whole protocol read.
 
 Never wait for an answer. Answers arrive as edits to `questions.md` (`answer:` line) or to the queue entry before a later run.
 

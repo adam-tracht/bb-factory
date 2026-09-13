@@ -205,7 +205,7 @@ export function parseQuestions(content: string, path: string): readonly ParsedQu
     const match = section.heading.match(/^(\S+)\s+(\d{4}-\d{2}-\d{2})\s+(blocking|assumption)\s+(\S+)$/u);
     if (!match) {
       if (/^Q\d+(?:\s|$)/u.test(section.heading)) {
-        throw new ProtocolError("malformed-protocol", "Question heading '" + section.heading + "' is malformed in '" + path + "'", {
+        throw new ProtocolError("malformed-protocol", "Question heading '" + section.heading + "' is malformed in '" + path + "' (expected 'Q<n> <YYYY-MM-DD> <blocking|assumption> <dashboard-id>' with a single id)", {
           path,
         });
       }

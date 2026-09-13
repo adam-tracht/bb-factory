@@ -4,7 +4,7 @@
     {
       "template": "foreman.md",
       "target": "plans/factory/foreman.md",
-      "sha256": "d9f54792322eaa1c3ce4e549560f1054dbfd0c495c2fbe701013bdff8a32c1be"
+      "sha256": "8c25808104b5f7b3a206cec2d2d7d9175816ecf24142a9bd64d53a6534d8afe7"
     },
     {
       "template": "repo.md",
@@ -19,7 +19,7 @@
     {
       "template": "questions.md",
       "target": "plans/factory/questions.md",
-      "sha256": "8868ca7bfec04571bfc94941440319823de193261c699dfb4925f8db9e4d027f"
+      "sha256": "73f00297495eaf10862f0db21a6f6f4a37712e0a0305716ae72a022e12e01843"
     },
     {
       "template": "current.md",
