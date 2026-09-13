@@ -81,7 +81,7 @@ export function StateChip({ on, label, onClick, disabled, title }: {
 }) {
   return h("button", {
     type: "button",
-    className: `inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed ${
+    className: `inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed ${
       on
         ? "border-success/40 bg-success/10 text-success"
         : "border-border bg-muted text-muted-foreground hover:bg-state-hover"
@@ -119,7 +119,7 @@ export function Section(props: {
   const heading = h("div", { className: "flex items-center gap-2 py-1.5" },
     h("h2", { className: "text-sm font-semibold text-foreground" }, props.title),
     props.count !== undefined
-      ? h("span", { className: "rounded-full bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground" }, String(props.count))
+      ? h("span", { className: "rounded-md bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground" }, String(props.count))
       : null,
     props.actions ? h("div", { className: "ml-auto flex items-center gap-2" }, props.actions) : null,
   );

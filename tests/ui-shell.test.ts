@@ -77,6 +77,14 @@ describe("FactoryShell", () => {
     expect(markup).toContain("refreshed");
   });
 
+  it("renders chips and count badges with the smaller label radius, not rounded-full pills", () => {
+    const markup = renderToStaticMarkup(h(FactoryShell, shellProps({ children: "body" })));
+    expect(markup).toMatch(/<span[^>]*class="[^"]*rounded-md[^"]*bg-success\/10[^"]*"[^>]*>Dispatch on<\/span>/);
+    expect(markup).toMatch(/<span[^>]*class="[^"]*rounded-md bg-warning\/15[^"]*"[^>]*>2<\/span>/);
+    // Text chips never keep the pill radius; the only rounded-full left are geometric circles.
+    expect(markup).not.toMatch(/rounded-full[^"]*px-1\.5/);
+  });
+
   it("renders the refresh affordance with an inline icon, not the ↻ glyph", () => {
     const markup = renderToStaticMarkup(h(FactoryShell, shellProps({ children: "body" })));
     expect(markup).not.toContain("↻");

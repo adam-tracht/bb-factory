@@ -436,3 +436,19 @@ validate:
 - pnpm test
 - pnpm typecheck
 notes: Reported live: the run detail header mixed a long copyable run id, metadata, and a nearly invisible ghost "Open thread" link, so the page's primary action read as metadata text. Attempt-row "Thread" buttons stay ghost by design; they are row-level affordances inside the collapsible Attempts section.
+
+## BBF-0027 Remaining labels keep pill radii on phone widths
+status: done (interactive session 2026-09-13)
+priority: 4
+depends_on: none
+risk: low
+plan: src/ui/primitives.ts, src/ui/shell.ts, src/ui/views/questions.ts, tests/ui-shell.test.ts
+approved: user direction 2026-09-13 (labels need smaller border radii on mobile, fixed in-thread)
+acceptance:
+- No text-bearing chip or label renders `rounded-full`: StateChip, section counts, tab count badges, and the answered/recorded chips in questions.ts all use `rounded-md`, matching the Badge treatment from the phone-width pass (6025521).
+- Geometric circles keep `rounded-full`: StatusDot and the help "?" icon button.
+validate:
+- pnpm test
+- pnpm typecheck
+- pnpm lint
+notes: The user flagged label radii on mobile after the phone-width pass had already converted Badge to rounded-md globally; this finishes the job for every remaining text label. Applied globally rather than behind an sm: breakpoint so desktop stays consistent with the already-square badges.

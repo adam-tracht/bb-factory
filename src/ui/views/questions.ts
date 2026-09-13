@@ -256,7 +256,7 @@ function AnsweredQuestionRow(props: { question: Question; recorded: boolean }) {
         h("span", { className: "truncate text-xs text-foreground" }, truncateText(question.question)),
         h(
           "span",
-          { className: "rounded-full bg-muted px-1.5 py-0.5 text-xs text-muted-foreground" },
+          { className: "rounded-md bg-muted px-1.5 py-0.5 text-xs text-muted-foreground" },
           recorded ? "Recorded" : "Answered",
         ),
       ),
@@ -701,7 +701,7 @@ export function QuestionsView(props: {
                       "span",
                       {
                         className:
-                          "rounded-full bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground",
+                          "rounded-md bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground",
                       },
                       String(answeredQuestions.length),
                     ),
