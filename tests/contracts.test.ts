@@ -332,6 +332,18 @@ describe("Phase 0 wire contracts", () => {
       ...recommend,
       action: { ...recommend.action, providerId: "Not A Provider" },
     })).toThrow();
+
+    const recommendApproval = {
+      repositoryKey: "monorepo",
+      action: { kind: "recommend-approval", queueItemId: "A-1", providerId: "claude-code", model: "claude-sonnet-4", reasoningLevel: "high", serviceTier: "fast" },
+      idempotencyKey: "bbf:v1:monorepo:recommend-approval:223e4567-e89b-12d3-a456-426614174000",
+      expectedRevision: repositoryRevision,
+    };
+    expect(factoryActionRequestSchema.parse(recommendApproval)).toEqual(recommendApproval);
+    expect(() => factoryActionRequestSchema.parse({
+      ...recommendApproval,
+      action: { ...recommendApproval.action, queueItemId: "" },
+    })).toThrow();
   });
 
   it("carries the spawned thread id on accepted recommendation outcomes", () => {
@@ -353,6 +365,19 @@ describe("Phase 0 wire contracts", () => {
     const missingThread = { ...outcome };
     delete (missingThread as Record<string, unknown>).threadId;
     expect(() => actionOutcomeSchema.parse(missingThread)).toThrow();
+
+    const approvalOutcome = {
+      status: "accepted",
+      message: "Started an approval-drafting chat.",
+      revision: repositoryRevision,
+      runId: null,
+      leaseId: null,
+      queueItemId: "A-1",
+      action: "recommend-approval",
+      interactionId: null,
+      threadId: "thr_approval",
+    };
+    expect(actionOutcomeSchema.parse(approvalOutcome)).toEqual(approvalOutcome);
   });
 
   it("binds idempotency repository and action segments to the request", () => {
@@ -581,6 +606,9 @@ describe("Phase 0 wire contracts", () => {
       revision: repositoryRevision,
     });
     if (!parsedRepositoryResult.ok) throw new Error("expected a successful repository action result");
+    if (parsedRepositoryResult.result.action !== "answer-question" || parsedRepositoryResult.result.source !== "repository-question") {
+      throw new Error("expected a repository question outcome");
+    }
     expect(parsedRepositoryResult.result.questionId).toBe("Q6");
 
     expect(() => factoryActionResultSchema.parse({

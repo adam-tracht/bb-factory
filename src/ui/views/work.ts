@@ -1,6 +1,12 @@
 import { createElement, useEffect, useMemo, useState, type ReactNode } from "react";
-import type { ProtocolSnapshot, QueueEntry } from "../../contracts.js";
+import type { ProtocolSnapshot, ProviderStatus, QueueEntry } from "../../contracts.js";
 import type { ViewContext } from "../context.js";
+import {
+  ProviderModelPicker,
+  seedPickerValue,
+  type PickerRouting,
+  type PickerValue,
+} from "../providerPicker.js";
 import {
   ActionButton,
   Badge,
@@ -22,6 +28,8 @@ const QUEUE_PATH = "plans/factory/queue.md";
 const LIST_CLAMP = 6;
 const NOTE_LINE_CLAMP = 6;
 const NOTE_CHAR_CLAMP = 320;
+const ROUTINE_SCOPE_APPROVAL = "routine implementation per plan; no merges, deploys, migrations, dependency changes, secrets, data deletion, or customer-facing changes";
+const APPROVAL_GATED_ACTIONS = "merges, deploys, migrations, adding or upgrading dependencies, touching secrets, deleting data, customer-facing changes";
 
 type WorkGroup = "needs-you" | "ready" | "blocked" | "running" | "draft" | "done";
 
@@ -125,22 +133,58 @@ function DependencyButton(props: { token: string; ctx: ViewContext }) {
 }
 
 /** Textarea plus confirm dialog that writes queue.approved to queue.md. */
-function ApproveComposer(props: { entry: QueueEntry; ctx: ViewContext }) {
+function ApproveComposer(props: {
+  entry: QueueEntry;
+  ctx: ViewContext;
+  providers: readonly ProviderStatus[];
+  preferredProviderId: string | null;
+}) {
   const { entry, ctx } = props;
   const [text, setText] = useState("");
   const [confirming, setConfirming] = useState(false);
+  const [draftOpen, setDraftOpen] = useState(false);
+  const [selection, setSelection] = useState<PickerValue | null>(null);
   const pending = ctx.pendingTarget === `queued:${entry.id}`;
   const trimmed = text.trim();
+  const draftSeed = seedPickerValue(props.providers, props.preferredProviderId);
+  const canDraft = ProviderModelPicker !== undefined && draftSeed !== null;
+  const pickerRouting: PickerRouting = ctx.environmentId
+    ? { kind: "environment", environmentId: ctx.environmentId }
+    : { kind: "host", hostId: ctx.repository.connectedHostId };
   return h("div", { className: "space-y-1.5" },
+    h("div", { className: "space-y-1 text-xs text-muted-foreground" },
+      h("p", null, `Risk: ${entry.risk}. Approval is required before this item can run.`),
+      h("p", null, `Approval lists what the factory may do beyond routine work: ${APPROVAL_GATED_ACTIONS}. Anything unlisted stays off-limits.`)),
     h("textarea", {
       value: text,
       rows: 2,
       disabled: pending,
-      placeholder: `Approved text recorded as queue.approved for ${entry.id}`,
+      placeholder: `What the factory may do for ${entry.id}. Example: "routine work only" or "deploys allowed; no dependency changes".`,
       className: "w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs text-foreground",
       onChange: (event: { target: { value: string } }) => setText(event.target.value),
     }),
-    h("div", null,
+    h("div", { className: "flex flex-wrap items-center gap-2" },
+      h(ActionButton, {
+        label: "Draft with agent",
+        variant: "ghost",
+        disabled: pending || !canDraft,
+        title: canDraft
+          ? "Start a chat that recommends an approval scope"
+          : "The provider catalog is unavailable, so no agent can be picked.",
+        onClick: () => {
+          setSelection(draftSeed);
+          setDraftOpen(true);
+        },
+      }),
+      h(ActionButton, {
+        label: "Routine scope only",
+        variant: "ghost",
+        disabled: pending,
+        onClick: () => {
+          setText(ROUTINE_SCOPE_APPROVAL);
+          setConfirming(true);
+        },
+      }),
       h(ActionButton, {
         label: "Approve",
         variant: "primary",
@@ -149,6 +193,44 @@ function ApproveComposer(props: { entry: QueueEntry; ctx: ViewContext }) {
         busy: pending,
         onClick: () => setConfirming(true),
       })),
+    h(ConfirmDialog, {
+      open: draftOpen,
+      title: `Draft approval with an agent for ${entry.id}`,
+      body: h(
+        "div",
+        { className: "space-y-3" },
+        h(
+          "p",
+          null,
+          "Starts a chat in this repository's environment that recommends an approved: line. Advisory only: it cannot edit the repository.",
+        ),
+        ProviderModelPicker !== undefined && selection !== null
+          ? h(ProviderModelPicker, {
+              value: selection,
+              onChange: (next: PickerValue) => setSelection(next),
+              routing: pickerRouting,
+              disabled: pending,
+            })
+          : null,
+      ),
+      confirmLabel: "Start chat",
+      busy: pending,
+      onConfirm: () => {
+        const picked = selection;
+        setDraftOpen(false);
+        if (picked) {
+          ctx.onAction({
+            kind: "recommend-approval",
+            queueItemId: entry.id,
+            providerId: picked.providerId,
+            model: picked.model,
+            reasoningLevel: picked.reasoningLevel,
+            ...(picked.serviceTier === undefined ? {} : { serviceTier: picked.serviceTier }),
+          });
+        }
+      },
+      onCancel: () => setDraftOpen(false),
+    }),
     h(ConfirmDialog, {
       open: confirming,
       title: `Approve ${entry.id}`,
@@ -168,7 +250,13 @@ function DetailLabel(props: { text: string }) {
 }
 
 /** Expanded row body: plan links, dependencies, question gates, approval, lists, notes. */
-function WorkRowDetail(props: { entry: QueueEntry; group: WorkGroup; ctx: ViewContext }) {
+function WorkRowDetail(props: {
+  entry: QueueEntry;
+  group: WorkGroup;
+  ctx: ViewContext;
+  providers: readonly ProviderStatus[];
+  preferredProviderId: string | null;
+}) {
   const { entry, group, ctx } = props;
   const status = entry.status;
   const qids = gatingQuestionIds(entry);
@@ -231,7 +319,12 @@ function WorkRowDetail(props: { entry: QueueEntry; group: WorkGroup; ctx: ViewCo
       : approvalMissing(entry) && entry.blockingQuestionIds.length === 0
         ? h("div", null,
             h(DetailLabel, { text: "Approval" }),
-            h("div", { className: "mt-1" }, h(ApproveComposer, { entry, ctx })))
+            h("div", { className: "mt-1" }, h(ApproveComposer, {
+              entry,
+              ctx,
+              providers: props.providers,
+              preferredProviderId: props.preferredProviderId,
+            })))
         : null,
     entry.acceptance.length > 0
       ? h("div", null, h(DetailLabel, { text: "Acceptance" }), h(ClampedList, { items: entry.acceptance }))
@@ -245,7 +338,14 @@ function WorkRowDetail(props: { entry: QueueEntry; group: WorkGroup; ctx: ViewCo
 }
 
 /** One queue row: collapsed summary line plus toggleable detail. */
-function WorkRow(props: { entry: QueueEntry; group: WorkGroup; ctx: ViewContext; defaultExpanded: boolean }) {
+function WorkRow(props: {
+  entry: QueueEntry;
+  group: WorkGroup;
+  ctx: ViewContext;
+  defaultExpanded: boolean;
+  providers: readonly ProviderStatus[];
+  preferredProviderId: string | null;
+}) {
   const { entry, group, ctx } = props;
   const [expanded, setExpanded] = useState(props.defaultExpanded);
   const pending = ctx.pendingTarget === `queued:${entry.id}`;
@@ -311,15 +411,25 @@ function WorkRow(props: { entry: QueueEntry; group: WorkGroup; ctx: ViewContext;
         h("span", { className: "shrink-0 text-xs text-muted-foreground" }, `P${entry.priority}`),
         entry.risk !== "low" ? h(Badge, { label: `${entry.risk} risk`, tone: RISK_TONE[entry.risk] }) : null),
       cta),
-    expanded ? h(WorkRowDetail, { entry, group, ctx }) : null);
+    expanded ? h(WorkRowDetail, {
+      entry,
+      group,
+      ctx,
+      providers: props.providers,
+      preferredProviderId: props.preferredProviderId,
+    }) : null);
 }
 
 export function WorkView(props: {
   snapshot: ProtocolSnapshot;
   ctx: ViewContext;
   focusItemId?: string | null;
+  providers?: readonly ProviderStatus[];
+  preferredProviderId?: string | null;
 }): ReactNode {
   const { snapshot, ctx, focusItemId } = props;
+  const providers = props.providers ?? [];
+  const preferredProviderId = props.preferredProviderId ?? null;
 
   const groups = useMemo(() => {
     const buckets: Record<WorkGroup, QueueEntry[]> = {
@@ -378,6 +488,8 @@ export function WorkView(props: {
                 group: section.key,
                 ctx,
                 defaultExpanded: entry.id === focusItemId,
+                providers,
+                preferredProviderId,
               })),
           })));
 }

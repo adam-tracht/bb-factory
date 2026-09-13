@@ -398,3 +398,24 @@ validate:
 - pnpm lint
 - git diff --check
 notes: Reported live: `Q14 2026-09-10 blocking DATA-0064 and DATA-0009.01` in diggs-data-platform and `Q15 2026-09-12 blocking MON-0080.06 and MON-0080.08 through MON-0080.13` in monorepo both threw malformed-protocol and degraded the whole Work tab. Data fixes shipped in diggs-data-platform-factory 8da79bc (Q14 now names DATA-0064, the entry it gates via dashboardId; DATA-0009.01 stays gated by its own `blocked-by: Q14` field) and monorepo-factory 1b21e2e (Q15 now names MON-0080, matching Q14's parent-row convention). Wire contract v1.2 untouched: dashboardId remains a single string; only docs, the error message, and a test changed.
+
+## BBF-0025 Approve composer drafts scope and explains the ask
+status: done (orchestrated session 2026-09-12)
+priority: 3
+depends_on: none
+risk: medium
+plan: src/contracts.ts (recommend-approval action + outcome), src/actions/interactions.ts, src/ui/views/work.ts, src/ui/FactoryView.ts
+approved: user direction 2026-09-12 (design approved in-thread); contract seam addition reviewed in-thread: new action kind recommend-approval, additive and backward compatible
+acceptance:
+- The Approve composer explains what approval covers before the textarea: the entry's risk and the gated-action list (merges, deploys, migrations, dependency changes, secrets, destructive ops, customer-facing changes), with plain-language placeholder copy.
+- A "Draft with agent" button opens the provider/model picker and dispatches a new recommend-approval action that spawns an advisory thread; the prompt carries the entry's title, plan, risk, acceptance, and notes, and the thread drafts a recommended approved: line without writing to the repository. The outcome opens the thread, matching recommend-question.
+- A "Routine scope only" button writes a canned conservative approved line through the existing approve-queue action, behind the same confirm dialog.
+- recommend-approval joins actionKindSchema, bbInteractionActionSchema, its outcome schema, and the outcome union; idempotent intent handling and guarded/reconcile paths match recommend-question.
+validate:
+- pnpm test
+- pnpm typecheck
+- pnpm lint
+- pnpm build
+- bb plugin types --check .
+- git diff --check
+notes: User report: the Approve form asked for free-text approval scope with no explanation even though the entry already carries plan, risk, and acceptance. Mirrors the questions flow's Ask-an-agent advisory spawn. Wire contract v1.2: additive action kind and outcome only; no existing member changed.

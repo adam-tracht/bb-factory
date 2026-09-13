@@ -1,16 +1,24 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { createElement } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { installTestPluginRuntime } from "@get-bb/plugin-sdk/testing/app";
 import type {
   ProtocolSnapshot,
+  ProviderStatus,
   QueueEntry,
   RepositoryConfiguration,
   RepositoryRevision,
 } from "../src/contracts.js";
 import type { ViewContext } from "../src/ui/context.js";
 import type { FileLinkRenderer } from "../src/ui/primitives.js";
-import { WorkView } from "../src/ui/views/work.js";
+
+let WorkView: (typeof import("../src/ui/views/work.js"))["WorkView"];
+
+beforeAll(async () => {
+  installTestPluginRuntime();
+  ({ WorkView } = await import("../src/ui/views/work.js"));
+});
 
 const h = createElement;
 
@@ -115,8 +123,19 @@ function makeCtx(overrides: Partial<ViewContext> = {}): ViewContext {
   };
 }
 
-function renderWork(queue: QueueEntry[], ctx: ViewContext = makeCtx(), focusItemId?: string | null) {
-  return render(h(WorkView, { snapshot: snapshotWith(queue), ctx, focusItemId }));
+function renderWork(
+  queue: QueueEntry[],
+  ctx: ViewContext = makeCtx(),
+  focusItemId?: string | null,
+  options: { providers?: readonly ProviderStatus[]; preferredProviderId?: string | null } = {},
+) {
+  return render(h(WorkView, {
+    snapshot: snapshotWith(queue),
+    ctx,
+    focusItemId,
+    providers: options.providers,
+    preferredProviderId: options.preferredProviderId,
+  }));
 }
 
 function sectionOf(title: string): HTMLElement {
@@ -378,6 +397,28 @@ describe("WorkView rows", () => {
 describe("WorkView approve flow", () => {
   const pendingEntry = () => makeEntry({ id: "NEEDS-1", eligibilityReasons: ["missing-authorization"], risk: "high" });
 
+  const providers: ProviderStatus[] = [
+    { providerId: "codex", model: "gpt-5", reasoningLevel: "medium", availability: "available", limitedUntil: null, activeThreadCount: 0, lastError: null },
+    { providerId: "claude-code", model: "claude-sonnet-4", reasoningLevel: "high", availability: "limited", limitedUntil: "2026-09-11T00:00:00Z", activeThreadCount: 0, lastError: null },
+  ];
+
+  it("explains the approval risk and gated action scope above the composer", () => {
+    const entry = makeEntry({
+      id: "NEEDS-1",
+      eligibilityReasons: ["missing-authorization"],
+      risk: "medium",
+      acceptance: ["the task is done"],
+      validate: ["pnpm test"],
+    });
+    renderWork([entry]);
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    const row = rowOf("NEEDS-1");
+    expect(within(row).getByText("Risk: medium. Approval is required before this item can run.")).toBeTruthy();
+    expect(within(row).getByText(
+      "Approval lists what the factory may do beyond routine work: merges, deploys, migrations, adding or upgrading dependencies, touching secrets, deleting data, customer-facing changes. Anything unlisted stays off-limits.",
+    )).toBeTruthy();
+  });
+
   it("expands on the Approve CTA, confirms, and emits the exact approve-queue payload", () => {
     const ctx = makeCtx();
     renderWork([pendingEntry()], ctx);
@@ -400,6 +441,60 @@ describe("WorkView approve flow", () => {
       queueItemId: "NEEDS-1",
       approvedText: "no gated actions",
     });
+  });
+
+  it("confirms routine scope and emits the canned approve-queue payload", () => {
+    const ctx = makeCtx();
+    renderWork([pendingEntry()], ctx);
+
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    const row = rowOf("NEEDS-1");
+    fireEvent.click(within(row).getByRole("button", { name: "Routine scope only" }));
+
+    const dialog = screen.getByRole("alertdialog");
+    expect(within(dialog).getByText(
+      "Writes queue.approved: 'routine implementation per plan; no merges, deploys, migrations, dependency changes, secrets, data deletion, or customer-facing changes' to plans/factory/queue.md for NEEDS-1.",
+    )).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Approve" }));
+    expect(ctx.onAction).toHaveBeenCalledWith({
+      kind: "approve-queue",
+      queueItemId: "NEEDS-1",
+      approvedText: "routine implementation per plan; no merges, deploys, migrations, dependency changes, secrets, data deletion, or customer-facing changes",
+    });
+  });
+
+  it("opens the provider picker and dispatches recommend-approval", () => {
+    const ctx = makeCtx();
+    renderWork([pendingEntry()], ctx, undefined, { providers });
+
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    const row = rowOf("NEEDS-1");
+    fireEvent.click(within(row).getByRole("button", { name: "Draft with agent" }));
+    const dialog = screen.getByRole("alertdialog");
+    const picker = within(dialog).getByTestId("bb-provider-model-picker");
+    expect(picker.getAttribute("data-routing-kind")).toBe("environment");
+    expect(picker.getAttribute("data-routing-id")).toBe("environment-1");
+
+    fireEvent.change(within(picker).getByLabelText("Provider ID"), { target: { value: "claude-code" } });
+    fireEvent.change(within(picker).getByLabelText("Model"), { target: { value: "claude-sonnet-4" } });
+    fireEvent.change(within(picker).getByLabelText("Reasoning level"), { target: { value: "high" } });
+    fireEvent.click(within(picker).getByRole("button", { name: "Apply execution selection" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Start chat" }));
+
+    expect(ctx.onAction).toHaveBeenCalledWith({
+      kind: "recommend-approval",
+      queueItemId: "NEEDS-1",
+      providerId: "claude-code",
+      model: "claude-sonnet-4",
+      reasoningLevel: "high",
+    });
+  });
+
+  it("keeps draft-with-agent disabled without a provider catalog", () => {
+    const ctx = makeCtx();
+    renderWork([pendingEntry()], ctx);
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    expect(within(rowOf("NEEDS-1")).getByRole("button", { name: "Draft with agent" }).hasAttribute("disabled")).toBe(true);
   });
 
   it("shows the recorded approval text instead of the composer when already approved", () => {

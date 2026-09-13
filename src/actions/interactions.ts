@@ -162,6 +162,33 @@ function recommendationPrompt(
   return lines.join("\n");
 }
 
+function approvalPrompt(configuration: RepositoryConfiguration, entry: ProtocolSnapshot["queue"][number]): string {
+  const list = (items: readonly string[]) => items.length > 0 ? items.map((item) => `- ${item}`).join("\n") : "- none";
+  return [
+    `The factory operator asked for a draft approval for queue entry ${entry.id} in repository "${configuration.repositoryKey}".`,
+    "",
+    `Queue entry: ${entry.id}`,
+    `Title: ${entry.title}`,
+    `Status: ${entry.status.kind === "blocked-by" ? `blocked by ${entry.status.questionId}` : entry.status.kind}`,
+    `Risk: ${entry.risk}`,
+    `Plan: ${entry.planPath}`,
+    "",
+    "Acceptance criteria:",
+    list(entry.acceptance),
+    "",
+    "Validate commands:",
+    list(entry.validate),
+    "",
+    `Notes: ${entry.notes ?? "none"}`,
+    "",
+    "The approved: line can permit these gated actions only: merges, deploys, migrations, adding or upgrading dependencies, touching secrets, deleting data, customer-facing changes.",
+    "",
+    `The operator must write an approved: line on the ${entry.id} queue entry and asked you to draft it. The repository checkout is at ${configuration.checkoutPath} on the "factory" branch. Read plans/factory/queue.md for the full queue record and plans/factory/repo.md for repository protocol rules before drafting.`,
+    "",
+    "Reply with (1) the recommended approved: line text, (2) the reasoning, and (3) what stays excluded. Advisory only: do not edit files; the operator records the approval.",
+  ].join("\n");
+}
+
 export function createBbInteractionActionExecutor(options: BbInteractionActionExecutorOptions): BbInteractionActionExecutor {
   const { threads, store, interactionReader, protocolReader, repositoryLookup, dispatch, setDispatchMode } = options;
 
@@ -432,6 +459,71 @@ export function createBbInteractionActionExecutor(options: BbInteractionActionEx
     });
   }
 
+  /** Spawns an advisory thread that drafts an approval for a queue item. */
+  async function recommendApproval(request: BbInteractionActionRequest): Promise<FactoryActionResult> {
+    const action = request.action as Extract<BbInteractionActionRequest["action"], { kind: "recommend-approval" }>;
+    const entry = repositoryLookup(request.repositoryKey);
+    if (!entry) {
+      return actionError("not-found", `Repository '${request.repositoryKey}' is not configured.`, request.idempotencyKey);
+    }
+    const target: PendingActionIntentTarget = { kind: "queue-item", queueItemId: action.queueItemId };
+    return guarded(request, target, async (record) => {
+      let snapshot: ProtocolSnapshot;
+      try {
+        snapshot = await protocolReader.loadSnapshot(entry.configuration);
+      } catch (error) {
+        return completeIntent(store, record, actionError(
+          "internal",
+          `Could not read the repository protocol: ${errorMessage(error)}`,
+          request.idempotencyKey,
+        ));
+      }
+      const queueEntry = snapshot.queue.find((candidate) => candidate.id === action.queueItemId);
+      if (!queueEntry) {
+        return completeIntent(store, record, actionError(
+          "not-found",
+          `Queue item '${action.queueItemId}' is not in plans/factory/queue.md.`,
+          request.idempotencyKey,
+        ));
+      }
+
+      let spawned: { id: string };
+      try {
+        spawned = await threads.spawn({
+          projectId: entry.projectId,
+          environment: spawnEnvironment(entry),
+          prompt: approvalPrompt(entry.configuration, queueEntry),
+          providerId: action.providerId,
+          model: action.model,
+          reasoningLevel: action.reasoningLevel,
+          ...(action.serviceTier === undefined ? {} : { serviceTier: action.serviceTier }),
+          permissionMode: "auto",
+          title: `factory recommend: ${entry.configuration.repositoryKey} ${queueEntry.id}`,
+          executionInputSources: {
+            providerId: "explicit",
+            model: "explicit",
+            reasoningLevel: "explicit",
+            ...(action.serviceTier === undefined ? {} : { serviceTier: "explicit" as const }),
+          },
+        });
+      } catch (error) {
+        return reconcileIntent(store, record, `Approval-drafting thread spawn for ${queueEntry.id} failed ambiguously: ${errorMessage(error)}. The thread may exist.`);
+      }
+
+      return completeIntent(store, record, actionSuccess({
+        status: "accepted",
+        message: `Started an approval-drafting chat for ${queueEntry.id} on ${action.providerId} (${action.model}).`,
+        revision: request.expectedRevision ?? null,
+        runId: null,
+        leaseId: null,
+        queueItemId: queueEntry.id,
+        action: "recommend-approval",
+        interactionId: null,
+        threadId: spawned.id,
+      }, request.expectedRevision ?? null));
+    });
+  }
+
   async function execute(request: BbInteractionActionRequest): Promise<FactoryActionResult> {
     const parsed = bbInteractionActionRequestSchema.safeParse(request);
     if (!parsed.success) {
@@ -456,6 +548,14 @@ export function createBbInteractionActionExecutor(options: BbInteractionActionEx
         return await recommendQuestion(valid);
       } catch (error) {
         return actionError("internal", `Could not spawn the recommendation thread: ${errorMessage(error)}`, valid.idempotencyKey);
+      }
+    }
+
+    if (action.kind === "recommend-approval") {
+      try {
+        return await recommendApproval(valid);
+      } catch (error) {
+        return actionError("internal", `Could not spawn the approval-drafting thread: ${errorMessage(error)}`, valid.idempotencyKey);
       }
     }
 

@@ -1,5 +1,5 @@
-import { Markdown, experimental_ProviderModelPicker } from "@get-bb/plugin-sdk/app";
-import { createElement, useEffect, useMemo, useState, type ComponentProps, type ComponentType, type ReactNode } from "react";
+import { Markdown } from "@get-bb/plugin-sdk/app";
+import { createElement, useEffect, useMemo, useState, type ReactNode } from "react";
 import type {
   ApprovalDecision,
   BbInteractionResolution,
@@ -10,6 +10,12 @@ import type {
   Question,
 } from "../../contracts.js";
 import type { ViewContext } from "../context.js";
+import {
+  ProviderModelPicker,
+  seedPickerValue,
+  type PickerRouting,
+  type PickerValue,
+} from "../providerPicker.js";
 import {
   ActionButton,
   Badge,
@@ -27,34 +33,6 @@ const h = createElement;
 const inputClass =
   "rounded-md border border-border bg-background px-2 py-1 text-sm text-foreground placeholder:text-muted-foreground";
 const labelClass = "text-xs font-medium uppercase tracking-wide text-muted-foreground";
-
-type PickerValue = ComponentProps<NonNullable<typeof experimental_ProviderModelPicker>>["value"];
-type PickerRouting = ComponentProps<NonNullable<typeof experimental_ProviderModelPicker>>["routing"];
-
-// The host only binds the picker on runtimes new enough to ship it.
-const ProviderModelPicker = experimental_ProviderModelPicker as ComponentType<{
-  value: PickerValue;
-  onChange(value: PickerValue): void;
-  routing?: PickerRouting;
-  disabled?: boolean;
-}> | undefined;
-
-/** Seed the picker from live health: the configured preference, then the first available provider. */
-function seedPickerValue(
-  providers: readonly ProviderStatus[],
-  preferredProviderId: string | null,
-): PickerValue | null {
-  const usable = providers.filter(
-    (provider) => provider.model !== "unavailable" && provider.availability !== "unavailable",
-  );
-  const pick = (preferredProviderId === null ? undefined : usable.find((provider) => provider.providerId === preferredProviderId))
-    ?? usable.find((provider) => provider.availability === "available")
-    ?? usable[0]
-    ?? null;
-  return pick === null
-    ? null
-    : { providerId: pick.providerId, model: pick.model, reasoningLevel: pick.reasoningLevel };
-}
 
 type KindFilter = "all" | "blocking" | "assumption";
 type StateFilter = "all" | "open" | "answered";
