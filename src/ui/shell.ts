@@ -301,7 +301,7 @@ export function FactoryShell(props: FactoryShellProps) {
           },
             tab.label,
             badge > 0
-              ? h("span", { className: "rounded-md bg-warning/15 px-1.5 text-xs font-medium text-warning" }, String(badge))
+              ? h("span", { className: "rounded bg-warning/15 px-1.5 text-xs font-medium text-warning" }, String(badge))
               : null,
             tab.section === "runs" && props.badges.runsActive
               ? h(StatusDot, { tone: "primary", pulse: true })

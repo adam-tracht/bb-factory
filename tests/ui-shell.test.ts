@@ -77,12 +77,12 @@ describe("FactoryShell", () => {
     expect(markup).toContain("refreshed");
   });
 
-  it("renders chips and count badges with the smaller label radius, not rounded-full pills", () => {
+  it("renders chips and count badges with the small label radius, not round pills", () => {
     const markup = renderToStaticMarkup(h(FactoryShell, shellProps({ children: "body" })));
-    expect(markup).toMatch(/<span[^>]*class="[^"]*rounded-md[^"]*bg-success\/10[^"]*"[^>]*>Dispatch on<\/span>/);
-    expect(markup).toMatch(/<span[^>]*class="[^"]*rounded-md bg-warning\/15[^"]*"[^>]*>2<\/span>/);
-    // Text chips never keep the pill radius; the only rounded-full left are geometric circles.
-    expect(markup).not.toMatch(/rounded-full[^"]*px-1\.5/);
+    expect(markup).toMatch(/<span[^>]*class="[^"]*rounded px-2 py-0\.5[^"]*bg-success\/10[^"]*"[^>]*>Dispatch on<\/span>/);
+    expect(markup).toMatch(/<span[^>]*class="[^"]*rounded bg-warning\/15[^"]*"[^>]*>2<\/span>/);
+    // Tinted chips never carry a larger radius; only geometric circles stay rounded-full.
+    expect(markup).not.toMatch(/rounded-(?:md|full)[^"]*bg-(?:muted|warning|success|destructive)[^"]*px-/);
   });
 
   it("renders the refresh affordance with an inline icon, not the ↻ glyph", () => {

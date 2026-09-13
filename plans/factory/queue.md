@@ -451,4 +451,20 @@ validate:
 - pnpm test
 - pnpm typecheck
 - pnpm lint
-notes: The user flagged label radii on mobile after the phone-width pass had already converted Badge to rounded-md globally; this finishes the job for every remaining text label. Applied globally rather than behind an sm: breakpoint so desktop stays consistent with the already-square badges.
+notes: The user flagged label radii on mobile after the phone-width pass had already converted Badge to rounded-md globally; this finishes the job for every remaining text label. Applied globally rather than behind an sm: breakpoint so desktop stays consistent with the already-square badges. Superseded same-day by BBF-0028: rounded-md still read as round on small screens, so labels went to bare `rounded` (the existing small-chip radius).
+
+## BBF-0028 Labels still read as round on small screens
+status: done (interactive session 2026-09-13)
+priority: 4
+depends_on: none
+risk: low
+plan: src/ui/primitives.ts, src/ui/shell.ts, src/ui/views/questions.ts, tests/ui-shell.test.ts
+approved: user direction 2026-09-13 (radii still need to be smaller, reported after BBF-0027)
+acceptance:
+- Every text-bearing label/chip renders bare `rounded` (the same radius the mono id chips already use): Badge, StateChip, section counts, tab count badges, answered/recorded chips.
+- Geometric circles keep `rounded-full`: StatusDot and the help "?" icon button; controls and cards keep their existing radii (buttons rounded-md, cards rounded-lg).
+validate:
+- pnpm test
+- pnpm typecheck
+- pnpm lint
+notes: Follow-up to BBF-0027, same user direction. rounded-md (6px) still read as "trying to be round" on small screens and tall labels; bare `rounded` (4px) is the repo's existing small-chip radius and reads as a softened box rather than a pill.

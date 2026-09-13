@@ -1,13 +1,12 @@
 # Current factory run
 
-The 2026-09-13 interactive session completed BBF-0026 and BBF-0027.
-BBF-0026 dropped the redundant copyable run id from the run detail
-header (still in Technical details) and made "Open thread" a bordered
-button instead of a ghost link. BBF-0027 moved every remaining
-text-bearing `rounded-full` chip (StateChip, section counts, tab count
-badges, answered/recorded chips) to `rounded-md`, matching the Badge
-treatment from the phone-width pass. Details in
-runs/2026-09-13-run-detail-header.md and
+The 2026-09-13 interactive session completed BBF-0026, BBF-0027, and
+BBF-0028. BBF-0026 dropped the redundant copyable run id from the run
+detail header (still in Technical details) and made "Open thread" a
+bordered button instead of a ghost link. BBF-0027 and BBF-0028 shrank
+label radii twice under user direction: every text chip went
+`rounded-full` to `rounded-md` to bare `rounded`, matching the mono id
+chips. Details in runs/2026-09-13-run-detail-header.md and
 runs/2026-09-13-label-radii.md.
 
 Open work:

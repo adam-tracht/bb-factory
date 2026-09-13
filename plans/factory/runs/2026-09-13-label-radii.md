@@ -1,22 +1,24 @@
-# Run record: remaining labels keep pill radii on phone widths
+# Run record: label radius pass (rounded-full → rounded-md → rounded)
 
 - Date: 2026-09-13
 - Thread: this interactive session (acp-devin)
-- Tasks attempted: BBF-0027 (remaining labels keep pill radii on phone widths)
+- Tasks attempted: BBF-0027 (remaining labels keep pill radii on phone
+  widths), BBF-0028 (labels still read as round on small screens)
 
 ## Outcome
 
-- BBF-0027: done. User direction: labels need smaller border radii on
-  mobile. The phone-width pass (6025521) had already converted `Badge`
-  to `rounded-md`; this change finishes the job for every remaining
-  text-bearing chip.
-- Moved to `rounded-md`: `StateChip` (the Dispatch on/paused pill),
-  the `Section` count bubble, the tab count badges in the shell, and
-  the Recorded/Answered chips in `questions.ts`.
+- BBF-0027: done, then superseded same-day. Moved every remaining
+  text-bearing chip from `rounded-full` to `rounded-md`: `StateChip`,
+  the `Section` count bubble, the tab count badges, and the
+  Recorded/Answered chips in `questions.ts`.
+- BBF-0028: done. `rounded-md` still read as round on small screens
+  and tall labels, so all text labels including `Badge` moved to bare
+  `rounded`, the radius the mono id chips already used.
 - Left `rounded-full` where it is geometric, not a label: `StatusDot`
-  and the fixed-square help "?" icon button.
+  and the fixed-square help "?" icon button. Controls keep
+  `rounded-md`, cards keep `rounded-lg`.
 - Applied globally rather than behind an `sm:` breakpoint so desktop
-  stays consistent with the already-square badges.
+  stays consistent.
 
 ## Validation
 
