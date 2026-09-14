@@ -87,7 +87,7 @@ describe("FactoryShell", () => {
     expect(markup).toMatch(/<span[^>]*class="[^"]*rounded px-2 py-0\.5[^"]*bg-\[#dcfce7\][^"]*"[^>]*>Dispatch on<\/span>/);
     expect(markup).toMatch(/<span[^>]*class="[^"]*rounded bg-\[#fef3c7\][^"]*"[^>]*>2<\/span>/);
     // Tinted chips never carry a larger radius; only geometric circles stay rounded-full.
-    expect(markup).not.toMatch(/rounded-(?:md|full)[^"]*bg-(?:muted|warning|success|destructive)[^"]*px-/);
+    expect(markup).not.toMatch(/<span[^>]*class="[^"]*rounded-(?:md|full)[^"]*bg-(?:muted|warning|success|destructive)[^"]*px-/);
   });
 
   it("renders the refresh affordance with an inline icon, not the ↻ glyph", () => {
@@ -120,7 +120,6 @@ describe("FactoryShell", () => {
       selectedRepositoryKey: "alpha",
       repositoriesActive: true,
       tabs: ["overview", "work", "questions", "runs"],
-      runNow: { disabled: false, reason: null, confirmTitle: "Run?", confirmBody: "body", onConfirm: () => undefined },
       activeRun: {
         runId: "run-9",
         repositoryKey: "alpha",
@@ -221,6 +220,39 @@ describe("FactoryShell", () => {
     expect(screen.getByRole("button", { name: "Chip legend" })).toBeTruthy();
   });
 
+  it("closes and keeps Run now confirmation closed across an active-run transition", () => {
+    const runNow = { disabled: false, reason: null, confirmTitle: "Run?", confirmBody: "body", onConfirm: () => undefined };
+    const { rerender } = render(h(FactoryShell, shellProps({ runNow, children: "repository" })));
+    fireEvent.click(screen.getByRole("button", { name: "Run now" }));
+    expect(screen.getByRole("alertdialog", { name: "Run?" })).toBeTruthy();
+
+    rerender(h(FactoryShell, shellProps({
+      activeRun: {
+        runId: "run-9",
+        repositoryKey: "demo",
+        requestedAt: "2026-09-10T12:00:00Z",
+        startedAt: "2026-09-10T12:01:00Z",
+        finishedAt: null,
+        providerId: "codex",
+        workerThreadId: "th_1",
+        projectId: "p1",
+        environmentId: "e1",
+        status: "started",
+        queueItemIds: [],
+        repositoryRevision: { gitCommit: "abc1234", protocolDigest: "d".repeat(64), fileDigests: {} },
+        canonicalRecords: [],
+      },
+      runNow: null,
+      children: "running",
+    })));
+    expect(screen.queryByRole("alertdialog", { name: "Run?" })).toBeNull();
+
+    rerender(h(FactoryShell, shellProps({ runNow, children: "repository again" })));
+    expect(screen.queryByRole("alertdialog", { name: "Run?" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Run now" }));
+    expect(screen.getByRole("alertdialog", { name: "Run?" })).toBeTruthy();
+  });
+
   it("keeps the selected repository pill active off the landing", () => {
     const markup = renderToStaticMarkup(h(FactoryShell, shellProps({
       repositories: switcherRepositories("alpha", "beta"),
@@ -274,6 +306,7 @@ describe("FactoryShell", () => {
     expect(markup).toContain("Repo paused");
     expect(markup).toContain("Running");
     expect(markup).toContain("codex");
+    expect(markup).not.toContain("Run now");
   });
 
   it("scrolls the tab strip horizontally and renders the select switcher under sm", () => {
@@ -342,14 +375,37 @@ describe("FactoryShell", () => {
     const markup = renderToStaticMarkup(h(FactoryShell, shellProps({
       repositories: switcherRepositories("alpha", "beta"),
       selectedRepositoryKey: "alpha",
+      runNow: { disabled: false, reason: null, confirmTitle: "Run?", confirmBody: "body", onConfirm: () => undefined },
       children: "body",
     })));
-    expect(markup).toContain("flex flex-col gap-1");
+    expect(markup).toContain('data-testid="factory-operations-bar"');
+    expect(markup).toContain("rounded-md border border-border bg-muted/30");
     expect(markup).toContain("min-h-8 min-w-8");
     expect(markup).toContain("min-w-[4.5rem]");
     expect(markup).toContain("[scrollbar-width:none]");
     expect(markup).toContain("bg-gradient-to-l");
     expect(markup).toContain("basis-1/5");
+    const repositoryIndex = markup.indexOf('aria-label="Configured repository"');
+    const refreshIndex = markup.indexOf('title="Refresh now"');
+    const legendIndex = markup.indexOf('aria-label="Chip legend"');
+    const operationsIndex = markup.indexOf('data-testid="factory-operations-bar"');
+    const tabsIndex = markup.indexOf('role="tablist"');
+    expect(repositoryIndex).toBeGreaterThanOrEqual(0);
+    expect(refreshIndex).toBeGreaterThan(repositoryIndex);
+    expect(legendIndex).toBeGreaterThan(refreshIndex);
+    expect(operationsIndex).toBeGreaterThan(legendIndex);
+    expect(tabsIndex).toBeGreaterThan(operationsIndex);
+    const operations = markup.slice(operationsIndex, tabsIndex);
+    expect(operations).toContain(">Enabled<");
+    expect(operations).toContain(">Pause<");
+    expect(operations).toContain(">Idle<");
+    expect(operations).toContain(">Run now<");
+    const pause = /<button[^>]*title="Stops new runs\. Running runs continue\."[^>]*>/.exec(operations)?.[0] ?? "";
+    expect(pause).toContain("min-h-8");
+    expect(pause).toContain("min-w-8");
+    const runNow = /<button[^>]*title="Start a run immediately"[^>]*>/.exec(operations)?.[0] ?? "";
+    expect(runNow).toContain("min-h-8");
+    expect(runNow).toContain("min-w-8");
   });
 
   it("scrolls the active tab into view on selection so a clipped tab is revealed", () => {

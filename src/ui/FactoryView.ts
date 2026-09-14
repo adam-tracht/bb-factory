@@ -57,6 +57,7 @@ import { aggregateRunDetailPath, aggregateSectionPath, parseFactoryRoute, runDet
 import { FactoryShell } from "./shell.js";
 import {
   AggregateSectionView,
+  AggregateOverviewView,
   idleBundle,
   type AggregateGroup,
   type AggregateSection,
@@ -827,34 +828,25 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
   } else if (!repositoryProjection || repositoryProjection.repositories.length === 0) {
     // No registered repositories: the landing doubles as the empty state in
     // either scope.
-    content = h(RepositoryLandingView, {
-      repositories: [],
-      onSelect: (repositoryKey) => {
-        onRepositorySelect(repositoryKey);
-        onNavigate("overview");
-      },
-      onAddRepository,
-      loadSummary: loadRepositorySummary,
-    });
+    content = aggregateScope
+      ? h(AggregateOverviewView, { groups: [], onRetry })
+      : h(RepositoryLandingView, {
+          repositories: [],
+          onSelect: (repositoryKey) => {
+            onRepositorySelect(repositoryKey);
+            onNavigate("overview");
+          },
+          onAddRepository,
+          loadSummary: loadRepositorySummary,
+        });
   } else if (route.section === "not-found") {
     content = h(EmptyNotice, {
       title: "Page not found",
       detail: `No factory view matches "${route.raw ?? ""}".`,
       action: h("button", { type: "button", className: "text-sm font-medium text-primary hover:underline", onClick: () => (aggregateScope ? onOpenAggregateSection("overview") : onNavigate("overview")) }, "Back to overview"),
     });
-  } else if (aggregate && (route.section === "overview" || route.section === "settings")) {
-    // Aggregate overview reuses the repository landing cards. Settings is
-    // repository-scoped and never renders under "All"; with no selection it
-    // falls back to the same landing.
-    content = h(RepositoryLandingView, {
-      repositories: repositoryProjection.repositories,
-      onSelect: (repositoryKey) => {
-        onRepositorySelect(repositoryKey);
-        onNavigate("overview");
-      },
-      onAddRepository,
-      loadSummary: loadRepositorySummary,
-    });
+  } else if (aggregate && route.section === "overview") {
+    content = h(AggregateOverviewView, { groups: aggregateGroups, onRetry });
   } else if (aggregate && route.section === "runs" && routeRunId) {
     const detailEntry = route.runRepositoryKey
       ? repositoryProjection.repositories.find((entry) => entry.configuration.repositoryKey === route.runRepositoryKey) ?? null
@@ -1002,7 +994,7 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
     onRefresh: reload,
     onPause: () => void submitAction({ kind: "pause" }, "dispatch", repoKey, snapshot, scopeSection),
     onResume: () => void submitAction({ kind: "resume" }, "dispatch", repoKey, snapshot, scopeSection),
-    runNow: dispatch
+    runNow: dispatch && activeRun === null
       ? {
           disabled: runNowDisabledReason !== null,
           reason: runNowDisabledReason,

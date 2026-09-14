@@ -289,6 +289,37 @@ export function FactoryShell(props: FactoryShellProps) {
     : null;
   const statusGroup = h("div", { className: "flex min-w-0 items-center gap-x-3 overflow-hidden whitespace-nowrap text-muted-foreground" },
     branchChip, dispatchBadge, runBadge);
+  const pauseControl = repoChrome && props.dispatch
+    ? h(ActionButton, {
+        label: props.dispatch.mode === "enabled" ? "Pause" : "Resume",
+        variant: "secondary",
+        size: "xs",
+        className: "min-h-8 min-w-8 sm:min-h-0 sm:min-w-0 sm:order-4",
+        title: "Stops new runs. Running runs continue.",
+        onClick: props.dispatch.mode === "enabled" ? props.onPause : props.onResume,
+        disabled: props.actionPending,
+      })
+    : null;
+  const runNowControl = repoChrome && props.runNow
+    ? h(ActionButton, {
+        label: "Run now",
+        variant: "primary",
+        size: "xs",
+        className: "min-h-8 min-w-8 sm:min-h-0 sm:min-w-0 sm:order-4",
+        title: props.runNow.disabled ? props.runNow.reason ?? "Unavailable" : "Start a run immediately",
+        disabled: props.runNow.disabled || props.actionPending,
+        onClick: () => setRunNowOpen(true),
+      })
+    : null;
+  const mobileDispatch = repoChrome && props.dispatch
+    ? h(Badge, {
+        label: props.dispatch.mode === "enabled" && !props.dispatch.repositoryPaused ? "Enabled" : "Paused",
+        tone: props.dispatch.mode === "enabled" && !props.dispatch.repositoryPaused ? "success" : "warning",
+      })
+    : null;
+  const mobileBranch = repoChrome && props.branch && !expectedBranch
+    ? h("span", { className: "shrink-0 font-mono text-xs text-muted-foreground sm:hidden" }, `Branch: ${props.branch}`)
+    : null;
   useEffect(() => {
     const active = tabStripRef.current?.querySelector('[aria-selected="true"]');
     if (active && typeof active.scrollIntoView === "function") {
@@ -305,33 +336,14 @@ export function FactoryShell(props: FactoryShellProps) {
   useEffect(() => {
     if (!repoChrome) setLegendOpen(false);
   }, [repoChrome]);
+  useEffect(() => {
+    if (!props.runNow) setRunNowOpen(false);
+  }, [props.runNow]);
 
-  const controls = repoChrome ? h("div", {
-    className: "flex min-h-8 w-full items-center justify-end gap-x-2 sm:min-h-0 sm:w-auto sm:gap-x-3",
-    "data-testid": "factory-controls-row",
+  const sharedControls = repoChrome ? h("div", {
+    className: "order-2 ml-auto flex shrink-0 items-center justify-end gap-x-2 sm:order-5 sm:ml-0 sm:gap-x-3",
+    "data-testid": "factory-shared-controls",
   },
-    repoChrome && props.dispatch
-      ? h(ActionButton, {
-          label: props.dispatch.mode === "enabled" ? "Pause" : "Resume",
-          variant: "secondary",
-          size: "xs",
-          className: "min-h-8 sm:min-h-0",
-          title: "Stops new runs. Running runs continue.",
-          onClick: props.dispatch.mode === "enabled" ? props.onPause : props.onResume,
-          disabled: props.actionPending,
-        })
-      : null,
-    repoChrome && props.runNow
-      ? h(ActionButton, {
-          label: "Run now",
-          variant: "primary",
-          size: "xs",
-          className: "min-h-8 sm:min-h-0",
-          title: props.runNow.disabled ? props.runNow.reason ?? "Unavailable" : "Start a run immediately",
-          disabled: props.runNow.disabled || props.actionPending,
-          onClick: () => setRunNowOpen(true),
-        })
-      : null,
     refreshedLabel !== null
       ? h("button", {
           type: "button",
@@ -352,21 +364,33 @@ export function FactoryShell(props: FactoryShellProps) {
         "aria-expanded": legendOpen,
       }, "?"),
       legendOpen ? h(ChipLegend, { onClose: () => setLegendOpen(false) }) : null)) : null;
+  const mobileOperations = repoChrome ? h("div", {
+    className: "order-3 flex basis-full min-w-0 items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-2 py-1.5 sm:contents",
+    "data-testid": "factory-operations-bar",
+  },
+    h("div", { className: "order-1 flex min-w-0 flex-1 flex-wrap items-center gap-2 sm:contents", "data-testid": "factory-controls-row" },
+      h("div", { className: "flex min-w-0 flex-wrap items-center gap-2 sm:contents" },
+        h("span", { className: "sm:hidden" }, mobileDispatch),
+        pauseControl,
+        h("span", { className: "sm:hidden" }, runBadge),
+        mobileBranch),
+      h("div", { className: "ml-auto flex shrink-0 items-center sm:contents" }, runNowControl))) : null;
 
   return h("main", { className: "flex h-full min-h-0 flex-1 flex-col bg-background text-foreground" },
     h("header", { className: "shrink-0 border-b border-border bg-background" },
-      h("div", { className: "flex flex-col gap-1 px-3 py-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-3 sm:gap-y-1 sm:px-4" },
-        h("div", { className: "flex min-w-0 items-center gap-x-3" },
+      h("div", { className: "flex flex-wrap items-center gap-1 px-3 py-2 sm:flex-row sm:flex-nowrap sm:gap-x-3 sm:gap-y-1 sm:px-4" },
+        h("div", { className: "order-1 flex min-w-0 flex-1 items-center gap-x-3 sm:flex-none" },
           h("span", { className: "hidden shrink-0 text-sm font-semibold sm:inline" }, "Factory"),
           h(RepositorySwitcher, props)),
-        h("div", { className: "hidden flex-1 sm:block" }),
+        h("div", { className: "order-2 hidden flex-1 sm:block" }),
         repoChrome
           ? h("div", {
-              className: "flex min-h-8 w-full min-w-0 items-center sm:min-h-0 sm:w-auto",
+              className: "order-3 hidden min-h-8 w-full min-w-0 items-center sm:flex sm:min-h-0 sm:w-auto",
               "data-testid": "factory-status-row",
             }, statusGroup)
           : null,
-        controls),
+        sharedControls,
+        mobileOperations),
       showTabs
         ? h("div", { className: "relative min-w-0 overflow-hidden" },
             h("nav", {

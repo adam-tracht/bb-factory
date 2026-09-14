@@ -8,6 +8,7 @@ import type {
   RepositorySelection,
   SettingsProjection,
 } from "../../contracts.js";
+import { computeAttention } from "../attention.js";
 import type { ViewContext } from "../context.js";
 import {
   EmptyNotice,
@@ -15,6 +16,7 @@ import {
   FeedbackNotice,
   LoadingNotice,
   Section,
+  isActiveRunStatus,
   sectionStorageKey,
   usePhoneViewport,
   useRevealOnFocus,
@@ -31,6 +33,7 @@ import {
   type StateFilter,
 } from "./questions.js";
 import { bucketRuns, RunGroupSection, RUN_GROUPS, useRunsNow } from "./runs.js";
+import { OverviewView } from "./overview.js";
 import { bucketWorkEntries, WorkGroupSection, WORK_GROUPS } from "./work.js";
 
 const h = createElement;
@@ -98,6 +101,93 @@ function groupFeedback(groups: readonly AggregateGroup[]): ReactNode[] {
       key: `${group.entry.configuration.repositoryKey}:feedback`,
       feedback: group.ctx.feedback,
     }));
+}
+
+function AggregateOverviewRepository(props: {
+  group: AggregateGroup;
+  phone: boolean;
+  onRetry: () => void;
+}): ReactNode {
+  const { group, phone, onRetry } = props;
+  const { bundle, ctx } = group;
+  const snapshot = bundle.snapshot.status === "ready" ? bundle.snapshot.data : null;
+  const settings = bundle.settings.status === "ready" ? bundle.settings.data : null;
+  const health = bundle.health.status === "ready" ? bundle.health.data : null;
+  const runs = bundle.runs.status === "ready" ? bundle.runs.data : null;
+  const interactions = bundle.interactions.status === "ready" ? bundle.interactions.data : null;
+  const settled = [bundle.snapshot, bundle.settings, bundle.health, bundle.runs, bundle.interactions]
+    .some((resource) => resource.status === "ready" || resource.status === "error");
+  const loading = [bundle.snapshot, bundle.settings, bundle.health, bundle.runs, bundle.interactions]
+    .some((resource) => resource.status === "idle" || resource.status === "loading");
+  const errors = [
+    ["Settings", bundle.settings],
+    ["Health", bundle.health],
+    ["Runs", bundle.runs],
+    ["BB questions", bundle.interactions],
+  ] as const;
+  const activeRun = runs?.runs.find((run) => isActiveRunStatus(run.status)) ?? null;
+  const attention = computeAttention({
+    snapshot,
+    snapshotError: bundle.snapshot.status === "error",
+    settings,
+    health,
+    runs,
+    interactions,
+  });
+
+  return h(Section, {
+    title: group.entry.configuration.repositoryKey,
+    collapsible: true,
+    defaultOpen: !phone,
+    storageKey: sectionStorageKey(group.entry.configuration.repositoryKey, "overview", "aggregate"),
+    testId: `aggregate-overview-${group.entry.configuration.repositoryKey}`,
+    children: [
+      group.ctx.feedback ? h(FeedbackNotice, { key: "feedback", feedback: group.ctx.feedback }) : null,
+      !settled
+        ? h(LoadingNotice, { key: "initial-loading", label: "Loading repository overview" })
+        : null,
+      loading
+        ? h(LoadingNotice, { key: "partial-loading", label: "Loading remaining repository state" })
+        : null,
+      ...errors.flatMap(([label, resource]) => resource.status === "error"
+        ? [h(ErrorNotice, { key: `${label}-error`, message: `${label} failed to load (${resource.error}).`, onRetry })]
+        : []),
+      settled
+        ? h(OverviewView, {
+            key: "overview",
+            snapshot,
+            snapshotError: bundle.snapshot.status === "error" ? bundle.snapshot.error : null,
+            settings,
+            health,
+            runs,
+            attention,
+            activeRun,
+            ctx,
+          })
+        : null,
+    ],
+  });
+}
+
+/** Aggregate overview reuses the repository overview internals per scoped group. */
+export function AggregateOverviewView(props: {
+  groups: readonly AggregateGroup[];
+  onRetry: () => void;
+}): ReactNode {
+  const phone = usePhoneViewport();
+  if (props.groups.length === 0) {
+    return h(EmptyNotice, {
+      title: "No repositories configured",
+      detail: "Add a repository registry entry to start dispatching factory runs.",
+    });
+  }
+  return h("div", { className: "space-y-4" },
+    props.groups.map((group) => h(AggregateOverviewRepository, {
+      key: group.entry.configuration.repositoryKey,
+      group,
+      phone,
+      onRetry: props.onRetry,
+    })));
 }
 
 function AggregateWorkView(props: {

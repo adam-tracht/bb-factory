@@ -35,8 +35,10 @@ against a context scoped to that repository. FactoryView fetches each
 repository's existing read projections into a `data.all` bundle map, sharing
 in-flight fetches with the landing cards' `loadSummary`, so no new RPC or
 storage seam exists and the wire contract is unchanged. The aggregate
-overview remains repository-first and reuses the repository landing cards,
-which show a labeled count ("2 need attention") instead of a bare number.
+overview remains repository-first and reuses `OverviewView` for each
+repository, grouped under a labeled repository disclosure with that
+repository's context, links, actions, revision, and independent loading or
+error settlement; it does not render `RepositoryLandingView` cards.
 
 Aggregate sections settle independently. A ready repository renders its rows
 while another repository remains in a loading or error subgroup, and the
@@ -100,9 +102,14 @@ highlighted.
 
 ## Responsive rows
 
-Under `sm` (639px): the shell uses deterministic repository, status, controls,
-and tabs rows. The duplicate Factory title is hidden, the expected `factory`
-branch is hidden, and an unexpected branch is labeled `Branch: <name>`.
+Under `sm` (639px): repository scope uses deterministic repository, shared
+controls, operations, and tabs rows. The repository row puts All, the picker,
+and add before a flexible spacer with refresh and the legend; the bounded
+operations bar pairs Enabled or Paused with Pause or Resume, shows Idle or an
+active run when useful, and anchors Run now at the right. Aggregate scope goes
+directly from the repository row to tabs. The duplicate Factory title is
+hidden, the expected `factory` branch is hidden, and an unexpected branch is
+labeled `Branch: <name>`.
 The `@sha` chip is hidden and the tab strip scrolls the active tab into view;
 mobile tabs use equal widths with a clipped-edge affordance and a hidden
 scrollbar, then fall back to horizontal scrolling when their minimum width is

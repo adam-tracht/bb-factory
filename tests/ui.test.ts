@@ -361,7 +361,7 @@ describe("Factory view shell", () => {
     }
   });
 
-  it("activates the All pill on the repositories landing and navigates to overview on a card click", async () => {
+  it("activates the All pill on the aggregate overview and navigates to overview on repository selection", async () => {
     const { FactoryView } = await import("../src/ui/FactoryView.js");
     const rpc = {
       ...baseRpc(),
@@ -386,7 +386,7 @@ describe("Factory view shell", () => {
       { rpc, settings: { repositoryRegistry: registry } },
     );
     try {
-      await slot.findByText("Repositories");
+      await slot.findByRole("heading", { name: "monorepo" });
       const switcher = (await slot.findByRole("group", { name: "Configured repository" })) as HTMLElement;
       const allPill = within(switcher).getByRole("button", { name: "All" });
       expect(allPill.getAttribute("aria-pressed")).toBe("true");
@@ -397,8 +397,7 @@ describe("Factory view shell", () => {
         expect(pill.className).not.toContain("shadow-sm");
       }
 
-      const scroll = (await slot.findByTestId("factory-scroll")) as HTMLElement;
-      fireEvent.click(within(scroll).getByRole("button", { name: /^data\b/ }));
+      fireEvent.click(within(switcher).getByRole("button", { name: "data" }));
       expect(slot.inspection.navigateCalls).toContainEqual({
         method: "toPluginPanel",
         path: "factory",
@@ -438,7 +437,7 @@ describe("Factory view shell", () => {
       { rpc, settings: { repositoryRegistry: registry } },
     );
     try {
-      await landing.findByText("Repositories");
+      await landing.findByRole("heading", { name: "monorepo" });
       const header = landing.container.querySelector("header") as HTMLElement;
       // The aggregate scope keeps its four union tabs but never repo chrome
       // or a Settings tab.
@@ -505,7 +504,7 @@ describe("Factory view shell", () => {
       { rpc, settings: { repositoryRegistry: registry } },
     );
     try {
-      await slot.findByText("Repositories");
+      await slot.findByRole("heading", { name: "monorepo" });
       const switcher = (await slot.findByRole("group", { name: "Configured repository" })) as HTMLElement;
       fireEvent.click(within(switcher).getByRole("button", { name: "data" }));
       expect(slot.inspection.navigateCalls).toContainEqual({
@@ -708,6 +707,23 @@ describe("Factory view shell", () => {
     }
   });
 
+  it("omits Run now while the selected repository has an active run", async () => {
+    const { FactoryView } = await import("../src/ui/FactoryView.js");
+    const activeRun = { ...runSummary, status: "started" as const, finishedAt: null };
+    const slot = renderSlot<FactoryViewProps, FactoryRpcContract>(
+      { component: FactoryView },
+      { subPath: "overview", panelPath: "factory" },
+      { rpc: baseRpc({ runs: { runs: [activeRun], nextCursor: null } }), settings: { repositoryKey: "demo" } },
+    );
+    try {
+      await slot.findByRole("heading", { name: "Current run" });
+      const header = slot.container.querySelector("header") as HTMLElement;
+      expect(header.textContent).not.toContain("Run now");
+    } finally {
+      slot.lifecycle.unmount();
+    }
+  });
+
   it("keeps the settings form mounted across a mutation-triggered reload and reseeds on a repository switch", async () => {
     const { FactoryView } = await import("../src/ui/FactoryView.js");
     let saved = false;
@@ -798,13 +814,97 @@ describe("Factory aggregate scope", () => {
     return renderSlot<FactoryViewProps, FactoryRpcContract>(
       { component: component as never },
       { subPath, panelPath: "factory" },
-      { rpc, settings: { repositoryRegistry: registry } },
+      { rpc, settings: { repositoryRegistry: registry }, openFilePreview: () => true },
     );
   };
   const groupFor = (slot: ReturnType<typeof renderSlot>, repositoryKey: string) =>
     Array.from(slot.container.querySelectorAll("section, details")).find(
       (section) => section.querySelector("h2")?.textContent === repositoryKey,
     ) as HTMLElement;
+
+  it("renders each repository's actual overview content with scoped links and actions", async () => {
+    const { FactoryView } = await import("../src/ui/FactoryView.js");
+    const rpc = aggregateRpc();
+    const slot = mountAggregate(FactoryView, "all/overview", rpc);
+    try {
+      await slot.findByRole("heading", { name: "monorepo" });
+      await slot.findByRole("heading", { name: "data" });
+      const monoGroup = groupFor(slot, "monorepo");
+      const dataGroup = groupFor(slot, "data");
+      for (const group of [monoGroup, dataGroup]) {
+        expect(within(group).getByRole("heading", { name: "Dispatch" })).toBeTruthy();
+        expect(within(group).getByRole("heading", { name: "Repository" })).toBeTruthy();
+        expect(within(group).getByRole("heading", { name: "Technical details" })).toBeTruthy();
+      }
+      expect(slot.queryByText("No repositories configured")).toBeNull();
+      expect(slot.queryByText("Add a repository registry entry to start dispatching factory runs.")).toBeNull();
+
+      fireEvent.click(within(monoGroup).getByRole("link", { name: "plans/factory/current.md" }));
+      expect(slot.inspection.navigateCalls).toContainEqual({
+        method: "experimental_openFilePreview",
+        options: { target: { kind: "workspace", environmentId: "environment-monorepo", path: "plans/factory/current.md" }, location: null },
+      });
+      fireEvent.click(within(dataGroup).getByRole("link", { name: "plans/factory/current.md" }));
+      expect(slot.inspection.navigateCalls).toContainEqual({
+        method: "experimental_openFilePreview",
+        options: { target: { kind: "workspace", environmentId: "environment-data", path: "plans/factory/current.md" }, location: null },
+      });
+
+      const action = (rpc as unknown as { factory_action: ReturnType<typeof vi.fn> }).factory_action;
+      fireEvent.click(within(monoGroup).getByRole("button", { name: "Resume" }));
+      await vi.waitFor(() => {
+        expect(action).toHaveBeenCalledWith(expect.objectContaining({
+          repositoryKey: "monorepo",
+          expectedRevision: snapshotForSwitch("monorepo").revision,
+          action: { kind: "resume" },
+        }));
+      });
+    } finally {
+      slot.lifecycle.unmount();
+      controlledSettingsState = { values: { repositoryKey: "demo" }, isLoading: false };
+    }
+  });
+
+  it("settles aggregate overview groups independently while preserving loading and errors", async () => {
+    const { FactoryView } = await import("../src/ui/FactoryView.js");
+    let resolveDataSnapshot: ((value: unknown) => void) | null = null;
+    const loadingRpc = aggregateRpc((key) => key === "data"
+      ? new Promise((resolve) => { resolveDataSnapshot = resolve; })
+      : snapshotForSwitch(key));
+    const loadingSlot = mountAggregate(FactoryView, "all/overview", loadingRpc);
+    try {
+      await loadingSlot.findByRole("heading", { name: "data" });
+      const monoGroup = groupFor(loadingSlot, "monorepo");
+      const dataGroup = groupFor(loadingSlot, "data");
+      await within(monoGroup).findByRole("heading", { name: "Dispatch" });
+      expect(within(dataGroup).getByRole("status", { name: "Loading repository overview" })).toBeTruthy();
+      await act(async () => {
+        resolveDataSnapshot?.(snapshotForSwitch("data"));
+      });
+      await loadingSlot.findAllByRole("heading", { name: "Repository" });
+      const settledDataGroup = groupFor(loadingSlot, "data");
+      expect(within(settledDataGroup).getByRole("heading", { name: "Repository" })).toBeTruthy();
+    } finally {
+      loadingSlot.lifecycle.unmount();
+    }
+
+    const errorRpc = aggregateRpc((key) => key === "data"
+      ? (() => { throw new Error("data overview exploded"); })()
+      : snapshotForSwitch(key));
+    const errorSlot = mountAggregate(FactoryView, "all/overview", errorRpc);
+    try {
+      await errorSlot.findByRole("heading", { name: "data" });
+      const monoGroup = groupFor(errorSlot, "monorepo");
+      const dataGroup = groupFor(errorSlot, "data");
+      await within(monoGroup).findByRole("heading", { name: "Repository" });
+      await within(dataGroup).findByText(/data overview exploded/);
+      expect(within(dataGroup).getByRole("alert").textContent).toContain("data overview exploded");
+      expect(within(monoGroup).getByRole("heading", { name: "Repository" })).toBeTruthy();
+    } finally {
+      errorSlot.lifecycle.unmount();
+      controlledSettingsState = { values: { repositoryKey: "demo" }, isLoading: false };
+    }
+  });
 
   it("unions every repository's work grouped by repository with scoped DOM ids and summed badges", async () => {
     const { FactoryView } = await import("../src/ui/FactoryView.js");
@@ -1596,12 +1696,11 @@ describe("Add-repository wizard chrome", () => {
       { rpc: wizardRpc(), settings: { repositoryRegistry: registry } },
     );
     try {
-      await slot.findByText("Repositories");
+      await slot.findByRole("heading", { name: "monorepo" });
       const switcher = (await slot.findByRole("group", { name: "Configured repository" })) as HTMLElement;
       expect(within(switcher).getByRole("button", { name: "All" }).getAttribute("aria-pressed")).toBe("true");
 
-      const scroll = (await slot.findByTestId("factory-scroll")) as HTMLElement;
-      fireEvent.click(within(scroll).getByRole("button", { name: "Add repository" }));
+      fireEvent.click(within(switcher).getByRole("button", { name: "Add repository" }));
       expect(slot.inspection.navigateCalls).toContainEqual({
         method: "toPluginPanel",
         path: "factory",
