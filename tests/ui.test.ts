@@ -154,7 +154,6 @@ const runDetail = {
     attempts: [],
     lease: null,
   },
-  notes: null,
 };
 
 const monorepoRepository = {
@@ -791,7 +790,6 @@ describe("Factory aggregate scope", () => {
     factory_runs: vi.fn(({ repositoryKey }: { repositoryKey: string }) => runsForSwitch(repositoryKey)),
     factory_run_detail: vi.fn(({ repositoryKey, runId }: { repositoryKey: string; runId: string }) => ({
       run: { ...runDetail.run, summary: { ...runDetail.run.summary, repositoryKey, runId } },
-      notes: null,
     })),
   }) as unknown as PluginRpcTestHandlers<FactoryRpcContract> & {
     factory_snapshot: ReturnType<typeof vi.fn>;
@@ -980,7 +978,7 @@ describe("Factory aggregate scope", () => {
       // The ab/c fetch is withheld: if the gate mis-keys, the stale a/bc detail shows.
       factory_run_detail: vi.fn(({ repositoryKey, runId }: { repositoryKey: string; runId: string }) =>
         repositoryKey === "a" && runId === "bc"
-          ? { run: { ...runDetail.run, summary: { ...runDetail.run.summary, repositoryKey: "a", runId: "bc", queueItemIds: ["MARKER-TASK"] } }, notes: null }
+          ? { run: { ...runDetail.run, summary: { ...runDetail.run.summary, repositoryKey: "a", runId: "bc", queueItemIds: ["MARKER-TASK"] } } }
           : new Promise(() => undefined)),
     } as unknown as PluginRpcTestHandlers<FactoryRpcContract> & { factory_run_detail: ReturnType<typeof vi.fn> };
     controlledSettingsState = { values: { repositoryRegistry: registry }, isLoading: false };

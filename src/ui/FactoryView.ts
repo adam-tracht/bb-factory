@@ -921,7 +921,7 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
         ? h(ErrorNotice, { message: detailError, onRetry })
         : detailLoading || !detail
           ? h(LoadingNotice, { label: "Loading run detail" })
-          : h(RunDetailView, { detail, notes: detailNotes, ctx })
+          : h(RunDetailView, { detail, ctx })
       : runs
         ? h(RunsView, { runs, ctx })
         : runsError !== null
