@@ -13,6 +13,7 @@ import {
 import { cronMatches, localClock } from "./cron.js";
 
 export { cronMatches, describeCron, nextCronTimes } from "./cron.js";
+export { describeSchedule } from "./describe.js";
 
 function deterministicUuid(seed: string): string {
   const hex = createHash("sha256").update(seed, "utf8").digest("hex");

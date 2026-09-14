@@ -17,3 +17,9 @@ context: planRepositoryAction ready branch in src/actions/repository.ts; the rea
 assumed: approve-queue attaches the approved: line to ready entries lacking one; open question gates still reject, matching text stays already-applied, different text still conflicts.
 recommended: Keep this semantics.
 answer:
+
+## Q2 2026-09-13 blocking BBF-0029
+question: `bb plugin types --check` is a required repo standard check and fails at baseline: pinned @get-bb/plugin-sdk is 0.4.84 while the host runs 0.4.87. BBF-0029 and BBF-0030 are implemented and reviewed but cannot be marked done while it fails, and no in-scope change can fix it. May a dependency repin to 0.4.87 proceed (an `approved:` line, or a dedicated entry like BBF-0022) so the baseline goes green and the completed UI work can land? This is only about the SDK update; the approved UI scope is separate and unchanged.
+context: plans/factory/repo.md standard checks table; package.json devDependencies; queue entries BBF-0029/BBF-0030.
+recommended: Yes; authorize the repin so the required check passes.
+answer: Approved 2026-09-14. Repin @get-bb/plugin-sdk to the host version 0.4.87 and rerun the complete validation suite. This fully resolves Q2.

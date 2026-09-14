@@ -34,6 +34,7 @@ import {
   type PickFolderInput,
   type ProbeRepositoryInput,
   type ProtocolSnapshot,
+  type QueueEntry,
   type RepositorySelection,
   type RepositorySelectionProjection,
   type ResolveProjectInput,
@@ -41,7 +42,7 @@ import {
   type SettingsProjection,
 } from "../contracts.js";
 import type { FactoryRpcContract } from "../rpc.js";
-import { computeAttention, attentionCounts, type AttentionItem } from "./attention.js";
+import { computeAttention, attentionCounts, type AttentionInput, type AttentionItem } from "./attention.js";
 import type { FactoryAction, FactorySection, ViewContext } from "./context.js";
 import {
   EmptyNotice,
@@ -52,8 +53,16 @@ import {
   revisionEqual,
   type ActionFeedback,
 } from "./primitives.js";
-import { parseFactoryRoute, runDetailPath, sectionPath } from "./routes.js";
+import { aggregateRunDetailPath, aggregateSectionPath, parseFactoryRoute, runDetailPath, sectionPath } from "./routes.js";
 import { FactoryShell } from "./shell.js";
+import {
+  AggregateSectionView,
+  idleBundle,
+  type AggregateGroup,
+  type AggregateSection,
+  type Loadable,
+  type RepositoryBundle,
+} from "./views/aggregate.js";
 import { OverviewView } from "./views/overview.js";
 import { QuestionsView } from "./views/questions.js";
 import { AddRepositoryView, RepositoryLandingView } from "./views/repositories.js";
@@ -70,30 +79,34 @@ export interface FactoryViewProps {
   panelPath?: string;
 }
 
-type Loadable<T> =
-  | { status: "idle" | "loading" }
-  | { status: "ready"; data: T }
-  | { status: "error"; error: string };
-
 interface FactoryData {
   repositories: Loadable<RepositorySelectionProjection>;
+  /** The repository the per-repo projections below were loaded for; render gates keep a repo switch from ever showing them. */
+  repositoryKey: string | null;
   snapshot: Loadable<ProtocolSnapshot>;
   settings: Loadable<SettingsProjection>;
   health: Loadable<HealthProjection>;
   interactions: Loadable<PendingInteractionsProjection>;
   runs: Loadable<OperationalRunListProjection>;
   detail: Loadable<OperationalRunDetailProjection> | null;
+  /** detailGateKey(repositoryKey, runId) the detail projection was loaded for. */
+  detailKey: string | null;
+  /** Aggregate ("All") per-repository projections, keyed by repositoryKey. */
+  all: Record<string, RepositoryBundle>;
 }
 
 function initialData(detailRequested = false): FactoryData {
   return {
     repositories: { status: "loading" },
+    repositoryKey: null,
     snapshot: { status: "idle" },
     settings: { status: "idle" },
     health: { status: "idle" },
     interactions: { status: "idle" },
     runs: { status: "idle" },
     detail: detailRequested ? { status: "loading" } : null,
+    detailKey: null,
+    all: {},
   };
 }
 
@@ -138,12 +151,57 @@ function selectedRepositoryKey(projection: RepositorySelectionProjection): strin
   return selectedRepository(projection)?.configuration.repositoryKey ?? null;
 }
 
+// A plain concat would collide ("ab"+"c" vs "a"+"bc"); the tuple encoding is
+// unambiguous and is the only producer/gate format for detail retention.
+function detailGateKey(repositoryKey: string, runId: string): string {
+  return JSON.stringify([repositoryKey, runId]);
+}
+
+/** Aggregate tabs: no Settings (repository-scoped) and no Repositories pill. */
+const AGGREGATE_TABS: readonly FactorySection[] = ["overview", "work", "questions", "runs"];
+
+function bundleAttentionInput(bundle: RepositoryBundle): AttentionInput {
+  return {
+    snapshot: bundle.snapshot.status === "ready" ? bundle.snapshot.data : null,
+    snapshotError: bundle.snapshot.status === "error",
+    settings: bundle.settings.status === "ready" ? bundle.settings.data : null,
+    health: bundle.health.status === "ready" ? bundle.health.data : null,
+    interactions: bundle.interactions.status === "ready" ? bundle.interactions.data : null,
+    runs: bundle.runs.status === "ready" ? bundle.runs.data : null,
+  };
+}
+
 function ready<T>(resource: Loadable<T>): T | null {
   return resource.status === "ready" ? resource.data : null;
 }
 
 function resourceError(resource: Loadable<unknown>): string | null {
   return resource.status === "error" ? resource.error : null;
+}
+
+/** Queue rows still needing a human; the Work tab badge counts these. */
+function needsYouEntry(entry: QueueEntry): boolean {
+  return entry.status.kind !== "done"
+    && entry.status.kind !== "in-progress"
+    && (entry.eligibilityReasons.includes("missing-authorization")
+      || entry.blockingQuestionIds.length > 0
+      || entry.blockedBy.length > 0
+      || (entry.status.kind === "blocked-by" && entry.status.questionId !== null));
+}
+
+// Badges count the underlying items so they match what the views show; the
+// aggregate scope sums this same function over every repository's bundle.
+function projectionBadges(input: AttentionInput): { work: number; questions: number; runsActive: boolean } {
+  const counts = attentionCounts(computeAttention(input));
+  const snapshot = input.snapshot;
+  const work = snapshot?.queue.filter(needsYouEntry).length ?? counts.work;
+  const questions = ((snapshot?.questions.filter((question) => question.answer === null).length ?? 0)
+    + (input.interactions?.interactions.length ?? 0)) || counts.questions;
+  return {
+    work,
+    questions,
+    runsActive: input.runs?.runs.some((run) => isActiveRunStatus(run.status)) ?? false,
+  };
 }
 
 const idleFeedback: ActionFeedback = {
@@ -177,6 +235,7 @@ function actionTarget(action: FactoryAction, routeRunId: string | null): string 
 export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryViewProps) {
   const route = parseFactoryRoute(subPath);
   const routeRunId = route.section === "runs" ? route.runId : null;
+  const aggregateScope = route.scope === "all";
   const sdkSettings = useSettings();
   const configuredRepositoryKey = readRepositoryKey(sdkSettings.values);
   const settingsIdentity = readSettingsIdentity(sdkSettings.values);
@@ -193,6 +252,9 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
   const [actionState, setActionState] = useState<{ pendingTarget: string | null; feedback: ActionFeedback }>({ pendingTarget: null, feedback: idleFeedback });
   const [repositoriesPending, setRepositoriesPending] = useState(true);
   const loadToken = useRef(0);
+  // Set by onAddRepository just before the wizard navigation so the wizard's
+  // Back restores the exact view it was opened from. Null on a deep link.
+  const wizardOriginRef = useRef<{ repositoryKey: string | null; subPath: string } | null>(null);
   // The override is keyed to the configured repositoryKey only. Registry writes
   // (dispatch toggle, add repository) change the registry JSON but must not
   // snap the selection back to the default repository.
@@ -209,13 +271,16 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
   }, []);
 
   // Events that name another repository do not concern the visible one; global
-  // events (repositoryKey null) still reload everything.
+  // events (repositoryKey null) still reload everything. In the aggregate
+  // scope every repository is visible, so no event is filtered out.
   const requestedKeyRef = useRef(requestedRepositoryKey);
   requestedKeyRef.current = requestedRepositoryKey;
+  const aggregateScopeRef = useRef(aggregateScope);
+  aggregateScopeRef.current = aggregateScope;
   const onRealtime = useCallback((payload: unknown) => {
     const parsed = invalidationEventSchema.safeParse(payload);
     setMalformedSignal(!parsed.success);
-    if (parsed.success && parsed.data.repositoryKey && parsed.data.repositoryKey !== requestedKeyRef.current) return;
+    if (parsed.success && parsed.data.repositoryKey && !aggregateScopeRef.current && parsed.data.repositoryKey !== requestedKeyRef.current) return;
     reload();
   }, [reload]);
   useRealtime("factory", onRealtime);
@@ -226,18 +291,55 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
     previousConnectionState.current = connectionState;
   }, [connectionState, reload]);
 
+  // Leaving the wizard by any path other than its own Back (a switcher pill,
+  // a fresh deep link) drops the remembered origin.
+  useEffect(() => {
+    if (route.section !== "add-repository") wizardOriginRef.current = null;
+  }, [route.section]);
+
   const onRepositorySelect = useCallback((repositoryKey: string) => {
     if (repositoryKey === requestedRepositoryKey) return;
     setRepositoryOverride({ configuredKey: configuredRepositoryKey ?? null, repositoryKey });
   }, [requestedRepositoryKey, configuredRepositoryKey]);
 
+  // In-flight per-repository bundle reads, shared with the repository cards'
+  // loadSummary so an aggregate overview does not fetch twice.
+  const bundlePromisesRef = useRef(new Map<string, Promise<RepositoryBundle>>());
+
+  const fetchRepositoryBundle = useCallback(async (repositoryKey: string): Promise<RepositoryBundle> => {
+    const settle = <T,>(promise: Promise<T>): Promise<Loadable<T>> =>
+      promise.then(
+        (data): Loadable<T> => ({ status: "ready", data }),
+        (error): Loadable<T> => ({ status: "error", error: errorText(error) }),
+      );
+    const [snapshot, settings, health, interactions, runs] = await Promise.all([
+      settle(rpcRef.current.call("factory_snapshot", { repositoryKey }).then((value) => parseProjection(protocolSnapshotSchema, value, "Repository snapshot"))),
+      settle(rpcRef.current.call("factory_settings", { repositoryKey }).then((value) => parseProjection(settingsProjectionSchema, value, "Settings projection"))),
+      settle(rpcRef.current.call("factory_health", { repositoryKey }).then((value) => parseProjection(healthProjectionSchema, value, "Health projection"))),
+      settle(rpcRef.current.call("factory_interactions", { repositoryKey }).then((value) => parseProjection(pendingInteractionsProjectionSchema, value, "BB interactions projection"))),
+      settle(rpcRef.current.call("factory_runs", { repositoryKey, limit: 50 }).then((value) => parseProjection(operationalRunListProjectionSchema, value, "Runs projection"))),
+    ]);
+    return { snapshot, settings, health, interactions, runs };
+  }, []);
+
   const load = useCallback(async () => {
     const token = ++loadToken.current;
-    // Keep a ready repositories projection mounted during reloads so the
-    // switcher pills never unmount mid-click.
+    bundlePromisesRef.current = new Map();
+    // Keep ready projections mounted during reloads so views (and their form
+    // drafts) survive a refresh; the repositoryKey/detailKey render gates stop
+    // a repo or run switch from ever showing the retained data.
     setData((current) => ({
       ...initialData(Boolean(routeRunId)),
       repositories: current.repositories.status === "ready" ? current.repositories : { status: "loading" },
+      repositoryKey: current.repositoryKey,
+      snapshot: current.snapshot,
+      settings: current.settings,
+      health: current.health,
+      interactions: current.interactions,
+      runs: current.runs,
+      detail: current.detail,
+      detailKey: current.detailKey,
+      all: current.all,
     }));
     setRepositoriesPending(true);
 
@@ -250,8 +352,56 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
       if (token !== loadToken.current) return;
       setData((current) => ({ ...current, repositories: { status: "ready", data: repositories } }));
       const repositoryKey = selectedRepositoryKey(repositories);
-      if (!repositoryKey) {
-        setData((current) => ({ ...current, snapshot: { status: "idle" }, settings: { status: "idle" }, health: { status: "idle" }, interactions: { status: "idle" }, runs: { status: "idle" }, detail: null }));
+      const detailRepositoryKey = aggregateScope ? route.runRepositoryKey : repositoryKey;
+      const nextDetailKey = routeRunId && detailRepositoryKey ? detailGateKey(detailRepositoryKey, routeRunId) : null;
+      const detailRequest = routeRunId && detailRepositoryKey
+        ? rpcRef.current.call("factory_run_detail", { repositoryKey: detailRepositoryKey, runId: routeRunId }).then((value) => parseProjection(operationalRunDetailProjectionSchema, value, "Run detail projection"))
+        : Promise.resolve<OperationalRunDetailProjection | null>(null);
+
+      if (aggregateScope || !repositoryKey) {
+        // Aggregate scope (or a projection with no selection): every
+        // registered repository loads its own projections, keyed so a row can
+        // never be attributed to the wrong repository.
+        const bundlePromises = new Map<string, Promise<RepositoryBundle>>();
+        for (const entry of repositories.repositories) {
+          const key = entry.configuration.repositoryKey;
+          bundlePromises.set(key, fetchRepositoryBundle(key));
+        }
+        bundlePromisesRef.current = bundlePromises;
+        // Retained bundles for de-registered repositories are dropped here.
+        // A batched commit used to get that pruning for free by replacing the
+        // whole map; per-repository commits have to do it explicitly.
+        setData((current) => ({
+          ...current,
+          all: Object.fromEntries(Object.entries(current.all).filter(([key]) => bundlePromises.has(key))),
+        }));
+        // Commit each repository the moment it settles: one slow repository no
+        // longer holds back groups whose data has already arrived. The token
+        // check plus the promise-identity check keep a superseded load from
+        // writing into the current scope, and every group falls back to
+        // idleBundle() until its own commit lands.
+        const bundleCommits = [...bundlePromises.entries()].map(async ([key, promise]) => {
+          const bundle = await promise;
+          if (token !== loadToken.current || bundlePromisesRef.current.get(key) !== promise) return;
+          setData((current) => ({ ...current, all: { ...current.all, [key]: bundle } }));
+        });
+        const detailCommit = detailRequest.then(
+          (value): PromiseSettledResult<OperationalRunDetailProjection> => ({ status: "fulfilled", value: value as OperationalRunDetailProjection }),
+          (reason): PromiseSettledResult<OperationalRunDetailProjection> => ({ status: "rejected", reason }),
+        ).then((detailResult) => {
+          if (token !== loadToken.current) return;
+          setData((current) => ({
+            ...current,
+            detailKey: nextDetailKey,
+            detail: detailResult.status === "fulfilled" && detailResult.value
+              ? { status: "ready", data: detailResult.value }
+              : detailResult.status === "rejected"
+                ? { status: "error", error: errorText(detailResult.reason) }
+                : null,
+          }));
+        });
+        await Promise.all([...bundleCommits, detailCommit]);
+        if (token !== loadToken.current) return;
         setRefreshedAt(Date.now());
         setRepositoriesPending(false);
         return;
@@ -262,9 +412,6 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
       const healthRequest = rpcRef.current.call("factory_health", { repositoryKey }).then((value) => parseProjection(healthProjectionSchema, value, "Health projection"));
       const interactionsRequest = rpcRef.current.call("factory_interactions", { repositoryKey }).then((value) => parseProjection(pendingInteractionsProjectionSchema, value, "BB interactions projection"));
       const runsRequest = rpcRef.current.call("factory_runs", { repositoryKey, limit: 50 }).then((value) => parseProjection(operationalRunListProjectionSchema, value, "Runs projection"));
-      const detailRequest = routeRunId
-        ? rpcRef.current.call("factory_run_detail", { repositoryKey, runId: routeRunId }).then((value) => parseProjection(operationalRunDetailProjectionSchema, value, "Run detail projection"))
-        : Promise.resolve<OperationalRunDetailProjection | null>(null);
 
       const [snapshotResult, settingsResult, healthResult, interactionsResult, runsResult, detailResult] = await Promise.all([
         Promise.allSettled([snapshotRequest]).then(([result]) => result!),
@@ -279,11 +426,13 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
       const resource = <T,>(result: PromiseSettledResult<T>): Loadable<T> => result.status === "fulfilled" ? { status: "ready", data: result.value } : { status: "error", error: errorText(result.reason) };
       setData((current) => ({
         ...current,
+        repositoryKey,
         snapshot: resource(snapshotResult),
         settings: resource(settingsResult),
         health: resource(healthResult),
         interactions: resource(interactionsResult),
         runs: resource(runsResult),
+        detailKey: nextDetailKey,
         detail: routeRunId ? resource(detailResult as PromiseSettledResult<OperationalRunDetailProjection>) : null,
       }));
       setRefreshedAt(Date.now());
@@ -294,7 +443,7 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
         setRepositoriesPending(false);
       }
     }
-  }, [requestedRepositoryKey, routeRunId, refreshSequence, settingsIdentity]);
+  }, [requestedRepositoryKey, routeRunId, route.runRepositoryKey, aggregateScope, refreshSequence, settingsIdentity, fetchRepositoryBundle]);
 
   useEffect(() => {
     if (sdkSettings.isLoading) {
@@ -317,68 +466,100 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
     navigate.toPluginPanel(panelPath, { subPath: runDetailPath(runId) });
   }, [navigate, panelPath]);
   const onShowRepositories = useCallback(() => {
-    navigate.toPluginPanel(panelPath, { subPath: "repositories" });
+    navigate.toPluginPanel(panelPath, { subPath: aggregateSectionPath("overview") });
+  }, [navigate, panelPath]);
+  // Aggregate tabs stay inside the "all/..." namespace so the scope survives
+  // reloads and deep links.
+  const onOpenAggregateSection = useCallback((section: FactorySection) => {
+    navigate.toPluginPanel(panelPath, { subPath: aggregateSectionPath(section as AggregateSection) });
   }, [navigate, panelPath]);
   const onAddRepository = useCallback(() => {
+    // Remember the origin before navigating so the wizard's Back restores it.
+    // A second trigger while already on the wizard keeps the first origin.
+    if (route.section !== "add-repository") {
+      wizardOriginRef.current = { repositoryKey: requestedRepositoryKey ?? null, subPath };
+    }
     navigate.toPluginPanel(panelPath, { subPath: "repositories/new" });
-  }, [navigate, panelPath]);
+  }, [navigate, panelPath, requestedRepositoryKey, subPath, route.section]);
+  // A wizard reached by deep link has no remembered origin; Back then lands
+  // on the aggregate repositories view.
+  const onWizardBack = useCallback(() => {
+    const origin = wizardOriginRef.current;
+    wizardOriginRef.current = null;
+    if (origin === null) {
+      onShowRepositories();
+      return;
+    }
+    if (origin.repositoryKey !== null) onRepositorySelect(origin.repositoryKey);
+    navigate.toPluginPanel(panelPath, { subPath: origin.subPath });
+  }, [navigate, panelPath, onRepositorySelect, onShowRepositories]);
   const onOpenThread = useCallback((threadId: string) => navigate.toThread(threadId), [navigate]);
   const onOpenProject = useCallback((projectId: string) => navigate.toProject(projectId), [navigate]);
 
   const repositoryProjection = ready(data.repositories);
   const selectedEntry = repositoryProjection ? selectedRepository(repositoryProjection) : null;
   const selectedConfiguration = selectedEntry?.configuration ?? null;
-  const snapshot = ready(data.snapshot);
-  const settings = ready(data.settings);
-  const health = ready(data.health);
-  const interactions = ready(data.interactions);
-  const runs = ready(data.runs);
-  const detail = routeRunId && data.detail ? ready(data.detail)?.run ?? null : null;
-  const detailError = routeRunId && data.detail ? resourceError(data.detail) : null;
-  const detailLoading = routeRunId ? (data.detail === null || data.detail.status !== "ready") && !detailError : false;
+  const repoKey = selectedConfiguration?.repositoryKey ?? null;
+  // Retained projections describe data.repositoryKey only; a repository switch
+  // must never paint the previous repository's rows.
+  const repoDataCurrent = data.repositoryKey !== null && data.repositoryKey === repoKey;
+  const snapshot = repoDataCurrent ? ready(data.snapshot) : null;
+  const settings = repoDataCurrent ? ready(data.settings) : null;
+  const health = repoDataCurrent ? ready(data.health) : null;
+  const interactions = repoDataCurrent ? ready(data.interactions) : null;
+  const runs = repoDataCurrent ? ready(data.runs) : null;
+  const snapshotError = repoDataCurrent ? resourceError(data.snapshot) : null;
+  const settingsError = repoDataCurrent ? resourceError(data.settings) : null;
+  const runsError = repoDataCurrent ? resourceError(data.runs) : null;
+  const detailRepositoryKey = aggregateScope ? route.runRepositoryKey : repoKey;
+  const expectedDetailKey = routeRunId && detailRepositoryKey ? detailGateKey(detailRepositoryKey, routeRunId) : null;
+  const detailCurrent = data.detail !== null && data.detailKey === expectedDetailKey;
+  const detailProjection = detailCurrent && data.detail ? ready(data.detail) : null;
+  const detail = detailProjection?.run ?? null;
+  const detailError = detailCurrent && data.detail ? resourceError(data.detail) : null;
+  const detailLoading = routeRunId !== null && detailProjection === null && detailError === null;
 
-  const scopeSection = route.section === "not-found" || route.section === "repositories" || route.section === "add-repository"
+  const scopeSection: FactorySection = route.section === "not-found" || route.section === "repositories" || route.section === "add-repository"
     ? "overview"
     : route.section;
-  const actionScope = { repositoryKey: selectedConfiguration?.repositoryKey ?? "", section: scopeSection };
-  const scopedFeedback = actionState.feedback.scope.repositoryKey === actionScope.repositoryKey
-    && actionState.feedback.scope.section === actionScope.section
-    ? actionState.feedback
-    : null;
+  const feedbackFor = (key: string | null) =>
+    actionState.feedback.scope.repositoryKey === (key ?? "") && actionState.feedback.scope.section === scopeSection
+      ? actionState.feedback
+      : null;
+  const pendingFor = (key: string | null) =>
+    actionState.feedback.pending && actionState.feedback.scope.repositoryKey === (key ?? "")
+      ? actionState.pendingTarget
+      : null;
 
   const attention = computeAttention({
     snapshot,
-    snapshotError: data.snapshot.status === "error",
+    snapshotError: snapshotError !== null,
     settings,
     health,
     runs,
     interactions,
   });
-  const counts = attentionCounts(attention);
-  // Badges count the underlying items so they match what the views show.
-  const needsYouCount = snapshot?.queue.filter((entry) =>
-    entry.status.kind !== "done"
-    && entry.status.kind !== "in-progress"
-    && (entry.eligibilityReasons.includes("missing-authorization")
-      || entry.blockingQuestionIds.length > 0
-      || entry.blockedBy.length > 0
-      || (entry.status.kind === "blocked-by" && entry.status.questionId !== null)),
-  ).length ?? counts.work;
-  const openQuestionCount = (snapshot?.questions.filter((question) => question.answer === null).length ?? 0)
-    + (interactions?.interactions.length ?? 0) || counts.questions;
   const activeRun: OperationalRunSummary | null = runs?.runs.find((run) => isActiveRunStatus(run.status))
     ?? (detail && isActiveRunStatus(detail.summary.status) ? detail.summary : null);
 
-  const submitAction = useCallback(async (action: FactoryAction, target: string) => {
-    const repositoryKey = repositoryProjection ? selectedRepositoryKey(repositoryProjection) : null;
-    const currentSnapshot = data.snapshot.status === "ready" ? data.snapshot.data : null;
+  // The repository and snapshot come from the calling context, not the global
+  // selection, so an aggregate row always mutates its own repository at its
+  // own revision.
+  const submitAction = useCallback(async (
+    action: FactoryAction,
+    target: string,
+    repositoryKey: string | null,
+    currentSnapshot: ProtocolSnapshot | null,
+    section: FactorySection,
+  ) => {
+    const scope = { repositoryKey: repositoryKey ?? "", section };
     if (!repositoryKey) {
-      setActionState({ pendingTarget: null, feedback: { pending: false, target, message: null, error: "No repository is selected.", scope: actionScope } });
+      setActionState({ pendingTarget: null, feedback: { pending: false, target, message: null, error: "No repository is selected.", scope } });
       return;
     }
     const fileGuarded = action.kind === "approve-queue" || (action.kind === "answer-question" && action.source === "repository-question");
     if (fileGuarded && !currentSnapshot) {
-      setActionState({ pendingTarget: null, feedback: { pending: false, target, message: null, error: "The repository snapshot must load before repository file actions can run.", scope: actionScope } });
+      setActionState({ pendingTarget: null, feedback: { pending: false, target, message: null, error: "The repository snapshot must load before repository file actions can run.", scope } });
       return;
     }
     const idempotencyKey = `bbf:v1:${repositoryKey}:${action.kind}:${crypto.randomUUID()}`;
@@ -388,25 +569,25 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
     } else {
       request = { repositoryKey, action, idempotencyKey, ...(currentSnapshot ? { expectedRevision: currentSnapshot.revision } : {}) };
     }
-    setActionState({ pendingTarget: target, feedback: { pending: true, target, message: null, error: null, scope: actionScope } });
+    setActionState({ pendingTarget: target, feedback: { pending: true, target, message: null, error: null, scope } });
     try {
       const raw = await rpcRef.current.call("factory_action", request);
       const parsed = factoryActionResultSchema.safeParse(raw);
       if (!parsed.success) {
-        setActionState({ pendingTarget: null, feedback: { pending: false, target, message: null, error: "The action result was malformed.", scope: actionScope } });
+        setActionState({ pendingTarget: null, feedback: { pending: false, target, message: null, error: "The action result was malformed.", scope } });
       } else if (parsed.data.ok) {
-        setActionState({ pendingTarget: null, feedback: { pending: false, target, message: parsed.data.result.message, error: null, scope: actionScope } });
+        setActionState({ pendingTarget: null, feedback: { pending: false, target, message: parsed.data.result.message, error: null, scope } });
         if (parsed.data.result.action === "recommend-question" || parsed.data.result.action === "recommend-approval") {
           navigate.toThread(parsed.data.result.threadId);
         }
       } else {
-        setActionState({ pendingTarget: null, feedback: { pending: false, target, message: null, error: parsed.data.error.message, scope: actionScope } });
+        setActionState({ pendingTarget: null, feedback: { pending: false, target, message: null, error: parsed.data.error.message, scope } });
       }
     } catch (error) {
-      setActionState({ pendingTarget: null, feedback: { pending: false, target, message: null, error: errorText(error), scope: actionScope } });
+      setActionState({ pendingTarget: null, feedback: { pending: false, target, message: null, error: errorText(error), scope } });
     }
     reload();
-  }, [repositoryProjection, data.snapshot, reload, actionScope.repositoryKey, actionScope.section]);
+  }, [reload]);
 
   const callMutation = useCallback(async (
     method: "factory_update_settings" | "factory_update_repository" | "factory_add_repository",
@@ -466,30 +647,28 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
 
   const loadRepositorySummary = useCallback(async (repositoryKey: string) => {
     try {
-      const [snapshotResult, settingsResult, interactionsResult, runsResult] = await Promise.allSettled([
-        rpcRef.current.call("factory_snapshot", { repositoryKey }).then((value) => parseProjection(protocolSnapshotSchema, value, "Repository snapshot")),
-        rpcRef.current.call("factory_settings", { repositoryKey }).then((value) => parseProjection(settingsProjectionSchema, value, "Settings projection")),
-        rpcRef.current.call("factory_interactions", { repositoryKey }).then((value) => parseProjection(pendingInteractionsProjectionSchema, value, "BB interactions projection")),
-        rpcRef.current.call("factory_runs", { repositoryKey, limit: 50 }).then((value) => parseProjection(operationalRunListProjectionSchema, value, "Runs projection")),
-      ]);
+      // Share the aggregate load's in-flight bundle fetch when one exists so
+      // cards on the overview do not issue a second round of RPCs.
+      const promise = bundlePromisesRef.current.get(repositoryKey) ?? fetchRepositoryBundle(repositoryKey);
+      const bundle = await promise;
       const items = computeAttention({
-        snapshot: snapshotResult.status === "fulfilled" ? snapshotResult.value : null,
-        snapshotError: snapshotResult.status === "rejected",
-        settings: settingsResult.status === "fulfilled" ? settingsResult.value : null,
+        snapshot: bundle.snapshot.status === "ready" ? bundle.snapshot.data : null,
+        snapshotError: bundle.snapshot.status === "error",
+        settings: bundle.settings.status === "ready" ? bundle.settings.data : null,
         health: null,
-        interactions: interactionsResult.status === "fulfilled" ? interactionsResult.value : null,
-        runs: runsResult.status === "fulfilled" ? runsResult.value : null,
+        interactions: bundle.interactions.status === "ready" ? bundle.interactions.data : null,
+        runs: bundle.runs.status === "ready" ? bundle.runs.data : null,
       });
       const actionable = items.filter((item) => item.severity !== "info").length;
-      const dispatch: DispatchStatus | null = settingsResult.status === "fulfilled"
-        ? settingsResult.value.dispatch
+      const dispatch: DispatchStatus | null = bundle.settings.status === "ready"
+        ? bundle.settings.data.dispatch
         : null;
       if (dispatch) dispatchStatusSchema.parse(dispatch);
       return { attention: actionable, dispatch, error: null };
     } catch (error) {
       return { attention: 0, dispatch: null, error: errorText(error) };
     }
-  }, []);
+  }, [fetchRepositoryBundle]);
 
   const ctx: ViewContext | null = selectedConfiguration
     ? {
@@ -499,8 +678,8 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
         dispatchPaused: selectedEntry?.dispatchPaused ?? false,
         revision: snapshot?.revision ?? null,
         fileLink: HostFileLink,
-        feedback: scopedFeedback,
-        pendingTarget: actionState.pendingTarget,
+        feedback: feedbackFor(repoKey),
+        pendingTarget: pendingFor(repoKey),
         onOpenSection: onNavigate,
         onOpenRepository: (repositoryKey, section = "overview", anchor) => {
           onRepositorySelect(repositoryKey);
@@ -509,7 +688,7 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
         onOpenRun,
         onOpenThread,
         onOpenProject,
-        onAction: (action) => void submitAction(action, actionTarget(action, routeRunId)),
+        onAction: (action) => void submitAction(action, actionTarget(action, routeRunId), repoKey, snapshot, scopeSection),
         updateSettings: (patch) => {
           const repositoryKey = selectedRepositoryKey(repositoryProjection!);
           return repositoryKey
@@ -525,6 +704,59 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
         resolveRepositoryProject,
       }
     : null;
+
+  // A context pinned to one repository's own bundle and key; aggregate groups
+  // render through this so actions, revisions, and feedback stay repo-exact.
+  const scopedContext = (entry: RepositorySelection, bundle: RepositoryBundle): ViewContext => {
+    const key = entry.configuration.repositoryKey;
+    const bundleSnapshot = bundle.snapshot.status === "ready" ? bundle.snapshot.data : null;
+    return {
+      idPrefix: `${key}:`,
+      repository: entry.configuration,
+      environmentId: entry.environmentId ?? null,
+      projectId: entry.projectId ?? null,
+      dispatchPaused: entry.dispatchPaused ?? false,
+      revision: bundleSnapshot?.revision ?? null,
+      fileLink: HostFileLink,
+      feedback: feedbackFor(key),
+      pendingTarget: pendingFor(key),
+      onOpenSection: (section, anchor) => {
+        // Sections without an aggregate tab (overview detail, settings) hop to
+        // the row's own repository; the rest stay inside the aggregate.
+        if (section === "overview" || section === "settings") {
+          onRepositorySelect(key);
+          onNavigate(section, anchor);
+          return;
+        }
+        navigate.toPluginPanel(panelPath, { subPath: aggregateSectionPath(section, anchor ? `${key}/${anchor}` : undefined) });
+      },
+      onOpenRepository: (repositoryKey, section = "overview", anchor) => {
+        onRepositorySelect(repositoryKey);
+        onNavigate(section, anchor);
+      },
+      onOpenRun: (runId) => navigate.toPluginPanel(panelPath, { subPath: aggregateRunDetailPath(key, runId) }),
+      onOpenThread,
+      onOpenProject,
+      onAction: (action) => void submitAction(action, actionTarget(action, routeRunId), key, bundleSnapshot, scopeSection),
+      updateSettings: (patch) => callMutation("factory_update_settings", { repositoryKey: key, patch }),
+      updateRepository: (input) => callMutation("factory_update_repository", input),
+      addRepository: (input) => callMutation("factory_add_repository", input),
+      loadRegistryOptions,
+      runAction,
+      pickRepositoryFolder,
+      probeRepository,
+      resolveRepositoryProject,
+    };
+  };
+
+  const hasRepositories = (repositoryProjection?.repositories.length ?? 0) > 0;
+  const aggregate = aggregateScope || (hasRepositories && !selectedEntry);
+  const aggregateGroups: AggregateGroup[] = aggregate && repositoryProjection
+    ? repositoryProjection.repositories.map((entry) => {
+        const bundle = data.all[entry.configuration.repositoryKey] ?? idleBundle();
+        return { entry, bundle, ctx: scopedContext(entry, bundle) };
+      })
+    : [];
 
   // Run-now confirmation copy includes provider context from health.
   const preferredProvider = settings?.settings.providerPreference && settings.settings.providerPreference !== "alternate"
@@ -573,7 +805,7 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
       onOpenRun,
       onOpenThread,
       onOpenProject,
-      onAction: (action) => void submitAction(action, actionTarget(action, routeRunId)),
+      onAction: (action) => void submitAction(action, actionTarget(action, routeRunId), repoKey, snapshot, scopeSection),
       updateSettings: () => Promise.resolve<SettingsMutationResult>({ ok: false, error: { category: "not-found", message: "No repository is selected." } }),
       updateRepository: (input) => callMutation("factory_update_repository", input),
       addRepository: (input) => callMutation("factory_add_repository", input),
@@ -589,13 +821,13 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
         onRepositorySelect(repositoryKey);
         onNavigate("settings");
       },
-      onCancel: onShowRepositories,
+      onCancel: onWizardBack,
     });
-  } else if (route.section === "repositories" || !repositoryProjection || repositoryProjection.repositories.length === 0 || !selectedEntry) {
+  } else if (!repositoryProjection || repositoryProjection.repositories.length === 0) {
+    // No registered repositories: the landing doubles as the empty state in
+    // either scope.
     content = h(RepositoryLandingView, {
-      repositories: repositoryProjection?.repositories ?? [],
-      // Same combined handler as ctx.onOpenRepository: select, then leave the
-      // landing so the card click lands on the repository's overview tab.
+      repositories: [],
       onSelect: (repositoryKey) => {
         onRepositorySelect(repositoryKey);
         onNavigate("overview");
@@ -607,18 +839,50 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
     content = h(EmptyNotice, {
       title: "Page not found",
       detail: `No factory view matches "${route.raw ?? ""}".`,
-      action: h("button", { type: "button", className: "text-sm font-medium text-primary hover:underline", onClick: () => onNavigate("overview") }, "Back to overview"),
+      action: h("button", { type: "button", className: "text-sm font-medium text-primary hover:underline", onClick: () => (aggregateScope ? onOpenAggregateSection("overview") : onNavigate("overview")) }, "Back to overview"),
+    });
+  } else if (aggregate && (route.section === "overview" || route.section === "settings")) {
+    // Aggregate overview reuses the repository landing cards. Settings is
+    // repository-scoped and never renders under "All"; with no selection it
+    // falls back to the same landing.
+    content = h(RepositoryLandingView, {
+      repositories: repositoryProjection.repositories,
+      onSelect: (repositoryKey) => {
+        onRepositorySelect(repositoryKey);
+        onNavigate("overview");
+      },
+      onAddRepository,
+      loadSummary: loadRepositorySummary,
+    });
+  } else if (aggregate && route.section === "runs" && routeRunId) {
+    const detailEntry = route.runRepositoryKey
+      ? repositoryProjection.repositories.find((entry) => entry.configuration.repositoryKey === route.runRepositoryKey) ?? null
+      : null;
+    const detailBundle = detailEntry ? data.all[detailEntry.configuration.repositoryKey] ?? idleBundle() : idleBundle();
+    const detailCtx = detailEntry ? scopedContext(detailEntry, detailBundle) : null;
+    content = detailCtx === null
+      ? h(ErrorNotice, { message: `Repository "${route.runRepositoryKey ?? ""}" is not registered.`, onRetry })
+      : detailError
+        ? h(ErrorNotice, { message: detailError, onRetry })
+        : detailLoading || !detail
+          ? h(LoadingNotice, { label: "Loading run detail" })
+          : h(RunDetailView, { detail, ctx: detailCtx });
+  } else if (aggregate && (route.section === "work" || route.section === "questions" || route.section === "runs")) {
+    content = h(AggregateSectionView, {
+      section: route.section,
+      groups: aggregateGroups,
+      anchor: route.anchor,
+      onRetry,
     });
   } else if (!ctx) {
     content = h(ErrorNotice, { message: "The selected repository configuration is unavailable.", onRetry });
   } else if (route.section === "overview") {
-    const stillLoading = (data.snapshot.status === "idle" || data.snapshot.status === "loading")
-      || data.settings.status === "loading" || data.settings.status === "idle";
+    const stillLoading = (snapshot === null && snapshotError === null) || (settings === null && settingsError === null);
     content = stillLoading
       ? h(LoadingNotice, { label: "Loading repository state" })
       : h(OverviewView, {
           snapshot,
-          snapshotError: resourceError(data.snapshot),
+          snapshotError,
           settings,
           health,
           runs,
@@ -635,8 +899,8 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
           providers: health?.providers ?? [],
           preferredProviderId: preferredProvider,
         })
-      : data.snapshot.status === "error"
-        ? h(ErrorNotice, { message: data.snapshot.error, onRetry })
+      : snapshotError !== null
+        ? h(ErrorNotice, { message: snapshotError, onRetry })
         : h(LoadingNotice, { label: "Loading repository work" });
   } else if (route.section === "questions") {
     content = snapshot
@@ -648,8 +912,8 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
           providers: health?.providers ?? [],
           preferredProviderId: preferredProvider,
         })
-      : data.snapshot.status === "error"
-        ? h(ErrorNotice, { message: data.snapshot.error, onRetry })
+      : snapshotError !== null
+        ? h(ErrorNotice, { message: snapshotError, onRetry })
         : h(LoadingNotice, { label: "Loading questions" });
   } else if (route.section === "runs") {
     content = routeRunId
@@ -657,68 +921,92 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
         ? h(ErrorNotice, { message: detailError, onRetry })
         : detailLoading || !detail
           ? h(LoadingNotice, { label: "Loading run detail" })
-          : h(RunDetailView, { detail, ctx })
+          : h(RunDetailView, { detail, notes: detailNotes, ctx })
       : runs
         ? h(RunsView, { runs, ctx })
-        : data.runs.status === "error"
-          ? h(ErrorNotice, { message: data.runs.error, onRetry })
+        : runsError !== null
+          ? h(ErrorNotice, { message: runsError, onRetry })
           : h(LoadingNotice, { label: "Loading run history" });
   } else {
     content = settings
       ? h(SettingsView, { projection: settings, health, ctx })
-      : data.settings.status === "error"
-        ? h(ErrorNotice, { message: data.settings.error, onRetry })
+      : settingsError !== null
+        ? h(ErrorNotice, { message: settingsError, onRetry })
         : h(LoadingNotice, { label: "Loading settings" });
   }
 
   const dispatch = settings?.dispatch ?? null;
   const sectionForShell: FactorySection = scopeSection;
-  // Mirrors the landing branch above: "All" owns the switcher's active state
-  // whenever the landing is the rendered content (the repositories route, or
-  // any route with no repository list/selection to scope to).
+  // "All" owns the switcher's active state whenever the aggregate is the
+  // rendered scope (explicit all/* routes, or no selection to scope to).
   const repositoriesActive = data.repositories.status === "ready"
     && route.section !== "add-repository"
-    && (route.section === "repositories"
-      || repositoryProjection === null
-      || repositoryProjection.repositories.length === 0
-      || !selectedEntry);
+    && (aggregate || !repositoryProjection || repositoryProjection.repositories.length === 0);
 
-  // On landing-scoped routes a selection must navigate to the repo's overview:
-  // otherwise the click reloads data but repaints the same landing, which reads
-  // as a dead control. On repo-scoped tabs selection keeps the current tab.
-  const selectionNavigates = route.section === "repositories"
+  // On aggregate and landing routes a selection must navigate to that repo's
+  // view: otherwise the click reloads data but repaints the same screen, which
+  // reads as a dead control. On repo-scoped tabs selection keeps the tab.
+  const selectionNavigates = aggregate
     || route.section === "not-found"
     || route.section === "add-repository";
 
+  // Aggregate badges sum the same per-repository badge counts.
+  const badges = aggregate
+    ? aggregateGroups.reduce((total, group) => {
+        const badge = projectionBadges(bundleAttentionInput(group.bundle));
+        return {
+          work: total.work + badge.work,
+          questions: total.questions + badge.questions,
+          runsActive: total.runsActive || badge.runsActive,
+        };
+      }, { work: 0, questions: 0, runsActive: false })
+    : (() => {
+        const badge = projectionBadges({
+          snapshot,
+          snapshotError: snapshotError !== null,
+          settings,
+          health,
+          interactions,
+          runs,
+        });
+        return {
+          work: badge.work,
+          questions: badge.questions,
+          runsActive: badge.runsActive || (detail !== null && isActiveRunStatus(detail.summary.status)),
+        };
+      })();
+
   return h(FactoryShell, {
     section: sectionForShell,
-    onNavigate,
+    onNavigate: aggregate ? onOpenAggregateSection : onNavigate,
+    tabs: aggregate ? AGGREGATE_TABS : undefined,
     repositories: repositoryProjection?.repositories ?? [],
     selectedRepositoryKey: selectedRepositoryKey(repositoryProjection ?? { repositories: [], selectedRepositoryKey: null }),
     repositoriesActive,
+    wizardMode: route.section === "add-repository",
     repositorySelectionLoading: repositoriesPending || data.repositories.status === "loading",
     onSelectRepository: (repositoryKey) => {
       onRepositorySelect(repositoryKey);
-      if (selectionNavigates) onNavigate("overview");
+      if (selectionNavigates) onNavigate(scopeSection);
     },
     onShowRepositories,
     onAddRepository,
     dispatch,
     branch: health?.host.branch ?? snapshot?.repository.factoryBranch ?? null,
     commit: snapshot?.revision.gitCommit ?? null,
-    activeRun,
-    badges: { work: needsYouCount, questions: openQuestionCount, runsActive: activeRun !== null },
+    activeRun: aggregate ? null : activeRun,
+    badges,
     refreshedAt,
     onRefresh: reload,
-    onPause: () => void submitAction({ kind: "pause" }, "dispatch"),
-    onResume: () => void submitAction({ kind: "resume" }, "dispatch"),
+    onPause: () => void submitAction({ kind: "pause" }, "dispatch", repoKey, snapshot, scopeSection),
+    onResume: () => void submitAction({ kind: "resume" }, "dispatch", repoKey, snapshot, scopeSection),
     runNow: dispatch
       ? {
           disabled: runNowDisabledReason !== null,
           reason: runNowDisabledReason,
           confirmTitle: `Run the foreman on ${selectedConfiguration?.repositoryKey ?? "this repository"}?`,
           confirmBody: `Starts a foreman run on ${selectedConfiguration?.repositoryKey ?? "the repository"} now, ignoring the night window and minimum gap. ${providerLine}`,
-          onConfirm: () => void submitAction({ kind: "run-now" }, "dispatch"),
+          onConfirm: () => void submitAction({ kind: "run-now" }, "dispatch", repoKey, snapshot, scopeSection),
         }
       : null,
     actionPending: actionState.pendingTarget !== null,

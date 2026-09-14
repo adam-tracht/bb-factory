@@ -1,4 +1,4 @@
-import { createElement, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createElement, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ProtocolSnapshot, ProviderStatus, QueueEntry } from "../../contracts.js";
 import type { ViewContext } from "../context.js";
 import {
@@ -19,12 +19,21 @@ import {
   linkifyPaths,
   queueStatusLabel,
   repositoryFileTarget,
+  sectionStorageKey,
+  timeAgo,
+  usePhoneViewport,
+  useRevealOnFocus,
   type Tone,
 } from "../primitives.js";
 
 const h = createElement;
 
 const QUEUE_PATH = "plans/factory/queue.md";
+// The queue projection is parsed from queue.md against questions.md and the
+// repo policy, so all three digests identify a refresh that can regroup or
+// remount a focused row.
+const QUESTIONS_PATH = "plans/factory/questions.md";
+const REPO_PATH = "plans/factory/repo.md";
 const LIST_CLAMP = 6;
 const NOTE_LINE_CLAMP = 6;
 const NOTE_CHAR_CLAMP = 320;
@@ -32,6 +41,16 @@ const ROUTINE_SCOPE_APPROVAL = "routine implementation per plan; no merges, depl
 const APPROVAL_GATED_ACTIONS = "merges, deploys, migrations, adding or upgrading dependencies, touching secrets, deleting data, customer-facing changes";
 
 type WorkGroup = "needs-you" | "ready" | "blocked" | "running" | "draft" | "done";
+
+/** Muted line shown inside an expanded group that has no entries. */
+const EMPTY_GROUP_LINE: Record<WorkGroup, string> = {
+  "needs-you": "Nothing needs you right now",
+  ready: "Nothing ready right now",
+  blocked: "Nothing blocked right now",
+  running: "Nothing running right now",
+  draft: "No drafts right now",
+  done: "Nothing done yet",
+};
 
 const STATUS_TONE: Record<QueueEntry["status"]["kind"], Tone> = {
   ready: "success",
@@ -79,6 +98,68 @@ function groupOf(entry: QueueEntry): WorkGroup {
   if (needsYou(entry)) return "needs-you";
   if (entry.eligible) return "ready";
   return "blocked";
+}
+
+// Supported provenance ids are prefix-shaped: run_/thr_/wfr_ plus letters or
+// digits (contract ids need no digit: thr_live, run_abc are real). Words like
+// "run_detail" share the prefix but are protocol terms, so they are excluded
+// literally rather than guessed away by shape.
+const DONE_ID_PATTERN = /\b(?:run|thr|wfr)_[A-Za-z0-9_-]+\b/g;
+const DONE_ID_EXCLUSIONS: ReadonlySet<string> = new Set(["run_detail"]);
+const DONE_DATE_PATTERN = /\b(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?)\b/;
+const DONE_VIA_PATTERN = /\b(run|thread)\b/;
+const DONE_SESSION_PATTERN = /\borchestrated session\b/;
+
+// Date.parse rolls impossible fields forward (2026-02-30 lands in March), so
+// matched components are range-checked and round-tripped before the
+// timestamp is trusted; bad dates stay in the leftover text untouched.
+function validDoneDate(match: string): boolean {
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?)?/.exec(match);
+  if (!m) return false;
+  const year = Number(m[1]), month = Number(m[2]), day = Number(m[3]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+  const roundTrip = new Date(Date.UTC(year, month - 1, day));
+  if (roundTrip.getUTCFullYear() !== year || roundTrip.getUTCMonth() !== month - 1 || roundTrip.getUTCDate() !== day) return false;
+  return m[4] === undefined
+    || (Number(m[4]) <= 23 && Number(m[5]) <= 59 && (m[6] === undefined || Number(m[6]) <= 59));
+}
+
+/**
+ * Done provenance: one format for the free-text done detail. A run, thread,
+ * or workflow id comes back in `id` and renders as a mono chip; an ISO date
+ * or timestamp inside the detail supplies the relative time and nothing else
+ * does. Unparsed leftover words stay on the line after a colon.
+ */
+export function doneProvenance(detail: string | undefined, now: number): { text: string; id: string | null } {
+  if (!detail || detail.trim().length === 0) return { text: "Done", id: null };
+  let rest = detail;
+  const id = [...rest.matchAll(DONE_ID_PATTERN)]
+    .map((match) => match[0])
+    .find((token) => !DONE_ID_EXCLUSIONS.has(token)) ?? null;
+  if (id) rest = rest.replace(new RegExp(`\\b${id}\\b`), " ");
+  const dateMatch = DONE_DATE_PATTERN.exec(rest);
+  const parsed = dateMatch && validDoneDate(dateMatch[1]) ? Date.parse(dateMatch[1]) : NaN;
+  const relative = Number.isNaN(parsed) ? null : timeAgo(new Date(parsed).toISOString(), now);
+  if (relative !== null && dateMatch) rest = rest.replace(dateMatch[0], " ");
+  // "done (orchestrated session <date>)" is the queue's shorthand for a run:
+  // the phrase is the via marker, consumed so it does not repeat as leftover.
+  const viaSession = DONE_SESSION_PATTERN.test(rest);
+  if (viaSession) rest = rest.replace(DONE_SESSION_PATTERN, " ");
+  const viaWord = DONE_VIA_PATTERN.exec(rest)?.[1] ?? null;
+  if (viaWord) rest = rest.replace(new RegExp(`\\b${viaWord}\\b`), " ");
+  const via = id
+    ? id.startsWith("thr_") ? "thread" : "run"
+    : viaWord ?? (viaSession ? "run" : null);
+  const leftover = rest
+    .split(/\s+/)
+    .map((token) => token.replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9]+$/g, ""))
+    .filter(Boolean)
+    .join(" ");
+  let text = "Done";
+  if (relative) text += ` ${relative}`;
+  if (via) text += ` via ${via}`;
+  if (leftover) text += `: ${leftover}`;
+  return { text, id };
 }
 
 /** Mono list clamped to LIST_CLAMP rows with a show-all toggle. */
@@ -160,7 +241,7 @@ function ApproveComposer(props: {
       rows: 2,
       disabled: pending,
       placeholder: `What the factory may do for ${entry.id}. Example: "routine work only" or "deploys allowed; no dependency changes".`,
-      className: "w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs text-foreground",
+      className: "w-full box-border rounded-md border border-border bg-background px-2 py-1.5 text-xs text-foreground",
       onChange: (event: { target: { value: string } }) => setText(event.target.value),
     }),
     h("div", { className: "flex flex-wrap items-center gap-2" },
@@ -348,6 +429,14 @@ function WorkRow(props: {
 }) {
   const { entry, group, ctx } = props;
   const [expanded, setExpanded] = useState(props.defaultExpanded);
+  // defaultExpanded seeds mount state only; a deep link refocusing an
+  // already-mounted collapsed row arrives as a false -> true prop change, so
+  // open on the transition. The user can still collapse the row afterwards.
+  const defaultExpandedRef = useRef(props.defaultExpanded);
+  useEffect(() => {
+    if (props.defaultExpanded && !defaultExpandedRef.current) setExpanded(true);
+    defaultExpandedRef.current = props.defaultExpanded;
+  }, [props.defaultExpanded]);
   const pending = ctx.pendingTarget === `queued:${entry.id}`;
   const openQids = entry.blockingQuestionIds;
   const approvalNeeded = approvalMissing(entry);
@@ -390,17 +479,33 @@ function WorkRow(props: {
         })
       : null;
 
-  const statusDetail = "detail" in displayStatus ? displayStatus.detail : undefined;
-  const statusDetailId = `work-${entry.id}-status-detail`;
+  // A ready-status entry that is not eligible is blocked in reality wherever
+  // the row lands (the Blocked group, or Needs you awaiting approval): the
+  // chip must say so, and the status detail line carries the first reason.
+  // Question-gated ready rows already render the blocked-by display status.
+  const blockedReady = displayStatus.kind === "ready" && !entry.eligible;
 
-  return h("div", { id: `work-${entry.id}`, className: "py-2" },
-    h("div", { className: "flex items-end gap-2 sm:items-center" },
+  const provenance = entry.status.kind === "done"
+    ? doneProvenance(entry.status.detail, Date.now())
+    : null;
+  const statusDetail = provenance
+    ? provenance.text
+    : blockedReady && entry.eligibilityReasons.length > 0
+      ? formatEligibilityReason(entry.eligibilityReasons[0])
+      : "detail" in displayStatus
+        ? displayStatus.detail
+        : undefined;
+  const idPrefix = ctx.idPrefix ?? "";
+  const statusDetailId = `${idPrefix}work-${entry.id}-status-detail`;
+
+  return h("div", { id: `${idPrefix}work-${entry.id}`, className: "min-w-0 py-2" },
+    h("div", { className: "flex min-w-0 flex-wrap items-end gap-2 sm:flex-nowrap sm:items-center" },
       h("div", {
         role: "button",
         tabIndex: 0,
         "aria-expanded": expanded,
         "aria-describedby": statusDetail ? statusDetailId : undefined,
-        className: "flex min-w-0 flex-1 cursor-pointer flex-wrap items-baseline gap-x-2 gap-y-1 rounded-md px-1 py-1 hover:bg-state-hover sm:flex-nowrap sm:items-center",
+        className: "flex min-w-0 flex-1 box-border cursor-pointer flex-wrap items-baseline gap-x-2 gap-y-1 rounded-md px-1 py-1 hover:bg-state-hover sm:flex-nowrap sm:items-center",
         onClick: () => setExpanded((value) => !value),
         onKeyDown: (event: { key: string; preventDefault(): void }) => {
           if (event.key === "Enter" || event.key === " ") {
@@ -409,18 +514,29 @@ function WorkRow(props: {
           }
         },
       },
-        h(Badge, { label: queueStatusLabel(displayStatus), tone: STATUS_TONE[displayStatus.kind] }),
+        blockedReady
+          ? h(Badge, { label: "Blocked", tone: "warning" })
+          : h(Badge, { label: queueStatusLabel(displayStatus), tone: STATUS_TONE[displayStatus.kind] }),
         h("code", { className: "shrink-0 font-mono text-xs text-muted-foreground" }, entry.id),
         h("span", {
-          className: "order-last min-w-0 basis-full truncate text-sm text-foreground sm:order-none sm:basis-auto",
+          className: "order-last min-w-0 basis-full line-clamp-2 break-words text-sm text-foreground sm:order-none sm:basis-auto sm:line-clamp-1",
         }, entry.title),
         h("span", { className: "shrink-0 text-xs text-muted-foreground" }, `P${entry.priority}`),
         entry.risk !== "low"
           ? h(Badge, { label: entry.risk, tone: RISK_TONE[entry.risk], title: `${entry.risk} risk` })
           : null),
-      cta),
+      cta
+        ? h("div", { className: "flex basis-full justify-end sm:basis-auto" }, cta)
+        : null),
     statusDetail
-      ? h("p", { id: statusDetailId, className: "mt-0.5 px-1 text-xs text-muted-foreground" }, statusDetail)
+      ? h("p", { id: statusDetailId, className: "mt-0.5 px-1 text-xs text-muted-foreground" },
+          statusDetail,
+          provenance?.id ? " " : null,
+          provenance?.id
+            ? h("span", {
+                className: "break-all rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground",
+              }, provenance.id)
+            : null)
       : null,
     expanded ? h(WorkRowDetail, {
       entry,
@@ -441,6 +557,7 @@ export function WorkView(props: {
   const { snapshot, ctx, focusItemId } = props;
   const providers = props.providers ?? [];
   const preferredProviderId = props.preferredProviderId ?? null;
+  const phone = usePhoneViewport();
 
   const groups = useMemo(() => {
     const buckets: Record<WorkGroup, QueueEntry[]> = {
@@ -458,19 +575,31 @@ export function WorkView(props: {
   const focusedEntry = focusItemId
     ? snapshot.queue.find((entry) => entry.id === focusItemId) ?? null
     : null;
+  const focusedGroup = focusedEntry ? groupOf(focusedEntry) : null;
 
-  useEffect(() => {
-    if (!focusItemId || typeof document === "undefined") return;
-    document.getElementById(`work-${focusItemId}`)?.scrollIntoView?.({ block: "start" });
-  }, [focusItemId]);
+  // forceOpen opens the focused row's section in this commit, but the row
+  // itself mounts in the follow-up commit; the reveal retries until it exists.
+  // The key carries the digest of the files the queue projection is read from,
+  // so a refresh that regroups or remounts the focused row reveals it again
+  // while an unrelated file change does not scroll the view.
+  const focusElementId = focusItemId ? `${ctx.idPrefix ?? ""}work-${focusItemId}` : null;
+  const workSourceDigest = [QUEUE_PATH, QUESTIONS_PATH, REPO_PATH]
+    .map((path) => ctx.revision?.fileDigests[path] ?? "")
+    .join("|");
+  useRevealOnFocus(focusElementId ? `${focusElementId}@${workSourceDigest}` : null, () => {
+    const element = focusElementId ? document.getElementById(focusElementId) : null;
+    if (!element) return false;
+    element.scrollIntoView?.({ block: "start" });
+    return true;
+  });
 
   const sections: Array<{ key: WorkGroup; title: string; defaultOpen: boolean }> = [
     { key: "needs-you", title: "Needs you", defaultOpen: true },
-    { key: "ready", title: "Ready", defaultOpen: true },
-    { key: "blocked", title: "Blocked", defaultOpen: true },
-    { key: "running", title: "Running", defaultOpen: true },
-    { key: "draft", title: "Drafts", defaultOpen: focusedEntry !== null && groupOf(focusedEntry) === "draft" },
-    { key: "done", title: "Done", defaultOpen: focusedEntry !== null && groupOf(focusedEntry) === "done" },
+    { key: "ready", title: "Ready", defaultOpen: !phone },
+    { key: "blocked", title: "Blocked", defaultOpen: !phone },
+    { key: "running", title: "Running", defaultOpen: !phone },
+    { key: "draft", title: "Drafts", defaultOpen: !phone },
+    { key: "done", title: "Done", defaultOpen: false },
   ];
 
   return h("div", { className: "space-y-4" },
@@ -492,15 +621,21 @@ export function WorkView(props: {
             count: groups[section.key].length,
             collapsible: true,
             defaultOpen: section.defaultOpen,
-            children: groups[section.key].map((entry) =>
-              h(WorkRow, {
-                key: entry.id,
-                entry,
-                group: section.key,
-                ctx,
-                defaultExpanded: entry.id === focusItemId,
-                providers,
-                preferredProviderId,
-              })),
+            // The focus id doubles as the force-open token: a new target in
+            // the same section reopens it, a repeated one stays user-closable.
+            forceOpen: focusedGroup === section.key ? focusElementId : false,
+            storageKey: sectionStorageKey(ctx.repository.repositoryKey, "work", section.key),
+            children: groups[section.key].length === 0
+              ? h("p", { className: "px-1 py-2 text-sm text-muted-foreground" }, EMPTY_GROUP_LINE[section.key])
+              : groups[section.key].map((entry) =>
+                  h(WorkRow, {
+                    key: entry.id,
+                    entry,
+                    group: section.key,
+                    ctx,
+                    defaultExpanded: entry.id === focusItemId,
+                    providers,
+                    preferredProviderId,
+                  })),
           })));
 }

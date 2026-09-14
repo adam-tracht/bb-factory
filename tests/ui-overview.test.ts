@@ -176,7 +176,24 @@ function renderOverview(overrides: Partial<OverviewProps> = {}, ctx: ViewContext
   }));
 }
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  window.sessionStorage.clear();
+  vi.unstubAllGlobals();
+});
+
+function stubPhoneViewport(phone: boolean): void {
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    matches: phone,
+    media: query,
+    onchange: null,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: () => false,
+  }));
+}
 
 describe("OverviewView", () => {
   it("renders attention rows whose actions navigate or mutate", () => {
@@ -298,5 +315,140 @@ describe("OverviewView", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "View" }));
     expect(ctx.onOpenRun).toHaveBeenCalledWith("run-1");
+  });
+});
+
+describe("OverviewView phone layout", () => {
+  it("clamps Needs attention detail text and keeps the full text on the title attribute", () => {
+    const detail =
+      "T2 waits on approval text that runs long, and T3 still needs a dependency review before it can dispatch.";
+    renderOverview({
+      attention: [
+        { id: "approvals", severity: "action", section: "work", title: "2 items need approval", detail },
+      ],
+    });
+    const detailEl = screen.getByText(detail);
+    expect(detailEl.className).toContain("line-clamp-2");
+    expect(detailEl.getAttribute("title")).toBe(detail);
+  });
+
+  it("expands a Needs attention row to reveal the full detail and keeps the action outside the summary", () => {
+    const detail =
+      "T2 waits on approval text that runs long, and T3 still needs a dependency review before it can dispatch.";
+    const { container } = renderOverview({
+      attention: [
+        { id: "approvals", severity: "action", section: "work", title: "2 items need approval", detail },
+      ],
+    });
+    const row = container.querySelector("[data-attention-id='approvals']") as HTMLElement;
+    const details = row.querySelector("details") as HTMLDetailsElement | null;
+    expect(details).toBeTruthy();
+    const summary = details!.querySelector("summary") as HTMLElement;
+    expect(within(row).getAllByText(detail)).toHaveLength(1);
+
+    fireEvent.click(summary);
+    expect(details!.open).toBe(true);
+    expect(within(row).getAllByText(detail)).toHaveLength(2);
+
+    const action = within(row).getByRole("button", { name: "Review" });
+    expect(summary.contains(action)).toBe(false);
+    expect(details!.contains(action)).toBe(false);
+  });
+
+  it("wraps long current-run task ids instead of overflowing", () => {
+    const longId = "BBF-0033-WITH-A-LONG-TASK-IDENTIFIER-0123456789";
+    renderOverview({
+      activeRun: { ...runSummary, status: "started", finishedAt: null, queueItemIds: [longId] },
+    });
+    const chip = screen.getByText(longId);
+    expect(chip.className).toContain("break-all");
+    expect(chip.className).toContain("max-w-full");
+  });
+
+  it("describes the dispatch schedule cron as a sentence (0037)", () => {
+    const custom: SettingsProjection = {
+      ...settingsProjection,
+      settings: { ...settingsProjection.settings, scheduleCron: "*/10 1-5 * * *" },
+    };
+    renderOverview({ settings: custom });
+    expect(screen.getByText("Every 10 minutes between 01:00 and 05:59, every day")).toBeTruthy();
+  });
+});
+
+describe("OverviewView section disclosure", () => {
+  const attention: AttentionItem[] = [
+    { id: "blocking-questions", severity: "action", section: "questions", title: "1 blocking question open", detail: "Gates T1" },
+  ];
+
+  it("keeps Needs attention open by default and honors a stored closed choice", () => {
+    renderOverview({ attention });
+    const details = screen.getByRole("heading", { name: "Needs attention" }).closest("details") as HTMLDetailsElement;
+    expect(details.open).toBe(true);
+
+    cleanup();
+    window.sessionStorage.setItem("bb-factory:section:demo:overview:needs-attention", "0");
+    renderOverview({ attention });
+    const closed = screen.getByRole("heading", { name: "Needs attention" }).closest("details") as HTMLDetailsElement;
+    expect(closed.open).toBe(false);
+    // The count badge still signals the hidden rows.
+    expect(within(closed).getByText("1")).toBeTruthy();
+    expect(screen.queryByText("1 blocking question open")).toBeNull();
+
+    fireEvent.click(closed.querySelector("summary")!);
+    expect(window.sessionStorage.getItem("bb-factory:section:demo:overview:needs-attention")).toBe("1");
+  });
+
+  it("keeps Technical details collapsed until toggled and persists the choice", () => {
+    renderOverview();
+    const details = screen.getByRole("heading", { name: "Technical details" }).closest("details") as HTMLDetailsElement;
+    expect(details.open).toBe(false);
+    expect(screen.queryByText("Protocol digest")).toBeNull();
+
+    fireEvent.click(details.querySelector("summary")!);
+    expect(screen.getByText("Protocol digest")).toBeTruthy();
+    expect(window.sessionStorage.getItem("bb-factory:section:demo:overview:technical-details")).toBe("1");
+  });
+
+  it("collapses every secondary section on phone widths while Needs attention stays open", () => {
+    stubPhoneViewport(true);
+    renderOverview({ attention, activeRun: { ...runSummary, status: "started", finishedAt: null } });
+
+    const needs = screen.getByRole("heading", { name: "Needs attention" }).closest("details") as HTMLDetailsElement;
+    expect(needs.open).toBe(true);
+    for (const title of ["Current run", "Last run", "Dispatch", "Repository", "Technical details"]) {
+      const details = screen.getByRole("heading", { name: title }).closest("details") as HTMLDetailsElement;
+      expect(details.open).toBe(false);
+    }
+  });
+
+  it("opens secondary sections by default on desktop while Technical details stays closed", () => {
+    renderOverview({ attention, activeRun: { ...runSummary, status: "started", finishedAt: null } });
+
+    for (const title of ["Needs attention", "Current run", "Last run", "Dispatch", "Repository"]) {
+      const details = screen.getByRole("heading", { name: title }).closest("details") as HTMLDetailsElement;
+      expect(details.open).toBe(true);
+    }
+    const technical = screen.getByRole("heading", { name: "Technical details" }).closest("details") as HTMLDetailsElement;
+    expect(technical.open).toBe(false);
+    // Grouped content is still present inside the open sections.
+    expect(screen.getByText("Health")).toBeTruthy();
+    expect(screen.getByText("Current state:")).toBeTruthy();
+  });
+
+  it("opens settings without toggling Dispatch when its Edit action is clicked", () => {
+    const ctx = makeCtx();
+    renderOverview({}, ctx);
+
+    const dispatch = screen.getByRole("heading", { name: "Dispatch" }).closest("details") as HTMLDetailsElement;
+    expect(dispatch.open).toBe(true);
+
+    const edit = within(dispatch.querySelector("summary")!).getByRole("button", { name: "Edit" });
+    const click = new MouseEvent("click", { bubbles: true, cancelable: true });
+    fireEvent(edit, click);
+
+    expect(ctx.onOpenSection).toHaveBeenCalledWith("settings");
+    expect(click.defaultPrevented).toBe(false);
+    expect(dispatch.open).toBe(true);
+    expect(window.sessionStorage.getItem("bb-factory:section:demo:overview:dispatch")).toBeNull();
   });
 });

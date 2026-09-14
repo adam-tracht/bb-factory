@@ -484,7 +484,7 @@ validate:
 - pnpm test
 - pnpm typecheck
 - pnpm lint
-notes: Phase A (navigation and shell). User-reported. Another thread has uncommitted work in runs.ts adding a "Run notes" section to RunDetailView; rebase onto it or coordinate before touching the same file.
+notes: Phase A (navigation and shell). User-reported. Another thread has uncommitted work in runs.ts adding a "Run notes" section to RunDetailView; that separate contract change remains excluded and uncommitted pending its own approval. Implementation and both Sol reviews are complete in the working tree (362 tests, typecheck, lint, build, whitespace green), but `bb plugin types --check` fails at baseline (SDK pin 0.4.84 vs host 0.4.87), so formal done is blocked on Q2 (repin authorization). Not all gates passed.
 
 ## BBF-0030 Phone header is crowded and the tab strip hides overflow
 status: ready
@@ -501,7 +501,7 @@ validate:
 - pnpm test
 - pnpm typecheck
 - pnpm lint
-notes: Phase A. User-reported (crowding) plus audit items 10 and 11. Keep the header grouping from the 2026-09-13 phone-width pass (commit 6025521); this only removes the id chip and grows hit areas.
+notes: Phase A. User-reported (crowding) plus audit items 10 and 11. Keep the header grouping from the 2026-09-13 phone-width pass (commit 6025521); this only removes the id chip and grows hit areas. Implementation and both Sol reviews are complete in the working tree (362 tests, typecheck, lint, build, whitespace green); `bb plugin types --check` fails at baseline (SDK pin 0.4.84 vs host 0.4.87), so formal done is blocked on Q2 (repin authorization). Not all gates passed.
 
 ## BBF-0031 Add-repository wizard keeps stale repository chrome
 status: ready
@@ -518,7 +518,7 @@ validate:
 - pnpm test
 - pnpm typecheck
 - pnpm lint
-notes: Phase A. Audit items 16 and 17. Reuse the repositories-active signal added in BBF-0016 and the chrome suppression from BBF-0021.
+notes: Phase A. Audit items 16 and 17. Reuse the repositories-active signal added in BBF-0016 and the chrome suppression from BBF-0021. Implementation and both Sol reviews are complete in the working tree (362 tests, typecheck, lint, build, whitespace green); `bb plugin types --check` fails at baseline (SDK pin 0.4.84 vs host 0.4.87), so formal done is blocked on Q2 (repin authorization). Not all gates passed.
 
 ## BBF-0032 "All" view has no aggregate Work, Questions, or Runs tabs
 status: ready
@@ -536,7 +536,7 @@ validate:
 - pnpm test
 - pnpm typecheck
 - pnpm lint
-notes: Phase B (aggregate view). User-reported: "which is the whole point of that view." Audit items 7 and 18. Compose in the view layer from the projections FactoryView already fetches per repository; the wire contract is frozen at v1.2 and must not change. Ask a blocking question if per-repository fetches cannot be issued concurrently without a contract change.
+notes: Phase B (aggregate view). User-reported: "which is the whole point of that view." Audit items 7 and 18. Compose in the view layer from the projections FactoryView already fetches per repository; the wire contract is frozen at v1.2 and must not change. Ask a blocking question if per-repository fetches cannot be issued concurrently without a contract change. Spec review is active with one fix in flight (a tuple detail-key collision); reviews not yet passed.
 
 ## BBF-0033 Questions and Overview text overflows or hard-truncates
 status: ready
@@ -553,7 +553,7 @@ validate:
 - pnpm test
 - pnpm typecheck
 - pnpm lint
-notes: Phase C (row correctness). Audit items 1, 2, and 12. Item 1 is a live layout bug on phones.
+notes: Phase C (row correctness). Audit items 1, 2, and 12. Item 1 is a live layout bug on phones. Implementation is complete and both Sol reviews pass on structure (362 tests, typecheck, lint, build, whitespace green); the actual 390px visual verification is still pending, so visual acceptance is not claimed. Formal done also blocked on Q2 (SDK repin authorization).
 
 ## BBF-0034 Work rows show contradictory chips and raw provenance
 status: ready
@@ -570,7 +570,7 @@ validate:
 - pnpm test
 - pnpm typecheck
 - pnpm lint
-notes: Phase C. Audit items 3, 4, and 5. The Ready/Blocked contradiction likely comes from queueStatusLabel ignoring the group's eligibility reason; fix at the label source, not per group.
+notes: Phase C. Audit items 3, 4, and 5. The Ready/Blocked contradiction likely comes from queueStatusLabel ignoring the group's eligibility reason; fix at the label source, not per group. Implementation and both Sol reviews are complete in the working tree (362 tests, typecheck, lint, build, whitespace green); `bb plugin types --check` fails at baseline (SDK pin 0.4.84 vs host 0.4.87), so formal done is blocked on Q2 (repin authorization). Not all gates passed.
 
 ## BBF-0035 Runs history rows misalign task chips on phone and mix status casing
 status: ready
@@ -587,7 +587,7 @@ validate:
 - pnpm test
 - pnpm typecheck
 - pnpm lint
-notes: Phase C. User-reported (screenshot) plus audit item 6. Another thread has uncommitted work in runs.ts; land after it or rebase.
+notes: Phase C. User-reported (screenshot) plus audit item 6. Another thread has uncommitted work in runs.ts; land after it or rebase. Implementation and both Sol reviews are complete in the working tree (362 tests, typecheck, lint, build, whitespace green); `bb plugin types --check` fails at baseline (SDK pin 0.4.84 vs host 0.4.87), so formal done is blocked on Q2 (repin authorization). Not all gates passed.
 
 ## BBF-0036 Chip contrast fails AA and the legend and refresh cues are incomplete
 status: ready
@@ -604,7 +604,7 @@ validate:
 - pnpm test
 - pnpm typecheck
 - pnpm lint
-notes: Phase C. Audit items 8, 9, and 19. Measure the new colors with a contrast check in the test or a one-off script; do not eyeball.
+notes: Phase C. Audit items 8, 9, and 19. Measure the new colors with a contrast check in the test or a one-off script; do not eyeball. Implementation and both Sol reviews are complete in the working tree (362 tests, typecheck, lint, build, whitespace green); the spec review measured fixed-pair contrast ratios 6.492 and 6.153. `bb plugin types --check` fails at baseline (SDK pin 0.4.84 vs host 0.4.87), so formal done is blocked on Q2 (repin authorization). Not all gates passed.
 
 ## BBF-0037 Settings gives no save feedback and mislabels the dispatch toggle
 status: ready
@@ -622,7 +622,7 @@ validate:
 - pnpm test
 - pnpm typecheck
 - pnpm lint
-notes: Phase D (settings). Audit items 13, 14, and 15. Settings mutations already go through the settings-mutation RPCs; only the presentation changes.
+notes: Phase D (settings). Audit items 13, 14, and 15. Settings mutations already go through the settings-mutation RPCs; only the presentation changes. Implementation and both Sol reviews are complete in the working tree (362 tests, typecheck, lint, build, whitespace green); quality verified a background refresh preserves drafts and the Saved state, and the cron divisor rendering is truthful. `bb plugin types --check` fails at baseline (SDK pin 0.4.84 vs host 0.4.87), so formal done is blocked on Q2 (repin authorization). Not all gates passed.
 
 ## BBF-0038 Info-dense tabs need progressive disclosure
 status: ready
@@ -640,4 +640,4 @@ validate:
 - pnpm test
 - pnpm typecheck
 - pnpm lint
-notes: Phase E (disclosure). User-reported. Depends on the Phase C row fixes so the collapsed defaults are set against final row heights. Coordinate with the uncommitted "Run notes" section in runs.ts.
+notes: Phase E (disclosure). User-reported. Depends on the Phase C row fixes so the collapsed defaults are set against final row heights. Coordinate with the uncommitted "Run notes" section in runs.ts. Implementation is complete and the Sol spec review passed; the Sol quality review is still active. Formal done also blocked on Q2 (SDK repin authorization).

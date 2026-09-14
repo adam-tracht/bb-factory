@@ -25,13 +25,18 @@ import {
   FeedbackNotice,
   Section,
   safeMarkdown,
+  sectionStorageKey,
+  usePhoneViewport,
+  useRevealOnFocus,
   type Tone,
 } from "../primitives.js";
 
 const h = createElement;
 
+const QUESTIONS_PATH = "plans/factory/questions.md";
+
 const inputClass =
-  "rounded-md border border-border bg-background px-2 py-1 text-sm text-foreground placeholder:text-muted-foreground";
+  "box-border rounded-md border border-border bg-background px-2 py-1 text-sm text-foreground placeholder:text-muted-foreground";
 const labelClass = "text-xs font-medium uppercase tracking-wide text-muted-foreground";
 
 type KindFilter = "all" | "blocking" | "assumption";
@@ -46,11 +51,6 @@ function questionGates(snapshot: ProtocolSnapshot, questionId: string): string[]
         (entry.status.kind === "blocked-by" && entry.status.questionId === questionId),
     )
     .map((entry) => entry.id);
-}
-
-function truncateText(value: string, max = 80): string {
-  const clean = value.replace(/\s+/g, " ").trim();
-  return clean.length > max ? `${clean.slice(0, max - 1)}...` : clean;
 }
 
 function classificationBadge(classification: Question["classification"]) {
@@ -96,6 +96,7 @@ function RepositoryQuestionCard(props: {
   onRecord: (questionId: string, answer: string) => void;
   onRecommend: (questionId: string, selection: PickerValue) => void;
   onOpenGated: (queueItemId: string) => void;
+  idPrefix?: string;
 }) {
   const { question, gates, pending } = props;
   const assumed = question.assumed;
@@ -109,15 +110,15 @@ function RepositoryQuestionCard(props: {
 
   return h(
     "section",
-    { id: `question-${question.id}`, className: "rounded-lg border border-border bg-card p-4" },
+    { id: `${props.idPrefix ?? ""}question-${question.id}`, className: "rounded-lg border border-border bg-card p-4" },
     h(
       "div",
-      { className: "flex flex-wrap items-center gap-2 text-xs text-muted-foreground" },
+      { className: "flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground" },
       h("span", { className: "font-mono" }, question.id),
       h("span", null, question.date),
       classificationBadge(question.classification),
     ),
-    h("h3", { className: "mt-1.5 text-sm font-medium text-foreground" }, question.question),
+    h("h3", { className: "mt-1.5 break-words text-sm font-medium text-foreground" }, question.question),
     gates.length > 0
       ? h(
           "p",
@@ -129,7 +130,8 @@ function RepositoryQuestionCard(props: {
               {
                 key: id,
                 type: "button",
-                className: "font-mono text-primary underline-offset-2 hover:underline",
+                className: "max-w-full break-all font-mono text-primary underline-offset-2 hover:underline",
+                style: { overflowWrap: "anywhere" },
                 onClick: () => props.onOpenGated(id),
               },
               id,
@@ -242,21 +244,21 @@ function RepositoryQuestionCard(props: {
   );
 }
 
-function AnsweredQuestionRow(props: { question: Question; recorded: boolean }) {
+function AnsweredQuestionRow(props: { question: Question; recorded: boolean; idPrefix?: string }) {
   const { question, recorded } = props;
   return h(
     "div",
-    { id: `question-${question.id}`, className: "py-1.5" },
+    { id: `${props.idPrefix ?? ""}question-${question.id}`, className: "py-1.5" },
     h(Disclosure, {
       summary: h(
         "span",
-        { className: "inline-flex items-center gap-2" },
+        { className: "flex min-w-0 flex-wrap items-center gap-2" },
         h("span", { className: "font-mono text-xs" }, question.id),
         classificationBadge(question.classification),
-        h("span", { className: "truncate text-xs text-foreground" }, truncateText(question.question)),
+        h("span", { className: "min-w-0 line-clamp-2 break-words text-xs" }, question.question),
         h(
           "span",
-          { className: "rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground" },
+          { className: "shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground" },
           recorded ? "Recorded" : "Answered",
         ),
       ),
@@ -472,7 +474,7 @@ function PendingInteractionRow(props: { interaction: PendingInteraction; ctx: Vi
 
   return h(
     "div",
-    { id: `interaction-${interaction.interactionId}`, className: "py-3" },
+    { id: `${ctx.idPrefix ?? ""}interaction-${interaction.interactionId}`, className: "py-3" },
     h(
       "div",
       { className: "flex flex-wrap items-center gap-2" },
@@ -502,11 +504,15 @@ function PendingInteractionRow(props: { interaction: PendingInteraction; ctx: Vi
   );
 }
 
-/** Reveal a focused card: open collapsed ancestors and the row expander. */
-function revealQuestion(id: string) {
-  if (typeof document === "undefined") return;
-  const element = document.getElementById(`question-${id}`);
-  if (!element) return;
+/**
+ * Reveal a focused card: open collapsed ancestors and the row expander, then
+ * scroll. False while the card has not mounted yet; a section just opened by
+ * forceOpen mounts its children in the follow-up commit.
+ */
+function revealQuestion(id: string, idPrefix?: string): boolean {
+  if (typeof document === "undefined") return false;
+  const element = document.getElementById(`${idPrefix ?? ""}question-${id}`);
+  if (!element) return false;
   const rowDetails = element.querySelector(":scope > details");
   if (rowDetails instanceof HTMLDetailsElement) rowDetails.open = true;
   let node = element.parentElement;
@@ -517,6 +523,7 @@ function revealQuestion(id: string) {
   if (typeof element.scrollIntoView === "function") {
     element.scrollIntoView({ block: "nearest" });
   }
+  return true;
 }
 
 export function QuestionsView(props: {
@@ -533,13 +540,16 @@ export function QuestionsView(props: {
   const [kindFilter, setKindFilter] = useState<KindFilter>("all");
   const [stateFilter, setStateFilter] = useState<StateFilter>("all");
   const [locallyAnswered, setLocallyAnswered] = useState<ReadonlySet<string>>(() => new Set());
-  const [answeredOpen, setAnsweredOpen] = useState(false);
-  const digest = ctx.revision?.protocolDigest ?? null;
+  const phone = usePhoneViewport();
+  // The questions source alone keys the re-arms below: a refresh touching
+  // foreman, queue, current, dashboard, runs, or lock must not re-scroll a
+  // still-focused card or drop optimistic answers it cannot supersede.
+  const questionsDigest = ctx.revision?.fileDigests[QUESTIONS_PATH] ?? null;
 
-  // Optimistic answers are stale once the protocol files actually change.
+  // Optimistic answers are stale once the questions file actually changes.
   useEffect(() => {
     setLocallyAnswered((current) => (current.size === 0 ? current : new Set()));
-  }, [digest]);
+  }, [questionsDigest]);
 
   const isAnswered = (question: Question) =>
     question.answer !== null || locallyAnswered.has(question.id);
@@ -566,9 +576,13 @@ export function QuestionsView(props: {
     );
   const answeredQuestions = filtered.filter((question) => isAnswered(question));
 
-  useEffect(() => {
-    if (focusQuestionId) revealQuestion(focusQuestionId);
-  }, [focusQuestionId, digest]);
+  // A questions.md digest bump re-arms the reveal so a refresh that remounts
+  // the focused card (open -> answered group move) scrolls back to it.
+  const focusElementId = focusQuestionId ? `${ctx.idPrefix ?? ""}question-${focusQuestionId}` : null;
+  useRevealOnFocus(
+    focusElementId ? `${focusElementId}@${questionsDigest ?? ""}` : null,
+    () => focusQuestionId !== null && revealQuestion(focusQuestionId, ctx.idPrefix),
+  );
 
   const recordAnswer = (questionId: string, answer: string) => {
     ctx.onAction({ kind: "answer-question", source: "repository-question", questionId, answer });
@@ -596,9 +610,10 @@ export function QuestionsView(props: {
 
   const pendingInteractions = interactions?.interactions ?? [];
   const filtersActive = query.trim() !== "" || kindFilter !== "all" || stateFilter !== "all";
-  const forceAnsweredOpen =
-    stateFilter === "answered" ||
-    (focusQuestionId !== null && answeredQuestions.some((question) => question.id === focusQuestionId));
+  const focusedOpen =
+    focusQuestionId !== null && openQuestions.some((question) => question.id === focusQuestionId);
+  const focusedAnswered =
+    focusQuestionId !== null && answeredQuestions.some((question) => question.id === focusQuestionId);
 
   return h(
     "div",
@@ -609,7 +624,7 @@ export function QuestionsView(props: {
       { className: "flex flex-wrap items-center gap-2" },
       h("input", {
         type: "search",
-        className: `${inputClass} min-w-48 flex-1`,
+        className: `${inputClass} w-full min-w-0 sm:w-auto sm:min-w-48 sm:flex-1`,
         placeholder: "Filter by id, question, or context",
         "aria-label": "Filter questions",
         value: query,
@@ -644,6 +659,9 @@ export function QuestionsView(props: {
       ? h(Section, {
           title: "BB questions",
           count: pendingInteractions.length,
+          collapsible: true,
+          defaultOpen: !phone,
+          storageKey: sectionStorageKey(ctx.repository.repositoryKey, "questions", "bb-questions"),
           children: pendingInteractions.map((interaction) =>
             h(PendingInteractionRow, { key: interaction.interactionId, interaction, ctx }),
           ),
@@ -659,68 +677,56 @@ export function QuestionsView(props: {
       : h(
           "div",
           { className: "space-y-3" },
-          openQuestions.map((question) =>
-            h(RepositoryQuestionCard, {
-              key: question.id,
-              question,
-              gates: questionGates(snapshot, question.id),
-              pending: ctx.pendingTarget === `question:${question.id}`,
-              providers: props.providers ?? [],
-              preferredProviderId: props.preferredProviderId ?? null,
-              pickerRouting,
-              onRecord: recordAnswer,
-              onRecommend: recommend,
-              onOpenGated: (queueItemId) => ctx.onOpenSection("work", `work-${queueItemId}`),
-            }),
-          ),
-          answeredQuestions.length > 0
-            ? h(
-                "details",
-                {
-                  className: "group",
-                  "data-testid": "answered-questions",
-                  open: answeredOpen || forceAnsweredOpen,
-                  onToggle: (event: { currentTarget: HTMLDetailsElement }) =>
-                    setAnsweredOpen(event.currentTarget.open),
-                },
-                h(
-                  "summary",
-                  {
-                    className:
-                      "cursor-pointer list-none select-none rounded-md px-1 py-1.5 hover:bg-state-hover",
-                    onClick: (event: { preventDefault(): void }) => {
-                      event.preventDefault();
-                      setAnsweredOpen((value) => !value);
-                    },
-                  },
-                  h(
+          h(Section, {
+            title: "Open",
+            count: openQuestions.length,
+            collapsible: true,
+            defaultOpen: true,
+            // The focus id doubles as the force-open token: a new target in
+            // the same section reopens it, a repeated one stays user-closable.
+            forceOpen: focusedOpen ? focusElementId : false,
+            storageKey: sectionStorageKey(ctx.repository.repositoryKey, "questions", "open"),
+            children:
+              openQuestions.length === 0
+                ? h("p", { className: "px-1 py-2 text-sm text-muted-foreground" }, "No open questions.")
+                : h(
                     "div",
-                    { className: "flex items-center gap-2" },
-                    h("h2", { className: "text-sm font-semibold text-foreground" }, "Answered"),
-                    h(
-                      "span",
-                      {
-                        className:
-                          "rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground",
-                      },
-                      String(answeredQuestions.length),
+                    { className: "space-y-3 py-1" },
+                    openQuestions.map((question) =>
+                      h(RepositoryQuestionCard, {
+                        key: question.id,
+                        question,
+                        gates: questionGates(snapshot, question.id),
+                        pending: ctx.pendingTarget === `question:${question.id}`,
+                        providers: props.providers ?? [],
+                        preferredProviderId: props.preferredProviderId ?? null,
+                        pickerRouting,
+                        onRecord: recordAnswer,
+                        onRecommend: recommend,
+                        onOpenGated: (queueItemId) => ctx.onOpenSection("work", `work-${queueItemId}`),
+                        idPrefix: ctx.idPrefix,
+                      }),
                     ),
                   ),
+          }),
+          answeredQuestions.length > 0
+            ? h(Section, {
+                title: "Answered",
+                count: answeredQuestions.length,
+                collapsible: true,
+                defaultOpen: false,
+                forceOpen: focusedAnswered ? focusElementId : stateFilter === "answered",
+                storageKey: sectionStorageKey(ctx.repository.repositoryKey, "questions", "answered"),
+                testId: "answered-questions",
+                children: answeredQuestions.map((question) =>
+                  h(AnsweredQuestionRow, {
+                    key: question.id,
+                    question,
+                    recorded: question.answer === null,
+                    idPrefix: ctx.idPrefix,
+                  }),
                 ),
-                (answeredOpen || forceAnsweredOpen)
-                  ? h(
-                      "div",
-                      { className: "mt-1 divide-y divide-border" },
-                      answeredQuestions.map((question) =>
-                        h(AnsweredQuestionRow, {
-                          key: question.id,
-                          question,
-                          recorded: question.answer === null,
-                        }),
-                      ),
-                    )
-                  : null,
-              )
+              })
             : null,
         ),
   );

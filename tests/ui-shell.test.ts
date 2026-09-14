@@ -1,11 +1,15 @@
 // @vitest-environment jsdom
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { FactoryShell, type FactoryShellProps } from "../src/ui/shell.js";
 import { computeAttention } from "../src/ui/attention.js";
+import { TONE_BADGE } from "../src/ui/primitives.js";
 
 const h = createElement;
+
+afterEach(() => cleanup());
 
 function shellProps(overrides: Partial<FactoryShellProps> = {}): FactoryShellProps {
   return {
@@ -79,8 +83,8 @@ describe("FactoryShell", () => {
 
   it("renders chips and count badges with the small label radius, not round pills", () => {
     const markup = renderToStaticMarkup(h(FactoryShell, shellProps({ children: "body" })));
-    expect(markup).toMatch(/<span[^>]*class="[^"]*rounded px-2 py-0\.5[^"]*bg-success\/10[^"]*"[^>]*>Dispatch on<\/span>/);
-    expect(markup).toMatch(/<span[^>]*class="[^"]*rounded bg-warning\/15[^"]*"[^>]*>2<\/span>/);
+    expect(markup).toMatch(/<span[^>]*class="[^"]*rounded px-2 py-0\.5[^"]*bg-\[#dcfce7\][^"]*"[^>]*>Dispatch on<\/span>/);
+    expect(markup).toMatch(/<span[^>]*class="[^"]*rounded bg-\[#fef3c7\][^"]*"[^>]*>2<\/span>/);
     // Tinted chips never carry a larger radius; only geometric circles stay rounded-full.
     expect(markup).not.toMatch(/rounded-(?:md|full)[^"]*bg-(?:muted|warning|success|destructive)[^"]*px-/);
   });
@@ -88,7 +92,7 @@ describe("FactoryShell", () => {
   it("renders the refresh affordance with an inline icon, not the ↻ glyph", () => {
     const markup = renderToStaticMarkup(h(FactoryShell, shellProps({ children: "body" })));
     expect(markup).not.toContain("↻");
-    expect(markup).toMatch(/<button[^>]*title="Refresh now"[^>]*aria-label="refreshed [^"]*"[^>]*><span class="hidden sm:inline">refreshed [^<]*<\/span><svg[^>]*viewBox="0 0 24 24"/);
+    expect(markup).toMatch(/<button[^>]*title="Refresh now"[^>]*aria-label="refreshed [^"]*"[^>]*><span[^>]*class="hidden sm:inline"[^>]*>refreshed [^<]*<\/span><svg[^>]*viewBox="0 0 24 24"/);
     expect(markup).toContain('aria-hidden="true"');
   });
 
@@ -109,11 +113,12 @@ describe("FactoryShell", () => {
     expect(group).not.toMatch(/aria-pressed="false"[^>]*class="[^"]*shadow-sm/);
   });
 
-  it("hides repo-scoped chrome on the repositories landing but keeps the switcher and shared controls", () => {
+  it("hides repo-scoped chrome on the repositories landing but keeps the switcher, shared controls, and aggregate tabs", () => {
     const markup = renderToStaticMarkup(h(FactoryShell, shellProps({
       repositories: switcherRepositories("alpha", "beta"),
       selectedRepositoryKey: "alpha",
       repositoriesActive: true,
+      tabs: ["overview", "work", "questions", "runs"],
       runNow: { disabled: false, reason: null, confirmTitle: "Run?", confirmBody: "body", onConfirm: () => undefined },
       activeRun: {
         runId: "run-9",
@@ -132,7 +137,10 @@ describe("FactoryShell", () => {
       },
       children: "body",
     })));
-    expect(markup).not.toContain('role="tablist"');
+    // The aggregate scope shows its four union tabs and never a Settings tab.
+    expect(markup).toContain('role="tablist"');
+    expect(markup.match(/role="tab"/g)).toHaveLength(4);
+    expect(markup).not.toContain(">Settings<");
     expect(markup).not.toContain("Dispatch on");
     expect(markup).not.toContain("@abcdef1");
     expect(markup).not.toContain(">Pause<");
@@ -212,6 +220,108 @@ describe("FactoryShell", () => {
     expect(markup).toContain("<select");
     expect(markup).toMatch(/<div[^>]*class="[^"]*sm:hidden[^"]*"[^>]*aria-busy/);
     expect(markup).toMatch(/<div[^>]*class="[^"]*hidden[^"]*sm:flex[^"]*"[^>]*role="group"/);
+  });
+
+  it("hides the commit sha chip below sm while the branch name stays visible", () => {
+    const markup = renderToStaticMarkup(h(FactoryShell, shellProps({ children: "body" })));
+    expect(markup).toMatch(/<span class="hidden sm:inline-flex"><button[^>]*><span[^>]*>@abcdef1/);
+    expect(markup).toMatch(/font-mono text-xs text-muted-foreground">factory<span class="hidden sm:inline-flex">/);
+  });
+
+  it("scrolls the active tab into view on selection so a clipped tab is revealed", () => {
+    const scrollIntoView = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
+    try {
+      render(h(FactoryShell, shellProps({ section: "settings", children: "body" })));
+      const active = screen.getByRole("tab", { selected: true });
+      expect(active.textContent).toContain("Settings");
+      expect(scrollIntoView).toHaveBeenCalledWith({ inline: "nearest", block: "nearest" });
+      expect(scrollIntoView.mock.instances).toContain(active);
+    } finally {
+      if (original === undefined) {
+        delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+      } else {
+        Element.prototype.scrollIntoView = original;
+      }
+    }
+  });
+
+  it("gives the refresh, legend, and add repository buttons at least 24px hit areas", () => {
+    const markup = renderToStaticMarkup(h(FactoryShell, shellProps({
+      repositories: switcherRepositories("alpha"),
+      selectedRepositoryKey: "alpha",
+      children: "body",
+    })));
+    const refresh = /<button[^>]*aria-label="refreshed[^"]*"[^>]*>/.exec(markup)?.[0] ?? "";
+    expect(refresh).toContain("min-h-6");
+    const legend = /<button[^>]*aria-label="Chip legend"[^>]*>/.exec(markup)?.[0] ?? "";
+    expect(legend).toContain("min-h-6");
+    expect(legend).toContain("min-w-6");
+    const addButtons = markup.match(/<button[^>]*aria-label="Add repository"[^>]*>/g) ?? [];
+    expect(addButtons.length).toBeGreaterThan(0);
+    for (const tag of addButtons) {
+      expect(tag).toContain("min-h-6");
+      expect(tag).toContain("min-w-6");
+    }
+  });
+
+  it("legend explains mono ids, provider chips, host ids, and the current marker", () => {
+    render(h(FactoryShell, shellProps({ children: "body" })));
+    fireEvent.click(screen.getByRole("button", { name: "Chip legend" }));
+    const dialog = screen.getByRole("dialog", { name: "Chip legend" });
+    expect(within(dialog).getByText("run_1a2b")).toBeTruthy();
+    expect(within(dialog).getByText(/Provider chip/)).toBeTruthy();
+    expect(within(dialog).getByText(/Host id/)).toBeTruthy();
+    expect(within(dialog).getByText(/Current/)).toBeTruthy();
+    for (const meaning of [
+      "done, healthy, enabled",
+      "needs you or paused",
+      "failed or unavailable",
+      "running",
+      "neutral or idle",
+    ]) {
+      expect(within(dialog).getByText(meaning)).toBeTruthy();
+    }
+  });
+
+  it("shows a brief Updated cue on the refresh control after a refresh completes", () => {
+    vi.useFakeTimers();
+    try {
+      const { rerender } = render(h(FactoryShell, shellProps({ refreshedAt: Date.now() - 8000 })));
+      expect(screen.queryByText("Updated")).toBeNull();
+      rerender(h(FactoryShell, shellProps({ refreshedAt: Date.now() })));
+      const cue = screen.getByText("Updated");
+      expect(cue).toBeTruthy();
+      // The cue must be visible on phone widths too: no hidden-below-sm class.
+      expect(cue.className ?? "").not.toContain("hidden");
+      act(() => {
+        vi.advanceTimersByTime(1600);
+      });
+      expect(screen.queryByText("Updated")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("green and amber badge pairs keep WCAG AA contrast on their own tint", () => {
+    const luminance = (hex: string) => {
+      const n = parseInt(hex.slice(1), 16);
+      const channel = (v: number) => {
+        const s = v / 255;
+        return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+      };
+      return 0.2126 * channel(n >> 16) + 0.7152 * channel((n >> 8) & 255) + 0.0722 * channel(n & 255);
+    };
+    const ratio = (classes: string) => {
+      const bg = /bg-\[(#[0-9a-f]{6})\]/.exec(classes)?.[1];
+      const fg = /text-\[(#[0-9a-f]{6})\]/.exec(classes)?.[1];
+      if (!bg || !fg) throw new Error(`badge tone is not a pinned pair: ${classes}`);
+      const [hi, lo] = [luminance(fg), luminance(bg)].sort((a, b) => b - a);
+      return (hi + 0.05) / (lo + 0.05);
+    };
+    expect(ratio(TONE_BADGE.success)).toBeGreaterThanOrEqual(4.5);
+    expect(ratio(TONE_BADGE.warning)).toBeGreaterThanOrEqual(4.5);
   });
 });
 

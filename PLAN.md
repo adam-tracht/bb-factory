@@ -54,7 +54,7 @@ The Work and Questions views read repository-backed `plans/factory/queue.md` and
 
 Repository writes are narrow, root-confined to the configured checkout, serialized, and compare-and-swap guarded. A stale or changed file is rejected with a conflict; the plugin must not overwrite unrelated text or attempt an implicit merge. Existing claim commits, completion commits, dashboard rows, and repository-specific integration rules remain intact.
 
-The plugin provides Overview, Work, Questions, Runs, and Settings tab surfaces, plus a repositories landing view and an add-repository wizard. Overview may also be exposed as a small homepage section, but it must not replace BB's native homepage, header, side-panel chrome, thread behavior, navigation, or deletion confirmations.
+The plugin provides Overview, Work, Questions, Runs, and Settings tab surfaces per repository, an aggregate "All" scope that unions the first four across registered repositories (Settings stays repository-scoped), plus a repositories landing view and an add-repository wizard. Overview may also be exposed as a small homepage section, but it must not replace BB's native homepage, header, side-panel chrome, thread behavior, navigation, or deletion confirmations. The implemented surface is documented in [docs/control-surface.md](docs/control-surface.md).
 
 ## 3. Target module and ownership layout
 

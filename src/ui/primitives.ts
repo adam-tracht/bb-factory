@@ -11,9 +11,12 @@ const h = createElement;
 
 export type Tone = "success" | "warning" | "danger" | "primary" | "neutral";
 
+// Green and amber badge pairs are pinned hexes that hold AA in every theme:
+// the chip's own tint keeps dark text readable (6.49:1 green, 6.15:1 amber),
+// brighter but legible on dark. The theme status hues fail on light packs.
 export const TONE_BADGE: Record<Tone, string> = {
-  success: "bg-success/10 text-success",
-  warning: "bg-warning/10 text-warning",
+  success: "bg-[#dcfce7] text-[#166534]",
+  warning: "bg-[#fef3c7] text-[#854d0e]",
   danger: "bg-destructive/10 text-destructive",
   primary: "bg-primary/10 text-primary",
   neutral: "bg-muted text-muted-foreground",
@@ -106,6 +109,114 @@ export function Card(props: { title?: string; actions?: ReactNode; children: Rea
   );
 }
 
+const SECTION_STORAGE_PREFIX = "bb-factory:section:";
+const PHONE_QUERY = "(max-width: 639px)";
+
+/**
+ * Session-scoped storage key for a collapsible section's open state. Scoped by
+ * repository, tab, and section so the aggregate view can reuse the same tabs
+ * under different repositories without collisions.
+ */
+export function sectionStorageKey(repositoryKey: string, tab: string, section: string): string {
+  return `${SECTION_STORAGE_PREFIX}${repositoryKey}:${tab}:${section}`;
+}
+
+function readStoredSectionOpen(storageKey: string): boolean | null {
+  try {
+    const value = window.sessionStorage.getItem(storageKey);
+    return value === null ? null : value === "1";
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredSectionOpen(storageKey: string, open: boolean): void {
+  try {
+    window.sessionStorage.setItem(storageKey, open ? "1" : "0");
+  } catch {
+    // Storage unavailable (private mode, quota); the open state stays in memory.
+  }
+}
+
+const INTERACTIVE_SUMMARY_SELECTOR =
+  'a,button,input,select,textarea,label,[role="button"],[role="link"],[contenteditable="true"]';
+
+/**
+ * True when a summary click came from an interactive descendant (an action
+ * button, a file link). Those elements own the activation, so the disclosure
+ * must leave the event alone rather than toggling and calling preventDefault.
+ */
+function isInteractiveSummaryTarget(target: unknown, summary: unknown): boolean {
+  if (!(target instanceof Element) || !(summary instanceof Element)) return false;
+  const interactive = target.closest(INTERACTIVE_SUMMARY_SELECTOR);
+  return interactive !== null && interactive !== summary && summary.contains(interactive);
+}
+
+function matchesPhoneViewport(): boolean {
+  try {
+    return typeof window.matchMedia === "function" && window.matchMedia(PHONE_QUERY).matches;
+  } catch {
+    return false;
+  }
+}
+
+// The reveal target mounts in the commit right after its section's forceOpen,
+// so a few mutation batches are plenty of retry budget; past the bound the
+// anchor is dead (e.g. an aggregate group that never contains the item) and
+// the observer stops paying a document-wide lookup on every DOM change.
+const REVEAL_OBSERVER_BATCH_LIMIT = 8;
+
+/**
+ * Reveal a focused deep-link target once it exists. A focus change and the
+ * section's forceOpen land in one commit, but the row inside mounts in a
+ * follow-up commit owned by the section, so a one-shot lookup misses and the
+ * parent's effect does not re-run. `reveal` returns true once the target is
+ * found; until then a MutationObserver retries on each DOM change, up to a
+ * bounded number of batches. A new `key` (focus id, prefix, or a re-arm token
+ * like the data digest) reveals again.
+ */
+export function useRevealOnFocus(key: string | null, reveal: () => boolean): void {
+  const revealRef = useRef(reveal);
+  useEffect(() => {
+    revealRef.current = reveal;
+  });
+  useEffect(() => {
+    if (typeof document === "undefined" || key === null) return;
+    if (revealRef.current()) return;
+    if (typeof MutationObserver !== "function") return;
+    let batches = 0;
+    const observer = new MutationObserver(() => {
+      batches += 1;
+      if (revealRef.current() || batches >= REVEAL_OBSERVER_BATCH_LIMIT) observer.disconnect();
+    });
+    observer.observe(document.body ?? document.documentElement, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [key]);
+}
+
+/** True while the viewport is under the sm breakpoint; false where matchMedia is absent. */
+export function usePhoneViewport(): boolean {
+  const [phone, setPhone] = useState(matchesPhoneViewport);
+  useEffect(() => {
+    let query: MediaQueryList;
+    try {
+      if (typeof window.matchMedia !== "function") return;
+      query = window.matchMedia(PHONE_QUERY);
+    } catch {
+      return;
+    }
+    const onChange = (event: MediaQueryListEvent) => setPhone(event.matches);
+    setPhone(query.matches);
+    if (typeof query.addEventListener === "function") {
+      query.addEventListener("change", onChange);
+      return () => query.removeEventListener("change", onChange);
+    }
+    query.addListener?.(onChange);
+    return () => query.removeListener?.(onChange);
+  }, []);
+  return phone;
+}
+
 /** Divided section with a count-aware header; the standard list container. */
 export function Section(props: {
   title: string;
@@ -113,19 +224,28 @@ export function Section(props: {
   children: ReactNode;
   defaultOpen?: boolean;
   collapsible?: boolean;
+  forceOpen?: boolean | string | null;
+  storageKey?: string;
   actions?: ReactNode;
   id?: string;
+  testId?: string;
 }) {
   const heading = h("div", { className: "flex items-center gap-2 py-1.5" },
     h("h2", { className: "text-sm font-semibold text-foreground" }, props.title),
     props.count !== undefined
       ? h("span", { className: "rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground" }, String(props.count))
       : null,
-    props.actions ? h("div", { className: "ml-auto flex items-center gap-2" }, props.actions) : null,
+    props.actions ? h("div", { className: "ml-auto flex min-w-0 max-w-full items-center gap-2" }, props.actions) : null,
   );
   if (props.collapsible) {
     return h(CollapsibleSection, {
+      // Remount on storageKey change so a new repository scope reloads its own
+      // stored choice instead of leaking the previous key's open state.
+      key: props.storageKey,
       defaultOpen: props.defaultOpen ?? false,
+      forceOpen: props.forceOpen,
+      storageKey: props.storageKey,
+      testId: props.testId,
       id: props.id,
       summaryClassName: "cursor-pointer list-none select-none rounded-md px-1 hover:bg-state-hover",
       bodyClassName: "mt-1 divide-y divide-border",
@@ -133,7 +253,10 @@ export function Section(props: {
       children: props.children,
     });
   }
-  return h("section", { ...(props.id ? { id: props.id } : {}) },
+  return h("section", {
+    ...(props.id ? { id: props.id } : {}),
+    ...(props.testId ? { "data-testid": props.testId } : {}),
+  },
     h("div", { className: "px-1" }, heading),
     h("div", { className: "divide-y divide-border" }, props.children),
   );
@@ -160,29 +283,50 @@ export function CollapsibleSection(props: {
   heading: ReactNode;
   children: ReactNode;
   defaultOpen: boolean;
+  forceOpen?: boolean | string | null;
+  storageKey?: string;
   id?: string;
+  testId?: string;
   className?: string;
   summaryClassName?: string;
   summaryPrefix?: ReactNode;
   bodyClassName?: string;
 }) {
-  const [open, setOpen] = useState(props.defaultOpen);
+  // forceOpen reveals a deep-linked section. Any truthy value opens it; a
+  // change to a different truthy value (a new focus token for the same
+  // section) opens it again, while an unchanged value leaves the user's own
+  // open/close choice alone.
+  const forced = Boolean(props.forceOpen);
+  const [open, setOpen] = useState(() =>
+    forced ||
+    ((props.storageKey ? readStoredSectionOpen(props.storageKey) : null) ?? props.defaultOpen));
   const defaultOpenRef = useRef(props.defaultOpen);
   useEffect(() => {
     if (props.defaultOpen && !defaultOpenRef.current) setOpen(true);
     defaultOpenRef.current = props.defaultOpen;
   }, [props.defaultOpen]);
+  const forceOpenRef = useRef(props.forceOpen);
+  useEffect(() => {
+    if (props.forceOpen && props.forceOpen !== forceOpenRef.current) setOpen(true);
+    forceOpenRef.current = props.forceOpen;
+  }, [props.forceOpen]);
   return h("details", {
     className: `group ${props.className ?? ""}`,
     open,
     onToggle: (event: { currentTarget: { open: boolean } }) => setOpen(event.currentTarget.open),
     ...(props.id ? { id: props.id } : {}),
+    ...(props.testId ? { "data-testid": props.testId } : {}),
   },
     h("summary", {
       className: props.summaryClassName,
-      onClick: (event: { preventDefault(): void }) => {
+      onClick: (event: { preventDefault(): void; target: unknown; currentTarget: unknown }) => {
+        // Buttons and links inside the summary own their own activation; native
+        // details keeps the disclosure shut for them, so stay out of the way.
+        if (isInteractiveSummaryTarget(event.target, event.currentTarget)) return;
         event.preventDefault();
-        setOpen((value) => !value);
+        const next = !open;
+        setOpen(next);
+        if (props.storageKey) writeStoredSectionOpen(props.storageKey, next);
       },
     },
       props.summaryPrefix ?? null,
@@ -260,7 +404,7 @@ export function ConfirmDialog(props: {
       role: "alertdialog",
       "aria-modal": true,
       "aria-label": props.title,
-      className: "w-full max-w-md rounded-lg border border-border bg-card p-4 shadow-lg",
+      className: "w-full max-w-md box-border rounded-lg border border-border bg-card p-4 shadow-lg",
     },
       h("h2", { className: "text-sm font-semibold text-foreground" }, props.title),
       h("div", { className: "mt-2 text-sm text-muted-foreground" }, props.body),
@@ -299,7 +443,7 @@ export function TypedConfirmDialog(props: {
       role: "alertdialog",
       "aria-modal": true,
       "aria-label": props.title,
-      className: "w-full max-w-md rounded-lg border border-border bg-card p-4 shadow-lg",
+      className: "w-full max-w-md box-border rounded-lg border border-border bg-card p-4 shadow-lg",
     },
       h("h2", { className: "text-sm font-semibold text-foreground" }, props.title),
       h("div", { className: "mt-2 text-sm text-muted-foreground" }, props.body),
@@ -309,7 +453,7 @@ export function TypedConfirmDialog(props: {
           type: "text",
           value,
           onChange: (event: { target: { value: string } }) => setValue(event.target.value),
-          className: "mt-1 w-full rounded-md border border-border bg-background px-2 py-1.5 font-mono text-sm",
+          className: "mt-1 w-full box-border rounded-md border border-border bg-background px-2 py-1.5 font-mono text-sm",
           autoFocus: true,
         })),
       h("div", { className: "mt-4 flex justify-end gap-2" },
@@ -327,7 +471,7 @@ export function CopyText({ value, label, mono }: { value: string; label?: string
   const [copied, setCopied] = useState(false);
   return h("button", {
     type: "button",
-    className: `inline-flex max-w-full items-center gap-1 rounded px-1 text-left text-xs text-muted-foreground transition-colors hover:bg-state-hover hover:text-foreground ${mono ? "font-mono" : ""}`,
+    className: `inline-flex max-w-full box-border items-center gap-1 rounded px-1 text-left text-xs text-muted-foreground transition-colors hover:bg-state-hover hover:text-foreground ${mono ? "font-mono" : ""}`,
     title: copied ? "Copied" : `Copy ${value}`,
     onClick: () => {
       void navigator.clipboard?.writeText(value).then(() => {
@@ -410,8 +554,8 @@ export function FilePath(props: {
   if (props.target && props.fileLink) {
     return h(props.fileLink, {
       target: props.target,
-      className: `font-mono text-xs text-primary underline-offset-2 hover:underline ${props.className ?? ""}`,
-    }, props.path);
+      className: `inline-flex min-h-6 min-w-0 max-w-full items-center font-mono text-xs text-primary underline-offset-2 hover:underline ${props.className ?? ""}`,
+    }, h("span", { className: "truncate" }, props.path));
   }
   return h("code", {
     className: `block truncate font-mono text-xs ${props.className ?? ""}`,
@@ -510,7 +654,8 @@ export function runStatusLabel(status: string): string {
   switch (status) {
     case "pending": return "Pending";
     case "started": return "Running";
-    case "completed": return "Completed";
+    case "completed": return "Success";
+    case "blocked": return "Blocked";
     case "no-op": return "No-op";
     case "failed-safe": return "Failed safe";
     case "cancelled": return "Cancelled";

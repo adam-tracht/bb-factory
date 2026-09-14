@@ -12,7 +12,6 @@ import {
   Badge,
   ConfirmDialog,
   CopyText,
-  Disclosure,
   EmptyNotice,
   FeedbackNotice,
   FilePath,
@@ -26,7 +25,9 @@ import {
   runFileTarget,
   runStatusLabel,
   runStatusTone,
+  sectionStorageKey,
   timeAgo,
+  usePhoneViewport,
   type FileLinkTarget,
 } from "../primitives.js";
 
@@ -67,23 +68,24 @@ function LabelledFileLink(props: {
 
 function QueueItemChips({ ids }: { ids: readonly string[] }) {
   if (ids.length === 0) {
-    return h("span", { className: "text-xs text-muted-foreground" }, "none");
+    return h("span", { className: "text-xs text-muted-foreground" }, "No tasks");
   }
-  return h("span", { className: "flex min-w-0 flex-wrap items-center gap-1" },
+  return h("span", { className: "flex min-w-0 flex-wrap gap-1" },
     ids.map((id) => h("span", {
       key: id,
-      className: "rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground",
+      className: "max-w-full box-border break-all rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground",
+      style: { overflowWrap: "anywhere" },
     }, id)));
 }
 
 function ActiveRunRow({ run, now, ctx }: { run: OperationalRunSummary; now: number; ctx: ViewContext }) {
   const threadId = run.workerThreadId;
   const elapsed = formatDuration(run.startedAt ?? run.requestedAt, null, now);
-  return h("div", { className: "flex items-center gap-2 px-1 py-1.5" },
+  return h("div", { className: "flex flex-wrap items-center gap-2 px-1 py-1.5" },
     h(StatusDot, { tone: "primary", pulse: true }),
     h("button", {
       type: "button",
-      className: "flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1 rounded-md px-1 py-0.5 text-left transition-colors hover:bg-state-hover",
+      className: "flex min-w-0 flex-1 box-border flex-wrap items-center gap-x-3 gap-y-1 rounded-md px-1 py-0.5 text-left transition-colors hover:bg-state-hover",
       onClick: () => ctx.onOpenRun(run.runId),
     },
       h(Badge, { label: runStatusLabel(run.status), tone: runStatusTone(run.status) }),
@@ -106,20 +108,23 @@ function HistoryRunRow({ run, now, ctx }: { run: OperationalRunSummary; now: num
   const duration = formatDuration(run.startedAt, run.finishedAt, now);
   return h("button", {
     type: "button",
-    className: "flex w-full flex-wrap items-center gap-x-3 gap-y-1 px-1 py-2 text-left transition-colors hover:bg-state-hover",
+    className: "flex w-full min-w-0 box-border items-center gap-3 px-1 py-2 text-left transition-colors hover:bg-state-hover",
     onClick: () => ctx.onOpenRun(run.runId),
   },
-    h("span", { className: "w-14 shrink-0 text-xs text-muted-foreground" }, when ?? ""),
-    h(Badge, { label: runStatusLabel(run.status), tone: runStatusTone(run.status) }),
-    run.providerId ? h("span", { className: "text-xs text-muted-foreground" }, run.providerId) : null,
-    duration ? h("span", { className: "text-xs tabular-nums text-muted-foreground" }, duration) : null,
-    h("span", { className: "min-w-0 flex-1" }, h(QueueItemChips, { ids: run.queueItemIds })),
-    h("span", { className: "shrink-0 text-muted-foreground", "aria-hidden": true }, "›"));
+    h("div", { className: "flex min-w-0 flex-1 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3" },
+      h("div", { className: "flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1" },
+        h("span", { className: "w-14 shrink-0 text-xs text-muted-foreground" }, when ?? ""),
+        h(Badge, { label: runStatusLabel(run.status), tone: runStatusTone(run.status) }),
+        run.providerId ? h("span", { className: "text-xs text-muted-foreground" }, run.providerId) : null,
+        duration ? h("span", { className: "text-xs tabular-nums text-muted-foreground" }, duration) : null),
+      h(QueueItemChips, { ids: run.queueItemIds })),
+    h("span", { className: "shrink-0 self-center text-muted-foreground", "aria-hidden": true }, "›"));
 }
 
 export function RunsView(props: { runs: OperationalRunListProjection; ctx: ViewContext }): ReactNode {
   const { runs, ctx } = props;
   const now = useNow();
+  const phone = usePhoneViewport();
   const { active, history } = useMemo(() => {
     const activeRuns: OperationalRunSummary[] = [];
     const historyRuns: OperationalRunSummary[] = [];
@@ -152,6 +157,9 @@ export function RunsView(props: { runs: OperationalRunListProjection; ctx: ViewC
       ? h(Section, {
           title: "Active",
           count: active.length,
+          collapsible: true,
+          defaultOpen: true,
+          storageKey: sectionStorageKey(ctx.repository.repositoryKey, "runs", "active"),
           children: active.map((run) => h(ActiveRunRow, { key: run.runId, run, now, ctx })),
         })
       : null,
@@ -159,6 +167,9 @@ export function RunsView(props: { runs: OperationalRunListProjection; ctx: ViewC
       ? h(Section, {
           title: "History",
           count: history.length,
+          collapsible: true,
+          defaultOpen: !phone,
+          storageKey: sectionStorageKey(ctx.repository.repositoryKey, "runs", "history"),
           children: history.map((run) => h(HistoryRunRow, { key: run.runId, run, now, ctx })),
         })
       : null,
@@ -204,7 +215,7 @@ function AttemptRow({ attempt, ctx }: { attempt: DispatchAttempt; ctx: ViewConte
     h("span", { className: "text-xs text-muted-foreground" }, `${attempt.providerId} · ${attempt.model} · ${attempt.reasoningLevel}`),
     h("span", { className: "text-xs tabular-nums text-muted-foreground" },
       `${formatTimestamp(attempt.startedAt) ?? "pending"} → ${formatTimestamp(attempt.finishedAt) ?? "running"}`),
-    h("span", { className: "ml-auto flex items-center gap-2" },
+    h("span", { className: "ml-auto flex min-w-0 items-center gap-2" },
       threadId
         ? h(ActionButton, {
             label: "Thread",
@@ -231,6 +242,9 @@ export function RunDetailView(props: { detail: OperationalRunDetail; ctx: ViewCo
   const pending = ctx.pendingTarget === `run:${run.runId}`;
   const duration = formatDuration(run.startedAt, run.finishedAt, now);
   const when = timeAgo(run.startedAt ?? run.requestedAt, now);
+  const phone = usePhoneViewport();
+  const sectionKey = (name: string) =>
+    sectionStorageKey(ctx.repository.repositoryKey, "runs", name);
 
   const technicalRows = ([
     ["Run id", run.runId],
@@ -247,12 +261,26 @@ export function RunDetailView(props: { detail: OperationalRunDetail; ctx: ViewCo
 
   return h("div", { className: "space-y-4" },
     h(FeedbackNotice, { feedback: ctx.feedback }),
-    h("div", { className: "flex flex-wrap items-center gap-x-3 gap-y-2" },
+    h(Section, {
+      title: "Summary",
+      children: h("div", { className: "flex flex-wrap items-center gap-x-3 gap-y-2 py-1" },
+      h("button", {
+        type: "button",
+        className: "inline-flex min-h-11 shrink-0 items-center gap-1 rounded-md px-1.5 text-sm text-muted-foreground hover:bg-state-hover hover:text-foreground sm:min-h-0 sm:py-0.5",
+        "aria-label": "Back to runs",
+        onClick: () => ctx.onOpenSection("runs"),
+      }, h("span", { "aria-hidden": "true" }, "‹"), "Runs"),
       h(Badge, { label: runStatusLabel(run.status), tone: runStatusTone(run.status) }),
-      when ? h("span", { className: "text-xs text-muted-foreground" }, when) : null,
-      run.providerId ? h("span", { className: "text-xs text-muted-foreground" }, run.providerId) : null,
-      h("span", { className: "text-xs text-muted-foreground" }, `${detail.intent.trigger} trigger`),
-      duration ? h("span", { className: "text-xs tabular-nums text-muted-foreground" }, duration) : null,
+      h("div", {
+        // Phone: the metadata drops to a wrapped second line so the header's
+        // controls stay on one line; sm+ dissolves the group so the spans sit
+        // inline between the badge and the thread button as before.
+        className: "order-last flex basis-full flex-wrap items-center gap-x-3 gap-y-1 sm:contents",
+      },
+        when ? h("span", { className: "text-xs text-muted-foreground" }, when) : null,
+        run.providerId ? h("span", { className: "text-xs text-muted-foreground" }, run.providerId) : null,
+        h("span", { className: "text-xs text-muted-foreground" }, `${detail.intent.trigger} trigger`),
+        duration ? h("span", { className: "text-xs tabular-nums text-muted-foreground" }, duration) : null),
       threadId
         ? h(ActionButton, {
             label: "Open thread",
@@ -262,15 +290,25 @@ export function RunDetailView(props: { detail: OperationalRunDetail; ctx: ViewCo
             onClick: () => ctx.onOpenThread(threadId),
           })
         : null),
-    h(Timeline, { run, active }),
+    }),
+    h(Section, {
+      title: "Timeline",
+      collapsible: true,
+      defaultOpen: !phone,
+      storageKey: sectionKey("timeline"),
+      children: h("div", { className: "px-1 py-1" }, h(Timeline, { run, active })),
+    }),
     h(Section, {
       title: "Worked on",
       count: run.queueItemIds.length,
+      collapsible: true,
+      defaultOpen: !phone,
+      storageKey: sectionKey("worked-on"),
       children: run.queueItemIds.length > 0
         ? run.queueItemIds.map((id) => h("button", {
             key: id,
             type: "button",
-            className: "flex w-full items-center justify-between gap-2 px-1 py-2 text-left transition-colors hover:bg-state-hover",
+            className: "flex w-full box-border items-center justify-between gap-2 px-1 py-2 text-left transition-colors hover:bg-state-hover",
             onClick: () => ctx.onOpenSection("work", `work-${id}`),
           },
             h("span", { className: "font-mono text-xs" }, id),
@@ -280,6 +318,9 @@ export function RunDetailView(props: { detail: OperationalRunDetail; ctx: ViewCo
     h(Section, {
       title: "Canonical records",
       count: run.canonicalRecords.length,
+      collapsible: true,
+      defaultOpen: !phone,
+      storageKey: sectionKey("canonical-records"),
       children: run.canonicalRecords.length > 0
         ? run.canonicalRecords.map((record) =>
             h(CanonicalRecordRow, { key: `${record.recordType}:${record.recordId}`, run, record, ctx }))
@@ -289,7 +330,8 @@ export function RunDetailView(props: { detail: OperationalRunDetail; ctx: ViewCo
       title: "Attempts",
       count: detail.attempts.length,
       collapsible: true,
-      defaultOpen: detail.attempts.length > 1,
+      defaultOpen: false,
+      storageKey: sectionKey("attempts"),
       children: detail.attempts.length > 0
         ? detail.attempts.map((attempt) => h(AttemptRow, { key: attempt.attemptId, attempt, ctx }))
         : h("p", { className: "px-1 py-2 text-sm text-muted-foreground" }, "No dispatch attempts recorded."),
@@ -313,10 +355,12 @@ export function RunDetailView(props: { detail: OperationalRunDetail; ctx: ViewCo
               })
             : null)
       : null,
-    h(Disclosure, {
-      summary: "Technical details",
-      className: "pt-2",
-      children: h("dl", { className: "space-y-1.5" },
+    h(Section, {
+      title: "Technical details",
+      collapsible: true,
+      defaultOpen: false,
+      storageKey: sectionKey("technical-details"),
+      children: h("dl", { className: "space-y-1.5 px-1 py-1" },
         technicalRows.map(([label, value]) => h("div", {
           key: label,
           className: "flex items-center justify-between gap-3",

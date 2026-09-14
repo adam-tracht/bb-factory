@@ -33,6 +33,8 @@ export type FactoryAction = RepositoryActionRequest["action"] | BbInteractionAct
  * actions) or the settings mutation helpers.
  */
 export interface ViewContext {
+  /** Prefix for row DOM ids when multiple repositories share a view. */
+  readonly idPrefix?: string;
   readonly repository: RepositoryConfiguration;
   readonly environmentId: string | null;
   readonly projectId: string | null;
