@@ -10,7 +10,7 @@ Run from the repo root via the `pnpm` script wrappers. pnpm here is pinned to No
 | Typecheck | `pnpm typecheck` | Pass (0 errors) |
 | Lint | `pnpm lint` | Pass (0 errors, 0 warnings) |
 | Build | `pnpm build` (runs `bb plugin build .`) | Pass (emits dist/server.js, dist/app.js, dist/app.css, and meta files) |
-| SDK type freshness | `bb plugin types --check .` | Pass (@get-bb/plugin-sdk pin 0.4.47 matches host 0.4.47) |
+| SDK type freshness | `bb plugin types --check .` | Pass (@get-bb/plugin-sdk pin 0.4.87 matches host 0.4.87) |
 | Whitespace | `git diff --check` | Pass |
 
 Results measured on 2026-09-11 at scaffold time.

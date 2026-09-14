@@ -52,7 +52,7 @@ bb plugin install git:github.com/adam-tracht/bb-factory
 Pin a release tag:
 
 ```sh
-bb plugin install git:github.com/adam-tracht/bb-factory@v0.1.3
+bb plugin install git:github.com/adam-tracht/bb-factory@v0.1.4
 ```
 
 ## Quickstart
