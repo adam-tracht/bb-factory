@@ -468,3 +468,176 @@ validate:
 - pnpm typecheck
 - pnpm lint
 notes: Follow-up to BBF-0027, same user direction. rounded-md (6px) still read as "trying to be round" on small screens and tall labels; bare `rounded` (4px) is the repo's existing small-chip radius and reads as a softened box rather than a pill.
+
+## BBF-0029 Run detail has no way back to the Runs list
+status: ready
+priority: 1
+depends_on: none
+risk: low
+plan: src/ui/views/runs.ts, src/ui/FactoryView.ts, src/ui/routes.ts, tests/ui-runs.test.ts
+approved: user direction 2026-09-13 ("Do it")
+acceptance:
+- Run detail renders a "Runs" back control at the top left of the header that routes to the repository's Runs tab, and the Runs tab remains highlighted while a run detail is open.
+- Browser back from run detail returns to the Runs list, not to a prior repository.
+- The back control meets a 44px tap target on phone width.
+validate:
+- pnpm test
+- pnpm typecheck
+- pnpm lint
+notes: Phase A (navigation and shell). User-reported. Another thread has uncommitted work in runs.ts adding a "Run notes" section to RunDetailView; rebase onto it or coordinate before touching the same file.
+
+## BBF-0030 Phone header is crowded and the tab strip hides overflow
+status: ready
+priority: 1
+depends_on: none
+risk: low
+plan: src/ui/shell.ts, src/ui/FactoryView.ts, tests/ui-shell.test.ts
+approved: user direction 2026-09-13 ("Do it")
+acceptance:
+- On phone width the repository status row drops the `@sha` chip and its copy button (the sha stays visible on desktop and inside Settings or Overview technical details) so "repo name, Dispatch on, Idle" fits on one line without wrapping.
+- The scrollable tab strip shows an overflow affordance (a fade edge on the clipped side, or the active tab scrolled into view) so "Settings" is never silently cut off at 390px.
+- Small controls reach a 24px minimum hit area on phone: "refreshed just now", "Add repository +", the legend "?", and file links.
+validate:
+- pnpm test
+- pnpm typecheck
+- pnpm lint
+notes: Phase A. User-reported (crowding) plus audit items 10 and 11. Keep the header grouping from the 2026-09-13 phone-width pass (commit 6025521); this only removes the id chip and grows hit areas.
+
+## BBF-0031 Add-repository wizard keeps stale repository chrome
+status: ready
+priority: 3
+depends_on: BBF-0030
+risk: low
+plan: src/ui/shell.ts, src/ui/FactoryView.ts, src/ui/views/repositories.ts, tests/ui.test.ts
+approved: user direction 2026-09-13 ("Do it")
+acceptance:
+- On `/repositories/new` no repository pill renders pressed, the tab strip and Pause/Run now controls are hidden, and the "All" control is not shown active either.
+- "Back" returns to the view the wizard was opened from (the landing list or the repository tab), not always the repository list.
+- The folder-picker copy reads "Choose the folder on this machine (MacBook Pro)" style wording rather than "The folder picker opens on MacBook Pro."
+validate:
+- pnpm test
+- pnpm typecheck
+- pnpm lint
+notes: Phase A. Audit items 16 and 17. Reuse the repositories-active signal added in BBF-0016 and the chrome suppression from BBF-0021.
+
+## BBF-0032 "All" view has no aggregate Work, Questions, or Runs tabs
+status: ready
+priority: 1
+depends_on: BBF-0030
+risk: medium
+plan: src/ui/FactoryView.ts, src/ui/routes.ts, src/ui/shell.ts, src/ui/views/repositories.ts, src/ui/views/work.ts, src/ui/views/questions.ts, src/ui/views/runs.ts, src/ui/attention.ts, tests/ui.test.ts, tests/ui-work.test.ts, tests/ui-runs.test.ts
+approved: user direction 2026-09-13 ("Do it")
+acceptance:
+- With "All" selected the tab strip shows Overview, Work, Questions, and Runs; each tab renders the union of every registered repository's entries, grouped by repository with the repository name as the group heading, using the existing per-repository read projections (no new RPC or storage seam).
+- Tab badges under "All" sum the per-repository attention counts; the repository cards on the aggregate Overview show a labeled count ("2 need attention") instead of a bare number, and the tooltip grammar is fixed.
+- Actions dispatched from an aggregate row target the row's own repository (`ViewContext.onAction` receives that repository key).
+- Opening the Factory sidebar item lands on the aggregate Overview, and the last-selected repository is one tap away via its pill.
+validate:
+- pnpm test
+- pnpm typecheck
+- pnpm lint
+notes: Phase B (aggregate view). User-reported: "which is the whole point of that view." Audit items 7 and 18. Compose in the view layer from the projections FactoryView already fetches per repository; the wire contract is frozen at v1.2 and must not change. Ask a blocking question if per-repository fetches cannot be issued concurrently without a contract change.
+
+## BBF-0033 Questions and Overview text overflows or hard-truncates
+status: ready
+priority: 2
+depends_on: none
+risk: low
+plan: src/ui/views/questions.ts, src/ui/views/overview.ts, src/ui/primitives.ts, tests/ui-questions.test.ts
+approved: user direction 2026-09-13 ("Do it")
+acceptance:
+- Question rows never exceed the column width at 390px: the flex parent of the truncating span carries `min-w-0`, and the Answered or Recorded chip stays visible on the row.
+- Question titles are no longer cut at ~80 characters; they wrap to two lines (line clamp) on any width and the full text is available when the row is expanded.
+- The Overview "Needs attention" body and its task-id list wrap or clamp on phone width, and expanding the item reveals the full text.
+validate:
+- pnpm test
+- pnpm typecheck
+- pnpm lint
+notes: Phase C (row correctness). Audit items 1, 2, and 12. Item 1 is a live layout bug on phones.
+
+## BBF-0034 Work rows show contradictory chips and raw provenance
+status: ready
+priority: 2
+depends_on: none
+risk: low
+plan: src/ui/views/work.ts, src/ui/primitives.ts, tests/ui-work.test.ts
+approved: user direction 2026-09-13 ("Do it")
+acceptance:
+- An entry listed under the Blocked group never renders a green "Ready" chip; the chip reflects the effective eligibility (blocked-by, stale gate, or waiting on approval).
+- Expanding an empty group renders a muted empty-state line ("Nothing needs you right now") instead of a blank area.
+- Done rows render provenance in one format: "Done <relative time> via run" or "via thread" with the id as a mono chip, whether the source is a run timestamp, a run date, a thread id, or a `wfr_` id.
+validate:
+- pnpm test
+- pnpm typecheck
+- pnpm lint
+notes: Phase C. Audit items 3, 4, and 5. The Ready/Blocked contradiction likely comes from queueStatusLabel ignoring the group's eligibility reason; fix at the label source, not per group.
+
+## BBF-0035 Runs history rows misalign task chips on phone and mix status casing
+status: ready
+priority: 2
+depends_on: none
+risk: low
+plan: src/ui/views/runs.ts, src/ui/primitives.ts, tests/ui-runs.test.ts
+approved: user direction 2026-09-13 ("Do it")
+acceptance:
+- On phone width a run row lays out as two lines: "time ago, status, provider, duration" on the first and the task-id chips as a wrapping inline group on the second, with even chip spacing; the chevron stays vertically centered on the row.
+- Run status labels use one casing everywhere ("Blocked", "No-op", "Success", "Failed safe"), via the existing state label helper.
+- A run with no task ids renders a muted "No tasks" instead of a bare "none".
+validate:
+- pnpm test
+- pnpm typecheck
+- pnpm lint
+notes: Phase C. User-reported (screenshot) plus audit item 6. Another thread has uncommitted work in runs.ts; land after it or rebase.
+
+## BBF-0036 Chip contrast fails AA and the legend and refresh cues are incomplete
+status: ready
+priority: 3
+depends_on: none
+risk: low
+plan: src/ui/primitives.ts, src/ui/shell.ts, tests/ui-shell.test.ts
+approved: user direction 2026-09-13 ("Do it")
+acceptance:
+- Green and amber chip text reaches at least 4.5:1 on white and on the dark theme (darker text on a tinted background rather than colored text on white).
+- The "?" legend explains every chip family that appears in the shell and rows: status colors, "current", host ids, provider chips, and mono id chips.
+- When a background refresh changes the header count or health state, the header shows a brief "updated" cue (the existing "refreshed just now" text pulses or restates the time) so the change is not silent.
+validate:
+- pnpm test
+- pnpm typecheck
+- pnpm lint
+notes: Phase C. Audit items 8, 9, and 19. Measure the new colors with a contrast check in the test or a one-off script; do not eyeball.
+
+## BBF-0037 Settings gives no save feedback and mislabels the dispatch toggle
+status: ready
+priority: 2
+depends_on: none
+risk: low
+plan: src/ui/views/settings.ts, src/ui/views/overview.ts, src/ui/primitives.ts, tests/ui-settings.test.ts
+approved: user direction 2026-09-13 ("Do it")
+acceptance:
+- Every settings field shows a saving and saved state (inline "Saved" that fades, or a footer with Save and Cancel when edits are pending); the user can always tell whether an edit persisted.
+- "Dispatch active for this repo" renders as a labeled toggle or button ("Pause dispatch") rather than a status chip.
+- Helper copy no longer leaks storage details ("Stored as seconds"), and no validation message ends in a double period.
+- The schedule summary reads as a sentence ("Every 10 minutes between 01:00 and 05:59, every day") on both Overview and Settings for `*/10 1-5 * * *` style cron values.
+validate:
+- pnpm test
+- pnpm typecheck
+- pnpm lint
+notes: Phase D (settings). Audit items 13, 14, and 15. Settings mutations already go through the settings-mutation RPCs; only the presentation changes.
+
+## BBF-0038 Info-dense tabs need progressive disclosure
+status: ready
+priority: 2
+depends_on: BBF-0033, BBF-0034, BBF-0035
+risk: medium
+plan: src/ui/primitives.ts, src/ui/views/overview.ts, src/ui/views/work.ts, src/ui/views/questions.ts, src/ui/views/runs.ts, tests/ui.test.ts, tests/ui-runs.test.ts
+approved: user direction 2026-09-13 ("Do it")
+acceptance:
+- `Section` gains a collapsible variant with a persisted open state per section key (session storage), and Overview, Work, Questions, and run detail use it for their secondary sections.
+- Defaults: on phone width only the first section of each tab is open (Needs attention on Overview, Needs you on Work, Open on Questions, Summary on run detail); Technical details, Attempts, Done, and Answered start collapsed on every width.
+- Collapsed sections still show their count badge so nothing is hidden without a signal.
+- Expanded rows in Work and Questions keep their current content; this task only wraps sections, it does not move fields.
+validate:
+- pnpm test
+- pnpm typecheck
+- pnpm lint
+notes: Phase E (disclosure). User-reported. Depends on the Phase C row fixes so the collapsed defaults are set against final row heights. Coordinate with the uncommitted "Run notes" section in runs.ts.
