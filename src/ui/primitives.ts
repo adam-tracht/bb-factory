@@ -62,6 +62,7 @@ export function ActionButton(props: {
   disabled?: boolean;
   busy?: boolean;
   title?: string;
+  ariaLabel?: string;
   className?: string;
 }) {
   const size = props.size === "xs" ? "px-2 py-1 text-xs" : "px-3 py-1.5 text-sm";
@@ -71,6 +72,7 @@ export function ActionButton(props: {
     disabled: props.disabled || props.busy,
     onClick: props.onClick,
     ...(props.title ? { title: props.title } : {}),
+    ...(props.ariaLabel ? { "aria-label": props.ariaLabel } : {}),
   }, props.busy ? "Working..." : props.label);
 }
 

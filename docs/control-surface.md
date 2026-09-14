@@ -35,16 +35,26 @@ against a context scoped to that repository. FactoryView fetches each
 repository's existing read projections into a `data.all` bundle map, sharing
 in-flight fetches with the landing cards' `loadSummary`, so no new RPC or
 storage seam exists and the wire contract is unchanged. The aggregate
-overview remains repository-first and reuses `OverviewView` for each
-repository, grouped under a labeled repository disclosure with that
-repository's context, links, actions, revision, and independent loading or
-error settlement; it does not render `RepositoryLandingView` cards.
+overview is category-first: Needs attention, Work queue, Questions, Current
+run when present, Last run, Dispatch, and a conditional Repository section.
+Each category nests only contributing repositories under a scoped context. The
+Last run category always has one row per repository, including repositories
+whose latest completed run succeeded; its View action keeps the existing
+aggregate run-detail route. Work and question content is summarized with
+counts and compact rows, while dispatch and repository details retain useful
+actions and links for attention states. Healthy repositories omit repository
+detail disclosures. Aggregate Overview hides filesystem paths, digests,
+capture times, raw cron, extra future run times, and routine older run history;
+it does not render `RepositoryLandingView` cards or duplicate the
+repository-scoped `OverviewView`.
 
 Aggregate sections settle independently. A ready repository renders its rows
 while another repository remains in a loading or error subgroup, and the
 outer count is the sum of ready rows only. A repository subgroup is omitted
-when it has no rows; when every source is settled and empty, the tab shows one
-explicit all-repositories empty state instead of misleading zero-count rows.
+when it has no rows and all its sources are settled; unresolved sources keep a
+loading or error subgroup visible. When every source is settled and empty, the
+tab shows one explicit all-repositories empty state instead of misleading
+zero-count rows.
 
 ## Repository-scoped actions
 
@@ -140,10 +150,12 @@ button, and read-only identity fields collapse into a "Repository details"
 disclosure. `describeSchedule` (`src/schedule/describe.ts`) renders a
 five-field cron as a sentence ("Every 10 minutes between 01:00 and 05:59,
 every day") on the Settings preview, which also lists the next three fire
-times, and on the Overview dispatch card; an "Every N minutes" reading only
-applies when N divides 60 evenly, and other shapes it cannot describe
-honestly fall back to the raw expression. Presets set Nightly, Hourly, or
-Manual only.
+times, and on the repository Overview dispatch card; All Overview shows at
+most the next fire time, shows non-server-local time zones beside the
+summarized schedule, and uses "Schedule configured" when the expression
+cannot be described without exposing raw cron. An "Every N minutes" reading
+only applies when N divides 60 evenly, and repository-scoped views otherwise
+fall back to the raw expression. Presets set Nightly, Hourly, or Manual only.
 
 ## Chips, legend, and refresh cue
 
