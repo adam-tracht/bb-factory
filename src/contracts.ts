@@ -10,14 +10,14 @@ export const repositoryKeySchema = z
   .regex(/^[a-z0-9][a-z0-9._-]{0,63}$/, "must be a lowercase repository key");
 export type RepositoryKey = z.infer<typeof repositoryKeySchema>;
 
-export const providerPreferenceSchema = z.enum(["alternate", "codex", "claude-code"]);
-export type ProviderPreference = z.infer<typeof providerPreferenceSchema>;
-
 export const providerIdSchema = nonEmptyString.regex(
   /^[a-z0-9][a-z0-9._-]{0,63}$/,
   "must be a lowercase provider id",
 );
 export type ProviderId = z.infer<typeof providerIdSchema>;
+
+export const providerPreferenceSchema = z.union([z.literal("alternate"), providerIdSchema]);
+export type ProviderPreference = z.infer<typeof providerPreferenceSchema>;
 
 export const reasoningLevelSchema = z.enum([
   "none",
@@ -310,6 +310,7 @@ export const queueEligibilityReasonSchema = z.enum([
   "not-ready",
   "unmet-dependency",
   "blocking-question",
+  "stale-question-gate",
   "missing-authorization",
   "high-risk-approval-missing",
   "repository-policy",
@@ -330,6 +331,7 @@ export const queueEntrySchema = z
     validate: z.array(nonEmptyString),
     notes: z.string().nullable(),
     blockingQuestionIds: z.array(nonEmptyString),
+    staleBlockingQuestionIds: z.array(nonEmptyString),
     blockedBy: z.array(nonEmptyString),
     eligible: z.boolean(),
     eligibilityReasons: z.array(queueEligibilityReasonSchema),
@@ -475,6 +477,7 @@ export const providerStatusSchema = z
     limitedUntil: isoTimestamp.nullable(),
     activeThreadCount: z.number().int().nonnegative(),
     lastError: z.string().nullable(),
+    permissionModes: z.array(nonEmptyString).optional(),
   })
   .strict();
 export type ProviderStatus = z.infer<typeof providerStatusSchema>;
@@ -558,6 +561,7 @@ export const actionKindSchema = z.enum([
   "answer-question",
   "approve-queue",
   "recommend-question",
+  "recommend-approval",
   "retry",
   "stop",
   "integration-report",
@@ -690,12 +694,29 @@ const recommendQuestionActionSchema = z
   })
   .strict();
 
+/**
+ * Advisory only: spawns a BB thread that recommends an approved line for a
+ * queue item. Writes nothing to the repository; the operator still records
+ * the approval through approve-queue.
+ */
+const recommendApprovalActionSchema = z
+  .object({
+    kind: z.literal("recommend-approval"),
+    queueItemId: nonEmptyString,
+    providerId: providerIdSchema,
+    model: nonEmptyString,
+    reasoningLevel: reasoningLevelSchema,
+    serviceTier: z.enum(["default", "fast"]).optional(),
+  })
+  .strict();
+
 export const bbInteractionActionSchema = z.union([
   z.object({ kind: z.literal("run-now") }).strict(),
   z.object({ kind: z.literal("pause") }).strict(),
   z.object({ kind: z.literal("resume") }).strict(),
   bbInteractionAnswerActionSchema,
   recommendQuestionActionSchema,
+  recommendApprovalActionSchema,
   z.object({ kind: z.literal("retry"), attemptId: nonEmptyString }).strict(),
   z.object({ kind: z.literal("stop") }).strict(),
 ]);
@@ -917,6 +938,18 @@ export const recommendQuestionOutcomeSchema = z
   .strict();
 export type RecommendQuestionOutcome = z.infer<typeof recommendQuestionOutcomeSchema>;
 
+/** Accepted approval recommendations carry the thread the UI should open. */
+export const recommendApprovalOutcomeSchema = z
+  .object({
+    ...actionOutcomeFields,
+    action: z.literal("recommend-approval"),
+    queueItemId: nonEmptyString,
+    interactionId: z.null().optional(),
+    threadId: nonEmptyString,
+  })
+  .strict();
+export type RecommendApprovalOutcome = z.infer<typeof recommendApprovalOutcomeSchema>;
+
 /** Scaffold results list each target's disposition and the commit that landed. */
 export const scaffoldProtocolOutcomeSchema = z
   .object({
@@ -974,6 +1007,7 @@ export type ProvisionCheckoutOutcome = z.infer<typeof provisionCheckoutOutcomeSc
 export const actionOutcomeSchema = z.union([
   answerQuestionOutcomeSchema,
   recommendQuestionOutcomeSchema,
+  recommendApprovalOutcomeSchema,
   scaffoldProtocolOutcomeSchema,
   provisionCheckoutOutcomeSchema,
   nonAnswerActionOutcomeSchema,

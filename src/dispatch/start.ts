@@ -151,7 +151,7 @@ export async function startRun(ctx: DispatchContext, input: StartRunInput): Prom
   if (!provider) {
     return noSpawn(actionError(
       "provider-unavailable",
-      "No factory provider is available right now. Both providers are unavailable or marked limited.",
+      "No usable provider is available right now. Reported providers may be unavailable, limited, missing a model, or lack full permissions.",
     ));
   }
 

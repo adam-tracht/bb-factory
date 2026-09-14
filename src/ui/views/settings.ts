@@ -1,13 +1,13 @@
-import { createElement, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createElement, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  providerPreferenceSchema,
   type FactorySettings,
   type FactorySettingsPatch,
   type HealthProjection,
   type ProviderPreference,
   type SettingsProjection,
 } from "../../contracts.js";
-import { cronValid, describeCron, nextCronTimes } from "../../schedule/cron.js";
+import { cronValid, nextCronTimes } from "../../schedule/cron.js";
+import { describeSchedule } from "../../schedule/describe.js";
 import type { ViewContext } from "../context.js";
 import {
   ActionButton,
@@ -15,15 +15,15 @@ import {
   Card,
   ConfirmDialog,
   CopyText,
+  Disclosure,
   Field,
-  StateChip,
   formatTimestamp,
 } from "../primitives.js";
 
 const h = createElement;
 
 const inputClass =
-  "w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+  "w-full box-border rounded-md border border-border bg-background px-2.5 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 const labelClass = "text-xs font-medium text-muted-foreground";
 
 type DispatchMode = "enabled" | "paused";
@@ -168,14 +168,17 @@ function FormRow(props: {
   error?: string | null;
   warning?: string | null;
   hint?: ReactNode;
+  status?: ReactNode;
 }) {
   return h("div", { className: "min-w-0" },
-    h("span", { className: labelClass }, props.label),
+    h("div", { className: "flex items-baseline gap-2" },
+      h("span", { className: labelClass }, props.label),
+      props.status ?? null),
     h("div", { className: "mt-1" }, props.children),
     props.error
       ? h("p", { className: "mt-1 text-xs text-destructive" }, props.error)
       : props.warning
-        ? h("p", { className: "mt-1 text-xs text-warning" }, props.warning)
+        ? h("p", { className: "mt-1 text-xs text-warning-text" }, props.warning)
         : props.hint
           ? h("p", { className: "mt-1 text-xs text-muted-foreground" }, props.hint)
           : null);
@@ -224,13 +227,7 @@ function RepositoryCard(props: {
   return h(Card, {
     title: "Repository",
     children: [
-      h("dl", { key: "fields", className: "grid gap-3 sm:grid-cols-2" },
-        copyField("Repository key", repository.repositoryKey),
-        pathField("Repository root", repository.repositoryRoot),
-        pathField("Checkout path", repository.checkoutPath),
-        copyField("Factory branch", repository.factoryBranch),
-        copyField("Main ref", repository.mainRef),
-        copyField("Connected host", repository.connectedHostId),
+      h("dl", { key: "status", className: "grid gap-3 sm:grid-cols-2" },
         h(Field, { key: "host", label: "Host status" },
           health
             ? h("dd", { className: "mt-0.5 flex flex-wrap items-center gap-2" },
@@ -239,21 +236,36 @@ function RepositoryCard(props: {
                   tone: health.host.ok ? "success" : health.host.status === "offline" ? "danger" : "warning",
                 }),
                 !health.host.ok && health.host.reasons[0]
-                  ? h("span", { className: "text-xs text-warning" }, health.host.reasons[0])
+                  ? h("span", { className: "text-xs text-warning-text" }, health.host.reasons[0])
                   : null)
-            : h("dd", { className: "mt-0.5 text-sm text-muted-foreground" }, "Health not loaded")),
-        optionalField("Project", projectId),
-        optionalField("Environment", environmentId)),
+            : h("dd", { className: "mt-0.5 text-sm text-muted-foreground" }, "Health not loaded"))),
       h("div", { key: "dispatch", className: "mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border pt-3" },
-        h(StateChip, {
-          on: !repoPaused,
-          label: repoPaused ? "Dispatch paused for this repo" : "Dispatch active for this repo",
+        h("span", { className: "text-xs text-muted-foreground" },
+          repoPaused ? "Dispatch is paused for this repo." : "Dispatch is active for this repo."),
+        h(ActionButton, {
+          label: repoPaused ? "Resume dispatch" : "Pause dispatch",
+          variant: "secondary",
+          size: "xs",
+          busy: result.pending,
           title: "Stops new runs for this repository. Running runs continue.",
           onClick: toggle,
-          disabled: result.pending,
         }),
-        result.message ? h("span", { className: "text-xs text-success", role: "status" }, result.message) : null,
+        result.message ? h("span", { className: "text-xs text-success-foreground", role: "status" }, result.message) : null,
         result.error ? h("span", { className: "text-xs text-destructive" }, result.error) : null),
+      h(Disclosure, {
+        key: "details",
+        summary: "Repository details",
+        className: "mt-3 border-t border-border pt-3",
+        children: h("dl", { className: "grid gap-3 sm:grid-cols-2" },
+          copyField("Repository key", repository.repositoryKey),
+          pathField("Repository root", repository.repositoryRoot),
+          pathField("Checkout path", repository.checkoutPath),
+          copyField("Factory branch", repository.factoryBranch),
+          copyField("Main ref", repository.mainRef),
+          copyField("Connected host", repository.connectedHostId),
+          optionalField("Project", projectId),
+          optionalField("Environment", environmentId)),
+      }),
     ],
   });
 }
@@ -269,9 +281,33 @@ function DispatchCard(props: {
   const [lastSaved, setLastSaved] = useState<DraftShape | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>(IDLE_SAVE);
+  const [savingFields, setSavingFields] = useState<ReadonlySet<DraftKey>>(new Set());
+  const [savedFields, setSavedFields] = useState<ReadonlySet<DraftKey>>(new Set());
 
-  // A reloaded projection becomes the baseline; saved-but-unreflected fields stay masked.
-  useEffect(() => setLastSaved(null), [settings]);
+  // A reloaded projection becomes the baseline; saved-but-unreflected fields
+  // stay masked. A same-repository refresh keeps the Saved marks (they end on
+  // the 1500ms timer or the next edit); a different repository resets the form.
+  const formRepositoryKey = useRef(settings.repositoryKey ?? ctx.repository.repositoryKey);
+  useEffect(() => {
+    const key = settings.repositoryKey ?? ctx.repository.repositoryKey;
+    if (key === formRepositoryKey.current) {
+      setLastSaved(null);
+      return;
+    }
+    formRepositoryKey.current = key;
+    setDraft(seedDraft(settings));
+    setLastSaved(null);
+    setSavedFields(new Set());
+    setSavingFields(new Set());
+    setSaveState(IDLE_SAVE);
+  }, [settings, ctx.repository.repositoryKey]);
+
+  // The Saved mark is brief on purpose: 1500ms, cleared on unmount by the effect cleanup.
+  useEffect(() => {
+    if (savedFields.size === 0) return;
+    const timer = setTimeout(() => setSavedFields(new Set()), 1500);
+    return () => clearTimeout(timer);
+  }, [savedFields]);
 
   const analysis = useMemo(() => analyzeDraft(draft, settings), [draft, settings]);
   const dirtyFields = useMemo(
@@ -283,8 +319,26 @@ function DispatchCard(props: {
 
   const setField = <K extends DraftKey>(key: K, value: DraftShape[K]) => {
     setDraft((current) => ({ ...current, [key]: value }));
-    setSaveState((current) => ({ ...current, message: null, error: null }));
+    setSavedFields((current) => {
+      if (!current.has(key)) return current;
+      const next = new Set(current);
+      next.delete(key);
+      return next;
+    });
+    setSaveState((current) => {
+      if (!current.fieldErrors[key]) return { ...current, message: null, error: null };
+      const fieldErrors = { ...current.fieldErrors };
+      delete fieldErrors[key];
+      return { ...current, message: null, error: null, fieldErrors };
+    });
   };
+
+  const fieldStatus = (key: DraftKey): ReactNode =>
+    savingFields.has(key)
+      ? h("span", { className: "text-xs text-muted-foreground" }, "Saving...")
+      : savedFields.has(key)
+        ? h("span", { className: "text-xs text-success-foreground", role: "status" }, "Saved")
+        : null;
 
   const fieldError = (key: DraftKey): string | null =>
     analysis.errors[key] ?? saveState.fieldErrors[key]?.join("; ") ?? null;
@@ -292,16 +346,25 @@ function DispatchCard(props: {
   const discard = () => {
     setDraft(seedDraft(settings));
     setLastSaved(null);
+    setSavedFields(new Set());
     setSaveState(IDLE_SAVE);
   };
 
   const save = () => {
+    const fields = new Set(
+      Object.keys(analysis.patch)
+        .map((key) => PATCH_KEY_TO_FIELD[key] as DraftKey | undefined)
+        .filter((key): key is DraftKey => key !== undefined),
+    );
+    setSavingFields(fields);
     setSaveState({ pending: true, message: null, error: null, fieldErrors: {} });
     const savedDraft = draft;
     void ctx.updateSettings(analysis.patch).then(
       (mutation) => {
+        setSavingFields(new Set());
         if (mutation.ok) {
           setLastSaved(savedDraft);
+          setSavedFields(fields);
           setSaveState({ pending: false, message: mutation.message, error: null, fieldErrors: {} });
           return;
         }
@@ -312,13 +375,15 @@ function DispatchCard(props: {
         }
         setSaveState({ pending: false, message: null, error: mutation.error.message, fieldErrors });
       },
-      (error: unknown) =>
+      (error: unknown) => {
+        setSavingFields(new Set());
         setSaveState({
           pending: false,
           message: null,
           error: error instanceof Error ? error.message : String(error),
           fieldErrors: {},
-        }),
+        });
+      },
     );
   };
 
@@ -327,7 +392,7 @@ function DispatchCard(props: {
   const schedulePreview = useMemo(() => {
     if (cron === "") return { kind: "manual" as const };
     if (!cronValid(cron)) return { kind: "invalid" as const };
-    const description = describeCron(cron);
+    const description = describeSchedule(cron);
     const times = timeZoneValid(timeZone) ? nextCronTimes(cron, timeZone, 3) : [];
     return { kind: "ok" as const, description, times };
   }, [cron, timeZone]);
@@ -340,24 +405,22 @@ function DispatchCard(props: {
     ? "The preferred provider is limited; >1 may still serialize"
     : null;
   const providerWarning = preferred && preferred.availability !== "available"
-    ? `Preferred provider is ${preferred.availability}${preferred.lastError ? `: ${preferred.lastError}` : ""}.`
+    ? `Preferred provider is ${preferred.availability}${preferred.lastError ? `: ${preferred.lastError.replace(/\.+$/u, "")}` : ""}.`
     : null;
 
-  const selectableProviders = useMemo(
-    () => new Set<string>(providerPreferenceSchema.options),
-    [],
-  );
   const providerOptions = useMemo(() => {
     const options: Array<{ value: string; label: string }> = [
       { value: "alternate", label: "alternate (rotate providers)" },
     ];
     const seen = new Set<string>(["alternate"]);
     for (const provider of providers) {
-      // The contract pins preference to a fixed enum; other reported provider
-      // ids are shown as status text in the row warning, never as options.
-      if (seen.has(provider.providerId) || !selectableProviders.has(provider.providerId)) continue;
+      if (seen.has(provider.providerId)) continue;
       seen.add(provider.providerId);
-      options.push({ value: provider.providerId, label: `${provider.providerId} (${provider.availability})` });
+      const full = provider.permissionModes === undefined || provider.permissionModes.includes("full");
+      options.push({
+        value: provider.providerId,
+        label: `${provider.providerId} (${provider.availability}${full ? "" : ", lacks full permission"})`,
+      });
     }
     if (draft.providerPreference !== "alternate" && !seen.has(draft.providerPreference)) {
       options.push({ value: draft.providerPreference, label: `${draft.providerPreference} (not reported)` });
@@ -369,7 +432,7 @@ function DispatchCard(props: {
     ? h("p", { className: "mt-1.5 text-xs text-muted-foreground" }, "Manual only: no scheduled runs.")
     : schedulePreview.kind === "ok"
       ? h("div", { className: "mt-1.5 space-y-0.5 text-xs text-muted-foreground" },
-          h("p", null, schedulePreview.description ?? "Custom schedule"),
+          h("p", null, schedulePreview.description ?? h("code", { className: "font-mono" }, cron)),
           schedulePreview.times.length > 0
             ? h("p", null,
                 `Next: ${schedulePreview.times.map((time) => formatTimestamp(time.toISOString()) ?? time.toISOString()).join(", ")}`,
@@ -390,12 +453,12 @@ function DispatchCard(props: {
       !projection.validation.valid && validationIssues.length > 0
         ? h("div", {
             key: "validation",
-            className: "mb-3 rounded-md border border-warning/40 bg-warning/5 px-3 py-2 text-xs text-warning",
+            className: "mb-3 rounded-md border border-warning/40 bg-warning/5 px-3 py-2 text-xs text-warning-text",
           },
             `Stored settings have validation issues: ${validationIssues.map(([key, messages]) => `${key} (${messages.join("; ")})`).join(", ")}`)
         : null,
       h("div", { key: "form", className: "grid gap-4 sm:grid-cols-2" },
-        h(FormRow, { label: "Dispatch mode" },
+        h(FormRow, { label: "Dispatch mode", status: fieldStatus("dispatchMode") },
           h("div", {
             className: "inline-flex items-center gap-1 rounded-lg bg-muted/60 p-1",
             role: "group",
@@ -406,37 +469,40 @@ function DispatchCard(props: {
                 key: mode,
                 type: "button",
                 "aria-pressed": draft.dispatchMode === mode,
-                className: `rounded-md px-3 py-1 text-sm font-medium transition-colors ${
+                disabled: savingFields.has("dispatchMode"),
+                className: `rounded-md px-3 py-1 text-sm font-medium transition-colors disabled:cursor-not-allowed ${
                   draft.dispatchMode === mode
                     ? "bg-background text-foreground shadow-sm"
                     : "text-muted-foreground hover:text-foreground"
                 }`,
                 onClick: () => setField("dispatchMode", mode),
               }, mode === "enabled" ? "Enabled" : "Paused")))),
-        h(FormRow, { label: "Schedule", error: fieldError("scheduleCron") },
+        h(FormRow, { label: "Schedule", error: fieldError("scheduleCron"), status: fieldStatus("scheduleCron") },
           h("input", {
             type: "text",
             "aria-label": "Schedule",
             className: `${inputClass} font-mono`,
             value: draft.scheduleCron,
             placeholder: "* * * * *",
+            disabled: savingFields.has("scheduleCron"),
             onChange: (event: { target: { value: string } }) => setField("scheduleCron", event.target.value),
           }),
           h("div", { className: "mt-1.5 flex flex-wrap items-center gap-1" },
             h("span", { className: "text-xs text-muted-foreground" }, "Presets:"),
-            h(ActionButton, { label: "Nightly", variant: "ghost", size: "xs", onClick: () => setField("scheduleCron", "*/10 1-5 * * *") }),
-            h(ActionButton, { label: "Hourly", variant: "ghost", size: "xs", onClick: () => setField("scheduleCron", "0 * * * *") }),
-            h(ActionButton, { label: "Manual only", variant: "ghost", size: "xs", onClick: () => setField("scheduleCron", "") })),
+            h(ActionButton, { label: "Nightly", variant: "ghost", size: "xs", disabled: savingFields.has("scheduleCron"), onClick: () => setField("scheduleCron", "*/10 1-5 * * *") }),
+            h(ActionButton, { label: "Hourly", variant: "ghost", size: "xs", disabled: savingFields.has("scheduleCron"), onClick: () => setField("scheduleCron", "0 * * * *") }),
+            h(ActionButton, { label: "Manual only", variant: "ghost", size: "xs", disabled: savingFields.has("scheduleCron"), onClick: () => setField("scheduleCron", "") })),
           previewBlock),
-        h(FormRow, { label: "Time zone", error: fieldError("timeZone"), hint: "Use an IANA name like America/New_York, or server-local." },
+        h(FormRow, { label: "Time zone", error: fieldError("timeZone"), status: fieldStatus("timeZone"), hint: "Use an IANA name like America/New_York, or server-local." },
           h("input", {
             type: "text",
             "aria-label": "Time zone",
             className: inputClass,
             value: draft.timeZone,
+            disabled: savingFields.has("timeZone"),
             onChange: (event: { target: { value: string } }) => setField("timeZone", event.target.value),
           })),
-        h(FormRow, { label: "Night-window end hour", error: fieldError("nightWindowEndHour"), hint: "Hour 0 to 23 in the configured time zone." },
+        h(FormRow, { label: "Night-window end hour", error: fieldError("nightWindowEndHour"), status: fieldStatus("nightWindowEndHour"), hint: "Hour 0 to 23 in the configured time zone." },
           h("input", {
             type: "number",
             "aria-label": "Night-window end hour",
@@ -444,46 +510,51 @@ function DispatchCard(props: {
             min: 0,
             max: 23,
             value: draft.nightWindowEndHour,
+            disabled: savingFields.has("nightWindowEndHour"),
             onChange: (event: { target: { value: string } }) => setField("nightWindowEndHour", event.target.value),
           })),
-        h(FormRow, { label: "Runtime cap (minutes)", error: fieldError("runtimeCapMinutes"), hint: "Stored as seconds; minimum 1 minute." },
+        h(FormRow, { label: "Runtime cap (minutes)", error: fieldError("runtimeCapMinutes"), status: fieldStatus("runtimeCapMinutes"), hint: "Minimum 1 minute." },
           h("input", {
             type: "number",
             "aria-label": "Runtime cap (minutes)",
             className: inputClass,
             min: 1,
             value: draft.runtimeCapMinutes,
+            disabled: savingFields.has("runtimeCapMinutes"),
             onChange: (event: { target: { value: string } }) => setField("runtimeCapMinutes", event.target.value),
           })),
-        h(FormRow, { label: "Minimum start gap (minutes)", error: fieldError("minimumGapMinutes"), hint: "Minimum 60 minutes." },
+        h(FormRow, { label: "Minimum start gap (minutes)", error: fieldError("minimumGapMinutes"), status: fieldStatus("minimumGapMinutes"), hint: "Minimum 60 minutes." },
           h("input", {
             type: "number",
             "aria-label": "Minimum start gap (minutes)",
             className: inputClass,
             min: 60,
             value: draft.minimumGapMinutes,
+            disabled: savingFields.has("minimumGapMinutes"),
             onChange: (event: { target: { value: string } }) => setField("minimumGapMinutes", event.target.value),
           })),
-        h(FormRow, { label: "Concurrency limit", error: fieldError("concurrencyLimit"), warning: concurrencyWarning },
+        h(FormRow, { label: "Concurrency limit", error: fieldError("concurrencyLimit"), warning: concurrencyWarning, status: fieldStatus("concurrencyLimit") },
           h("input", {
             type: "number",
             "aria-label": "Concurrency limit",
             className: inputClass,
             min: 1,
             value: draft.concurrencyLimit,
+            disabled: savingFields.has("concurrencyLimit"),
             onChange: (event: { target: { value: string } }) => setField("concurrencyLimit", event.target.value),
           })),
-        h(FormRow, { label: "Provider preference", error: fieldError("providerPreference"), warning: providerWarning },
+        h(FormRow, { label: "Provider preference", error: fieldError("providerPreference"), warning: providerWarning, status: fieldStatus("providerPreference") },
           h("select", {
             "aria-label": "Provider preference",
             className: inputClass,
             value: draft.providerPreference,
+            disabled: savingFields.has("providerPreference"),
             onChange: (event: { target: { value: string } }) => setField("providerPreference", event.target.value),
           },
             providerOptions.map((option) =>
               h("option", { key: option.value, value: option.value }, option.label))))),
       saveState.message
-        ? h("p", { key: "saved", className: "mt-3 text-sm text-success", role: "status" }, saveState.message)
+        ? h("p", { key: "saved", className: "mt-3 text-sm text-success-foreground", role: "status" }, saveState.message)
         : null,
       saveState.error
         ? h("p", { key: "save-error", className: "mt-3 text-sm text-destructive" }, saveState.error)
@@ -493,7 +564,7 @@ function DispatchCard(props: {
             key: "dirty-bar",
             className: "sticky bottom-0 -mx-4 -mb-4 mt-4 flex flex-wrap items-center gap-3 border-t border-border bg-card px-4 py-3",
           },
-            h("span", { className: "text-sm font-medium text-warning" }, "Unsaved changes"),
+            h("span", { className: "text-sm font-medium text-warning-text" }, "Unsaved changes"),
             h("div", { className: "ml-auto flex items-center gap-2" },
               h(ActionButton, { label: "Discard", variant: "secondary", onClick: discard, disabled: saveState.pending }),
               h(ActionButton, {

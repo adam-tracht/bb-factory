@@ -26,6 +26,7 @@ import type {
   ScaffoldProtocolActionRequest,
 } from "../contracts.js";
 import {
+  EMPTY_REPOSITORY_REVISION,
   actionKindSchema,
   bbInteractionActionRequestSchema,
   bbInteractionResolutionSchema,
@@ -336,6 +337,32 @@ export const OPERATIONAL_STORAGE_MIGRATIONS = [
   `INSERT INTO pending_action_intents_v4 SELECT * FROM pending_action_intents`,
   `DROP TABLE pending_action_intents`,
   `ALTER TABLE pending_action_intents_v4 RENAME TO pending_action_intents`,
+  // SQLite cannot alter a CHECK constraint, so widening action_kind for
+  // recommend-approval rebuilds the table again.
+  `CREATE TABLE pending_action_intents_v5 (
+    idempotency_key TEXT PRIMARY KEY,
+    repository_key TEXT NOT NULL,
+    action_kind TEXT NOT NULL CHECK (action_kind IN ('run-now', 'pause', 'resume', 'answer-question', 'approve-queue', 'recommend-question', 'recommend-approval', 'retry', 'stop', 'scaffold-protocol', 'provision-checkout')),
+    request_fingerprint TEXT NOT NULL,
+    request_json TEXT NOT NULL,
+    expected_revision_json TEXT NOT NULL,
+    target_json TEXT NOT NULL,
+    file_change_json TEXT,
+    entry_point TEXT NOT NULL CHECK (entry_point IN ('action-executor', 'native-ui-initial-ready')),
+    one_shot INTEGER NOT NULL CHECK (one_shot IN (0, 1)),
+    status TEXT NOT NULL CHECK (status IN ('pending', 'resolving', 'completed', 'reconciliation-required')),
+    submitted_at TEXT NOT NULL,
+    expires_at TEXT,
+    last_attempt_at TEXT,
+    completed_at TEXT,
+    result_json TEXT,
+    observed_status TEXT CHECK (observed_status IS NULL OR observed_status IN ('pending', 'resolving', 'resolved', 'interrupted', 'written', 'conflict', 'verified')),
+    observed_resolution_json TEXT,
+    last_error TEXT
+  )`,
+  `INSERT INTO pending_action_intents_v5 SELECT * FROM pending_action_intents`,
+  `DROP TABLE pending_action_intents`,
+  `ALTER TABLE pending_action_intents_v5 RENAME TO pending_action_intents`,
 ] as const;
 
 export interface CreateRunIntentInput {
@@ -1031,7 +1058,10 @@ function normalizePendingActionIntentInput(
   allowInitialReady: boolean,
   executionNow: () => string,
 ): NormalizedPendingActionIntent {
-  const request = pendingActionRequestSchema.parse(input.request);
+  const parsedRequest = pendingActionRequestSchema.parse(input.request);
+  const request = parsedRequest.expectedRevision === undefined
+    ? { ...parsedRequest, expectedRevision: EMPTY_REPOSITORY_REVISION }
+    : parsedRequest;
   const expectedRevision = repositoryRevisionSchema.parse(request.expectedRevision);
   const target = pendingActionIntentTargetSchema.parse(input.target);
   const submittedAt = isoTimestampSchema.parse(input.submittedAt ?? executionTimestamp(executionNow));
@@ -1102,6 +1132,12 @@ function assertPendingActionTarget(
   if (action.kind === "recommend-question") {
     if (target.kind !== "repository-question" || target.questionId !== action.questionId) {
       throw new Error("repository-question target does not match the action request");
+    }
+    return;
+  }
+  if (action.kind === "recommend-approval") {
+    if (target.kind !== "queue-item" || target.queueItemId !== action.queueItemId) {
+      throw new Error("queue-item target does not match the action request");
     }
     return;
   }

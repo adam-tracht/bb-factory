@@ -1,4 +1,4 @@
-import { createElement, useEffect, useState, type ReactNode } from "react";
+import { createElement, Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import type {
   DispatchStatus,
   OperationalRunSummary,
@@ -30,6 +30,8 @@ const SECTION_TABS: Array<{ section: FactorySection; label: string }> = [
   { section: "settings", label: "Settings" },
 ];
 
+const ALL_REPOSITORIES_VALUE = "__all__";
+
 export interface ShellRunNow {
   readonly disabled: boolean;
   readonly reason: string | null;
@@ -43,9 +45,17 @@ export interface FactoryShellProps {
   readonly onNavigate: (section: FactorySection) => void;
   readonly repositories: readonly RepositorySelection[];
   readonly selectedRepositoryKey: RepositoryKey | null;
+  /** True whenever the rendered route is aggregate, including while its registry is loading or failed. */
+  readonly aggregateScope: boolean;
+  /** True while the repositories landing is the rendered content: the "All" control owns the active state. */
+  readonly repositoriesActive: boolean;
+  /** True while the add-repository wizard is the content: suppresses repo chrome and every pressed switcher state. */
+  readonly wizardMode?: boolean;
+  /** Sections rendered in the tab strip; defaults to all five. The aggregate scope passes the four repo-union tabs (no Settings). */
+  readonly tabs?: readonly FactorySection[];
   readonly repositorySelectionLoading: boolean;
   readonly onSelectRepository: (repositoryKey: RepositoryKey) => void;
-  readonly onShowRepositories: () => void;
+  readonly onShowRepositories: (section?: FactorySection) => void;
   readonly onAddRepository: () => void;
   readonly dispatch: DispatchStatus | null;
   readonly branch: string | null;
@@ -98,55 +108,87 @@ function dispatchChip(dispatch: DispatchStatus | null): { label: string; tone: T
 }
 
 function RepositorySwitcher(props: Pick<FactoryShellProps,
-  "repositories" | "selectedRepositoryKey" | "repositorySelectionLoading" | "onSelectRepository" | "onShowRepositories" | "onAddRepository"
+  "section" | "repositories" | "selectedRepositoryKey" | "repositoriesActive" | "wizardMode" | "repositorySelectionLoading" | "onSelectRepository" | "onShowRepositories" | "onAddRepository"
 >) {
-  const { repositories, selectedRepositoryKey, onSelectRepository, onShowRepositories, onAddRepository } = props;
-  if (repositories.length > 4) {
-    return h("div", { className: "flex items-center gap-1" },
-      h(ActionButton, { label: "All", variant: "ghost", size: "xs", onClick: onShowRepositories }),
-      h("select", {
-        "aria-label": "Configured repository",
-        className: "rounded-md border border-border bg-background px-2 py-1 text-sm",
-        value: selectedRepositoryKey ?? "",
-        onChange: (event: { target: { value: string } }) => {
-          if (event.target.value) onSelectRepository(event.target.value);
-        },
+  const { section, repositories, selectedRepositoryKey, repositoriesActive, wizardMode, repositorySelectionLoading, onSelectRepository, onShowRepositories, onAddRepository } = props;
+  // The wizard is not repository-scoped: while it renders, neither "All" nor
+  // any repository pill may show a pressed or selected state.
+  const wizard = wizardMode === true;
+  const allActive = repositoriesActive && !wizard;
+  const selectVariant = (wrapperClass: string) => h("div", {
+    className: `flex min-w-0 items-center gap-1 transition-opacity ${wrapperClass} ${repositorySelectionLoading ? "opacity-60" : ""}`,
+    "aria-busy": repositorySelectionLoading,
+  },
+    h(ActionButton, { label: "All", variant: allActive ? "secondary" : "ghost", size: "xs", className: "min-h-8 sm:min-h-0", onClick: () => onShowRepositories(section) }),
+    h("select", {
+      "aria-label": "Configured repository",
+      className: "min-h-8 max-w-[8rem] rounded-md border border-border bg-background px-2 py-1 text-sm sm:min-h-0 sm:max-w-none",
+      value: wizard ? "" : repositoriesActive ? ALL_REPOSITORIES_VALUE : selectedRepositoryKey ?? "",
+      onChange: (event: { target: { value: string } }) => {
+        if (event.target.value === ALL_REPOSITORIES_VALUE) onShowRepositories(section);
+        else if (event.target.value) onSelectRepository(event.target.value);
       },
-        repositories.map((repo) =>
-          h("option", { key: repo.configuration.repositoryKey, value: repo.configuration.repositoryKey },
-            repo.configuration.repositoryKey))),
-      h(ActionButton, { label: "+", variant: "ghost", size: "xs", onClick: onAddRepository, title: "Add repository" }));
-  }
-  return h("div", { className: "flex items-center gap-1 rounded-lg bg-muted/60 p-1", role: "group", "aria-label": "Configured repository" },
+    },
+      wizard
+        ? h("option", { value: "", disabled: true, hidden: true }, "")
+        : null,
+      repositoriesActive
+        ? h("option", { value: ALL_REPOSITORIES_VALUE }, "All repositories")
+        : null,
+      repositories.map((repo) =>
+        h("option", { key: repo.configuration.repositoryKey, value: repo.configuration.repositoryKey },
+          repo.configuration.repositoryKey))),
     h("button", {
       type: "button",
-      className: "rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground",
-      onClick: onShowRepositories,
-      title: "All repositories",
-    }, "All"),
-    repositories.map((repo) => {
-      const key = repo.configuration.repositoryKey;
-      const active = key === selectedRepositoryKey;
-      return h("button", {
-        key,
-        type: "button",
-        "aria-pressed": active,
-        className: `inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-          active ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
-        }`,
-        title: repo.dispatchPaused ? `${key} (dispatch paused)` : key,
-        onClick: () => onSelectRepository(key),
-      },
-        repo.dispatchPaused ? h(StatusDot, { tone: "warning" }) : null,
-        key);
-    }),
-    h("button", {
-      type: "button",
-      className: "rounded-md px-1.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground",
+      className: "inline-flex min-h-8 min-w-8 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-state-hover hover:text-foreground active:translate-y-px sm:min-h-6 sm:min-w-6",
       onClick: onAddRepository,
       title: "Add repository",
       "aria-label": "Add repository",
     }, "+"));
+  if (repositories.length > 4) {
+    return selectVariant("");
+  }
+  // The select is the picker below sm; the segmented control shows at sm and up.
+  return h(Fragment, null,
+    selectVariant("sm:hidden"),
+    h("div", {
+      className: `hidden items-center gap-1 rounded-lg bg-muted/60 p-1 transition-opacity sm:flex ${repositorySelectionLoading ? "opacity-60" : ""}`,
+      role: "group",
+      "aria-label": "Configured repository",
+      "aria-busy": repositorySelectionLoading,
+    },
+      h("button", {
+        type: "button",
+        "aria-pressed": allActive,
+        className: `rounded-md px-2 py-1 text-xs font-medium transition-colors ${
+          allActive ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+        }`,
+        onClick: () => onShowRepositories(section),
+        title: "All repositories",
+      }, "All"),
+      repositories.map((repo) => {
+        const key = repo.configuration.repositoryKey;
+        const active = !repositoriesActive && !wizard && key === selectedRepositoryKey;
+        return h("button", {
+          key,
+          type: "button",
+          "aria-pressed": active,
+          className: `inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+            active ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+          }`,
+          title: repo.dispatchPaused ? `${key} (dispatch paused)` : key,
+          onClick: () => onSelectRepository(key),
+        },
+          repo.dispatchPaused ? h(StatusDot, { tone: "warning" }) : null,
+          key);
+      }),
+      h("button", {
+        type: "button",
+        className: "min-h-8 min-w-8 rounded-md px-1.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground sm:min-h-6 sm:min-w-6",
+        onClick: onAddRepository,
+        title: "Add repository",
+        "aria-label": "Add repository",
+      }, "+")));
 }
 
 function ChipLegend({ onClose }: { onClose: () => void }) {
@@ -157,8 +199,26 @@ function ChipLegend({ onClose }: { onClose: () => void }) {
     { tone: "primary", label: "blue", meaning: "running" },
     { tone: "neutral", label: "gray", meaning: "neutral or idle" },
   ];
+  const extras: Array<{ sample: ReactNode; label: string }> = [
+    {
+      sample: h("span", { className: "rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground" }, "run_1a2b"),
+      label: "Mono chips are ids (runs, threads, tasks); click a copy control where shown",
+    },
+    {
+      sample: h("span", { className: "rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground" }, "acp-devin"),
+      label: "Provider chip: which agent provider ran it",
+    },
+    {
+      sample: h("span", { className: "rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground" }, "host-a1"),
+      label: "Host id: the machine the run executed on",
+    },
+    {
+      sample: h("span", { className: "rounded bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary" }, "current"),
+      label: "Current: the attempt or run in progress",
+    },
+  ];
   return h("div", {
-    className: "absolute right-0 top-full z-30 mt-1 w-64 rounded-lg border border-border bg-card p-3 shadow-lg",
+    className: "absolute right-0 top-full z-30 mt-1 w-72 rounded-lg border border-border bg-card p-3 shadow-lg",
     role: "dialog",
     "aria-label": "Chip legend",
   },
@@ -169,107 +229,207 @@ function ChipLegend({ onClose }: { onClose: () => void }) {
       rows.map((row) => h("li", { key: row.label, className: "flex items-center gap-2 text-xs" },
         h(StatusDot, { tone: row.tone }),
         h("span", { className: "w-10 shrink-0 text-muted-foreground" }, row.label),
-        h("span", { className: "text-foreground" }, row.meaning)))));
+        h("span", { className: "text-foreground" }, row.meaning)))),
+    h("div", { className: "my-2 border-t border-border" }),
+    h("ul", { className: "space-y-1.5" },
+      extras.map((row) => h("li", { key: row.label, className: "flex items-center gap-2 text-xs" },
+        row.sample,
+        h("span", { className: "text-foreground" }, row.label)))));
 }
 
 export function FactoryShell(props: FactoryShellProps) {
   const now = useNow(15000);
   const [legendOpen, setLegendOpen] = useState(false);
   const [runNowOpen, setRunNowOpen] = useState(false);
+  const [justRefreshed, setJustRefreshed] = useState(false);
+  const seenRefreshedAtRef = useRef<number | null>(props.refreshedAt);
+  const tabStripRef = useRef<HTMLElement | null>(null);
   const chip = dispatchChip(props.dispatch);
   const run = props.activeRun;
   const runElapsed = run?.startedAt ? formatDuration(run.startedAt, null, now) : null;
+  // The repositories landing and the add wizard are not scoped to one
+  // repository, so none of the per-repo chrome (branch chip, dispatch state,
+  // run controls) may render above them. The aggregate scope still shows the
+  // tab strip: its four union tabs are repo-neutral.
+  const repoChrome = !props.aggregateScope && !props.repositoriesActive && props.wizardMode !== true;
+  const tabs = props.tabs ? SECTION_TABS.filter((tab) => props.tabs!.includes(tab.section)) : SECTION_TABS;
+  const showTabs = tabs.length > 0 && (repoChrome || props.aggregateScope || props.repositoriesActive) && props.wizardMode !== true;
+  const refreshedLabel = props.refreshedAt !== null
+    ? `refreshed ${timeAgo(new Date(props.refreshedAt).toISOString(), now) ?? "just now"}`
+    : null;
+  const expectedBranch = props.branch === "factory";
+  const branchChip = repoChrome && (props.branch || props.commit)
+    ? h("span", { className: "inline-flex min-w-0 items-center gap-1 font-mono text-xs text-muted-foreground" },
+        props.branch && !expectedBranch
+          ? h("span", { className: "sm:hidden" }, `Branch: ${props.branch}`)
+          : null,
+        props.branch
+          ? h("span", { className: "hidden sm:inline" }, props.branch)
+          : null,
+        props.commit
+          ? h("span", { className: "hidden sm:inline-flex" },
+              h(CopyText, { value: props.commit, label: `@${shortSha(props.commit)}`, mono: true }))
+          : null)
+    : null;
+  const dispatchBadge = repoChrome && chip ? h(Badge, {
+    label: chip.label,
+    tone: chip.tone,
+    title: props.dispatch?.reason ?? undefined,
+  }) : null;
+  const runBadge = repoChrome
+    ? run
+      ? h(Badge, {
+          label: `Running ${runElapsed ? `${runElapsed} ` : ""}${run.providerId ? `· ${run.providerId}` : ""}`,
+          tone: "primary",
+          title: `Run ${run.runId}${run.queueItemIds.length > 0 ? ` on ${run.queueItemIds.join(", ")}` : ""}`,
+        })
+      : props.dispatch && chip?.tone === "success"
+        ? h(Badge, { label: "Idle", tone: "neutral", title: "No run in progress" })
+        : null
+    : null;
+  const statusGroup = h("div", { className: "flex min-w-0 items-center gap-x-3 overflow-hidden whitespace-nowrap text-muted-foreground" },
+    branchChip, dispatchBadge, runBadge);
+  const pauseControl = repoChrome && props.dispatch
+    ? h(ActionButton, {
+        label: props.dispatch.mode === "enabled" ? "Pause" : "Resume",
+        variant: "secondary",
+        size: "xs",
+        className: "min-h-8 min-w-8 sm:min-h-0 sm:min-w-0 sm:order-4",
+        title: "Stops new runs. Running runs continue.",
+        onClick: props.dispatch.mode === "enabled" ? props.onPause : props.onResume,
+        disabled: props.actionPending,
+      })
+    : null;
+  const runNowControl = repoChrome && props.runNow
+    ? h(ActionButton, {
+        label: "Run now",
+        variant: "primary",
+        size: "xs",
+        className: "min-h-8 min-w-8 sm:min-h-0 sm:min-w-0 sm:order-4",
+        title: props.runNow.disabled ? props.runNow.reason ?? "Unavailable" : "Start a run immediately",
+        disabled: props.runNow.disabled || props.actionPending,
+        onClick: () => setRunNowOpen(true),
+      })
+    : null;
+  const mobileDispatch = repoChrome && props.dispatch
+    ? h(Badge, {
+        label: props.dispatch.mode === "enabled" && !props.dispatch.repositoryPaused ? "Enabled" : "Paused",
+        tone: props.dispatch.mode === "enabled" && !props.dispatch.repositoryPaused ? "success" : "warning",
+      })
+    : null;
+  const mobileBranch = repoChrome && props.branch && !expectedBranch
+    ? h("span", { className: "shrink-0 font-mono text-xs text-muted-foreground sm:hidden" }, `Branch: ${props.branch}`)
+    : null;
+  useEffect(() => {
+    const active = tabStripRef.current?.querySelector('[aria-selected="true"]');
+    if (active && typeof active.scrollIntoView === "function") {
+      active.scrollIntoView({ inline: "nearest", block: "nearest" });
+    }
+  }, [props.section, showTabs]);
+  useEffect(() => {
+    if (seenRefreshedAtRef.current === props.refreshedAt) return;
+    seenRefreshedAtRef.current = props.refreshedAt;
+    setJustRefreshed(true);
+    const timer = setTimeout(() => setJustRefreshed(false), 1500);
+    return () => clearTimeout(timer);
+  }, [props.refreshedAt]);
+  useEffect(() => {
+    if (!repoChrome) setLegendOpen(false);
+  }, [repoChrome]);
+  useEffect(() => {
+    if (!props.runNow) setRunNowOpen(false);
+  }, [props.runNow]);
+
+  const sharedControls = repoChrome ? h("div", {
+    className: "order-2 ml-auto flex shrink-0 items-center justify-end gap-x-2 sm:order-5 sm:ml-0 sm:gap-x-3",
+    "data-testid": "factory-shared-controls",
+  },
+    refreshedLabel !== null
+      ? h("button", {
+          type: "button",
+          className: `inline-flex h-8 min-h-8 min-w-[4.5rem] items-center justify-center gap-1 rounded-md px-1.5 py-1 text-xs ${justRefreshed ? "text-foreground" : "text-muted-foreground"} transition-colors hover:bg-state-hover hover:text-foreground sm:h-6 sm:min-h-6 sm:min-w-0 sm:w-auto`,
+          onClick: props.onRefresh,
+          title: "Refresh now",
+          "aria-label": refreshedLabel,
+        },
+        h("span", { className: justRefreshed ? "inline-block" : "hidden sm:inline", "aria-live": "polite" }, justRefreshed ? "Updated" : refreshedLabel),
+        h(RefreshIcon))
+      : null,
+    h("div", { className: "relative" },
+      h("button", {
+        type: "button",
+        className: "inline-flex h-8 w-8 min-h-8 min-w-8 items-center justify-center rounded-full border border-border text-xs text-muted-foreground transition-colors hover:text-foreground sm:h-6 sm:w-6 sm:min-h-6 sm:min-w-6",
+        onClick: () => setLegendOpen((open) => !open),
+        "aria-label": "Chip legend",
+        "aria-expanded": legendOpen,
+      }, "?"),
+      legendOpen ? h(ChipLegend, { onClose: () => setLegendOpen(false) }) : null)) : null;
+  const mobileOperations = repoChrome ? h("div", {
+    className: "order-3 flex basis-full min-w-0 items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-2 py-1.5 sm:contents",
+    "data-testid": "factory-operations-bar",
+  },
+    h("div", { className: "order-1 flex min-w-0 flex-1 flex-wrap items-center gap-2 sm:contents", "data-testid": "factory-controls-row" },
+      h("div", { className: "flex min-w-0 flex-wrap items-center gap-2 sm:contents" },
+        h("span", { className: "sm:hidden" }, mobileDispatch),
+        pauseControl,
+        h("span", { className: "sm:hidden" }, runBadge),
+        mobileBranch),
+      h("div", { className: "ml-auto flex shrink-0 items-center sm:contents" }, runNowControl))) : null;
 
   return h("main", { className: "flex h-full min-h-0 flex-1 flex-col bg-background text-foreground" },
     h("header", { className: "shrink-0 border-b border-border bg-background" },
-      h("div", { className: "flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2" },
-        h("span", { className: "text-sm font-semibold" }, "Factory"),
-        h(RepositorySwitcher, props),
-        h("div", { className: "flex-1" }),
-        props.branch || props.commit
-          ? h("span", { className: "inline-flex items-center gap-1 font-mono text-xs text-muted-foreground" },
-              props.branch ?? "",
-              props.commit ? h(CopyText, { value: props.commit, label: `@${shortSha(props.commit)}`, mono: true }) : null)
+      h("div", { className: "flex flex-wrap items-center gap-1 px-3 py-2 sm:flex-row sm:flex-nowrap sm:gap-x-3 sm:gap-y-1 sm:px-4" },
+        h("div", { className: "order-1 flex min-w-0 flex-1 items-center gap-x-3 sm:flex-none" },
+          h("span", { className: "hidden shrink-0 text-sm font-semibold sm:inline" }, "Factory"),
+          h(RepositorySwitcher, props)),
+        h("div", { className: "order-2 hidden flex-1 sm:block" }),
+        repoChrome
+          ? h("div", {
+              className: "order-3 hidden min-h-8 w-full min-w-0 items-center sm:flex sm:min-h-0 sm:w-auto",
+              "data-testid": "factory-status-row",
+            }, statusGroup)
           : null,
-        chip ? h(Badge, {
-          label: chip.label,
-          tone: chip.tone,
-          title: props.dispatch?.reason ?? undefined,
-        }) : null,
-        run
-          ? h(Badge, {
-              label: `Running ${runElapsed ? `${runElapsed} ` : ""}${run.providerId ? `· ${run.providerId}` : ""}`,
-              tone: "primary",
-              title: `Run ${run.runId}${run.queueItemIds.length > 0 ? ` on ${run.queueItemIds.join(", ")}` : ""}`,
-            })
-          : props.dispatch && chip?.tone === "success"
-            ? h(Badge, { label: "Idle", tone: "neutral", title: "No run in progress" })
-            : null,
-        props.dispatch
-          ? h(ActionButton, {
-              label: props.dispatch.mode === "enabled" ? "Pause" : "Resume",
-              variant: "secondary",
-              size: "xs",
-              title: "Stops new runs. Running runs continue.",
-              onClick: props.dispatch.mode === "enabled" ? props.onPause : props.onResume,
-              disabled: props.actionPending,
-            })
-          : null,
-        props.runNow
-          ? h(ActionButton, {
-              label: "Run now",
-              variant: "primary",
-              size: "xs",
-              title: props.runNow.disabled ? props.runNow.reason ?? "Unavailable" : "Start a run immediately",
-              disabled: props.runNow.disabled || props.actionPending,
-              onClick: () => setRunNowOpen(true),
-            })
-          : null,
-        props.refreshedAt !== null
-          ? h("button", {
-              type: "button",
-              className: "inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-state-hover hover:text-foreground",
-              onClick: props.onRefresh,
-              title: "Refresh now",
+        sharedControls,
+        mobileOperations),
+      showTabs
+        ? h("div", { className: "relative min-w-0 overflow-hidden" },
+            h("nav", {
+              ref: tabStripRef,
+              className: "flex min-w-0 items-center gap-1 overflow-x-auto overscroll-x-contain whitespace-nowrap px-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+              role: "tablist",
+              "aria-label": "Factory sections",
             },
-            `refreshed ${timeAgo(new Date(props.refreshedAt).toISOString(), now) ?? "just now"}`,
-            h(RefreshIcon))
-          : null,
-        h("div", { className: "relative" },
-          h("button", {
-            type: "button",
-            className: "inline-flex h-6 w-6 items-center justify-center rounded-full border border-border text-xs text-muted-foreground transition-colors hover:text-foreground",
-            onClick: () => setLegendOpen((open) => !open),
-            "aria-label": "Chip legend",
-            "aria-expanded": legendOpen,
-          }, "?"),
-          legendOpen ? h(ChipLegend, { onClose: () => setLegendOpen(false) }) : null)),
-      h("nav", { className: "flex items-center gap-1 px-3", role: "tablist", "aria-label": "Factory sections" },
-        SECTION_TABS.map((tab) => {
-          const active = props.section === tab.section;
-          const badge = tab.section === "work" ? props.badges.work
-            : tab.section === "questions" ? props.badges.questions
-            : 0;
-          return h("button", {
-            key: tab.section,
-            type: "button",
-            role: "tab",
-            "aria-selected": active,
-            className: `relative flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition-colors ${
-              active
-                ? "border-primary font-medium text-foreground"
-                : "border-transparent text-muted-foreground hover:text-foreground"
-            }`,
-            onClick: () => props.onNavigate(tab.section),
-          },
-            tab.label,
-            badge > 0
-              ? h("span", { className: "rounded-full bg-warning/15 px-1.5 text-xs font-medium text-warning" }, String(badge))
-              : null,
-            tab.section === "runs" && props.badges.runsActive
-              ? h(StatusDot, { tone: "primary", pulse: true })
-              : null);
-        }))),
+            tabs.map((tab) => {
+              const active = props.section === tab.section;
+              const badge = tab.section === "work" ? props.badges.work
+                : tab.section === "questions" ? props.badges.questions
+                : 0;
+              const mobileWidth = tabs.length === 4 ? "basis-1/4" : "basis-1/5";
+              return h("button", {
+                key: tab.section,
+                type: "button",
+                role: "tab",
+                "aria-selected": active,
+                className: `relative flex ${mobileWidth} min-w-[4.5rem] shrink-0 items-center justify-center gap-1.5 border-b-2 px-2 py-2 text-sm transition-colors sm:min-w-0 sm:basis-auto sm:flex-none sm:px-3 ${
+                  active
+                    ? "border-primary font-medium text-foreground"
+                    : "border-transparent text-muted-foreground hover:text-foreground"
+                }`,
+                onClick: () => props.onNavigate(tab.section),
+              },
+                tab.label,
+                badge > 0
+                  ? h("span", { className: "rounded bg-[#fef3c7] px-1.5 text-xs font-medium text-[#854d0e]" }, String(badge))
+                  : null,
+                tab.section === "runs" && props.badges.runsActive
+                  ? h(StatusDot, { tone: "primary", pulse: true })
+                  : null);
+            })),
+            h("span", {
+              className: "pointer-events-none absolute inset-y-0 right-0 flex w-7 items-center justify-end bg-gradient-to-l from-background via-background/90 to-transparent pr-1 text-xs text-muted-foreground sm:hidden",
+              "aria-hidden": true,
+            }, "›"))
+        : null),
     h("div", { className: "min-h-0 flex-1 overflow-y-auto", "data-testid": "factory-scroll" },
       props.connectionState !== "connected"
         ? h("div", { className: "border-b border-warning/30 bg-warning/10 px-4 py-2 text-xs text-warning" },
@@ -282,7 +442,7 @@ export function FactoryShell(props: FactoryShellProps) {
             "A previous read returned malformed data. Showing the last good snapshot.")
         : null,
       h("div", { className: "mx-auto max-w-5xl px-4 py-4" }, props.children)),
-    props.runNow
+    repoChrome && props.runNow
       ? h(ConfirmDialog, {
           open: runNowOpen,
           title: props.runNow.confirmTitle,

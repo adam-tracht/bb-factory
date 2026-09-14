@@ -24,6 +24,11 @@ records.
 - A Repositories landing view and an Add repository wizard for registering
   managed repositories.
 - Five tabs per repository: Overview, Work, Questions, Runs, and Settings.
+- An aggregate "All" scope whose Overview, Work, Questions, and Runs tabs
+  union every registered repository, grouped by repository; rows still act
+  on their own repository and Settings stays per-repository.
+- Collapsible sections, deep links to individual work items and questions,
+  and layouts that hold up at phone width.
 - Shell header controls: repository switcher, dispatch status chip,
   pause/resume, and a confirmed Run now.
 
@@ -47,7 +52,7 @@ bb plugin install git:github.com/adam-tracht/bb-factory
 Pin a release tag:
 
 ```sh
-bb plugin install git:github.com/adam-tracht/bb-factory@v0.1.3
+bb plugin install git:github.com/adam-tracht/bb-factory@v0.1.4
 ```
 
 ## Quickstart
@@ -74,6 +79,9 @@ bb plugin install git:github.com/adam-tracht/bb-factory@v0.1.3
 
 ## Docs
 
+- [docs/control-surface.md](docs/control-surface.md): how the UI composes
+  the protocol (aggregate scope, wizard chrome, disclosure, deep links,
+  chips).
 - [docs/release.md](docs/release.md): how releases are gated, tagged, and
   pushed.
 - [PLAN.md](PLAN.md): the phased implementation plan and contract history.

@@ -88,7 +88,25 @@ function planRepositoryAction(snapshot: ProtocolSnapshot, request: RepositoryAct
     return actionError("not-found", `Queue item '${action.queueItemId}' is not in ${PROTOCOL_PATHS.queue}.`, request.idempotencyKey);
   }
   if (entry.status.kind === "ready") {
-    const authorized = entry.approved.kind === "explicit" && entry.approved.text === action.approvedText;
+    if (entry.approved.kind === "none") {
+      // Ready but never authorized: this is the one state the UI flags with
+      // missing-authorization, so the approval attaches an approved: line.
+      // Open question gates still reject, matching the UI's Answer CTA.
+      if (entry.blockingQuestionIds.length > 0) {
+        return actionError(
+          "blocked-by-question",
+          `Queue item '${entry.id}' is blocked by open question(s): ${entry.blockingQuestionIds.join(", ")}. Answer them before approval.`,
+          request.idempotencyKey,
+        );
+      }
+      return {
+        targetPath: PROTOCOL_PATHS.queue,
+        target: { kind: "queue-item", queueItemId: entry.id },
+        alreadyApplied: false,
+        build: (content) => writeQueueApproval(content, entry.id, action.approvedText),
+      };
+    }
+    const authorized = entry.approved.text === action.approvedText;
     return authorized
       ? { targetPath: PROTOCOL_PATHS.queue, target: { kind: "queue-item", queueItemId: entry.id }, alreadyApplied: true, build: (content) => content }
       : actionError("conflict", `Queue item '${entry.id}' is already ready with different authorization.`, request.idempotencyKey);

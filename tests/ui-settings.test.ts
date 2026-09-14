@@ -153,8 +153,17 @@ function renderSettings(overrides: { projection?: SettingsProjection; health?: H
 afterEach(() => cleanup());
 
 describe("SettingsView", () => {
-  it("renders the read-only repository identity card with copy buttons", () => {
+  it("keeps read-only repository identity fields inside a collapsed disclosure", () => {
     renderSettings();
+    // Live operational pieces stay visible at the top level.
+    expect(screen.getByText("online")).toBeTruthy();
+    expect(screen.getByText("Dispatch is active for this repo.")).toBeTruthy();
+    // Identity fields mount lazily: absent until the disclosure is expanded.
+    expect(screen.queryByText("Repository key")).toBeNull();
+    expect(screen.queryByTitle("Copy /work/demo")).toBeNull();
+    expect(screen.queryByTitle("Copy project-1")).toBeNull();
+
+    fireEvent.click(screen.getByText("Repository details").closest("details")!.querySelector("summary")!);
     expect(screen.getByText("demo")).toBeTruthy();
     expect(screen.getByTitle("Copy /work/demo")).toBeTruthy();
     expect(screen.getByTitle("Copy /work/demo-factory")).toBeTruthy();
@@ -163,8 +172,6 @@ describe("SettingsView", () => {
     expect(screen.getByTitle("Copy host-1")).toBeTruthy();
     expect(screen.getByTitle("Copy project-1")).toBeTruthy();
     expect(screen.getByTitle("Copy environment-1")).toBeTruthy();
-    expect(screen.getByText("online")).toBeTruthy();
-    expect(screen.getByText("Dispatch active for this repo")).toBeTruthy();
   });
 
   it("shows the first host reason when the host is unhealthy", () => {
@@ -177,11 +184,20 @@ describe("SettingsView", () => {
     expect(screen.getByText("host is offline")).toBeTruthy();
   });
 
-  it("toggles repository dispatch through updateRepository", async () => {
+  it("toggles repository dispatch through a labeled Pause/Resume dispatch button", async () => {
     const ctx = makeCtx({ dispatchPaused: true });
     renderSettings({ ctx });
-    fireEvent.click(screen.getByRole("button", { name: "Dispatch paused for this repo" }));
+    expect(screen.getByText("Dispatch is paused for this repo.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Resume dispatch" }));
     expect(ctx.updateRepository).toHaveBeenCalledWith({ repositoryKey: "demo", dispatchPaused: false });
+    expect(await screen.findByText("saved")).toBeTruthy();
+  });
+
+  it("offers Pause dispatch while repo dispatch is active", async () => {
+    const ctx = makeCtx();
+    renderSettings({ ctx });
+    fireEvent.click(screen.getByRole("button", { name: "Pause dispatch" }));
+    expect(ctx.updateRepository).toHaveBeenCalledWith({ repositoryKey: "demo", dispatchPaused: true });
     expect(await screen.findByText("saved")).toBeTruthy();
   });
 
@@ -230,11 +246,34 @@ describe("SettingsView", () => {
     expect(save.disabled).toBe(true);
   });
 
+  it("keeps padded form controls inside the card with border-box sizing", () => {
+    renderSettings();
+    // Every w-full control also pads horizontally; without border-box its
+    // rendered width exceeds the card on phone-width viewports.
+    const labels = [
+      "Schedule",
+      "Time zone",
+      "Night-window end hour",
+      "Runtime cap (minutes)",
+      "Minimum start gap (minutes)",
+      "Concurrency limit",
+      "Provider preference",
+    ];
+    for (const label of labels) {
+      const control = screen.getByLabelText(label);
+      expect(control.className).toContain("w-full");
+      expect(control.className).toContain("box-border");
+    }
+    // The dispatch toggle stays inline-flex (content-sized), never stretched.
+    const toggle = screen.getByRole("group", { name: "Dispatch mode" });
+    expect(toggle.className).toContain("inline-flex");
+  });
+
   it("describes a valid cron preset and lists upcoming fire times", () => {
     renderSettings();
     fireEvent.click(screen.getByRole("button", { name: "Nightly" }));
     expect((screen.getByLabelText("Schedule") as HTMLInputElement).value).toBe("*/10 1-5 * * *");
-    expect(screen.getByText(/every 10 min/)).toBeTruthy();
+    expect(screen.getByText("Every 10 minutes between 01:00 and 05:59, every day")).toBeTruthy();
     expect(screen.getByText(/Next:/)).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Manual only" }));
@@ -258,6 +297,137 @@ describe("SettingsView", () => {
     fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Save" }));
     expect(await screen.findByText("Settings conflict")).toBeTruthy();
     expect(await screen.findByText("cron rejected by server")).toBeTruthy();
+    // A failed save never claims the field saved, and the draft input survives.
+    expect(screen.queryByText("Saved")).toBeNull();
+    expect((screen.getByLabelText("Schedule") as HTMLInputElement).value).toBe("5 * * * *");
+  });
+
+  it("clears only the edited field's server error after a failed save", async () => {
+    const ctx = makeCtx({
+      updateSettings: vi.fn(async () => ({
+        ok: false as const,
+        error: {
+          category: "invalid-input" as const,
+          message: "Settings conflict",
+          fieldErrors: {
+            scheduleCron: ["cron rejected by server"],
+            runtimeCapSeconds: ["cap rejected by server"],
+          },
+        },
+      })),
+    });
+    renderSettings({ ctx });
+    fireEvent.change(screen.getByLabelText("Schedule"), { target: { value: "5 * * * *" } });
+    fireEvent.change(screen.getByLabelText("Runtime cap (minutes)"), { target: { value: "240" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("cron rejected by server")).toBeTruthy();
+    expect(await screen.findByText("cap rejected by server")).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("Schedule"), { target: { value: "10 * * * *" } });
+    expect(screen.queryByText("cron rejected by server")).toBeNull();
+    expect(screen.getByText("cap rejected by server")).toBeTruthy();
+    expect(screen.queryByText("Settings conflict")).toBeNull();
+    expect((screen.getByLabelText("Schedule") as HTMLInputElement).value).toBe("10 * * * *");
+  });
+
+  it("marks only the fields in the patch as Saving then Saved on real mutation completion", async () => {
+    let resolveSave!: (result: { ok: true; message: string }) => void;
+    const ctx = makeCtx({
+      updateSettings: vi.fn(() => new Promise<{ ok: true; message: string }>((resolve) => { resolveSave = resolve; })),
+    });
+    renderSettings({ ctx });
+
+    fireEvent.change(screen.getByLabelText("Runtime cap (minutes)"), { target: { value: "240" } });
+    fireEvent.change(screen.getByLabelText("Schedule"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Save" }));
+
+    expect(await screen.findAllByText("Saving...")).toHaveLength(2);
+    expect((screen.getByLabelText("Runtime cap (minutes)") as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText("Schedule") as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText("Time zone") as HTMLInputElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Paused" }) as HTMLButtonElement).disabled).toBe(false);
+
+    resolveSave({ ok: true, message: "saved" });
+    expect(await screen.findAllByText("Saved")).toHaveLength(2);
+    expect((screen.getByLabelText("Runtime cap (minutes)") as HTMLInputElement).disabled).toBe(false);
+
+    // The Saved marks clear after their short window.
+    await waitFor(() => expect(screen.queryByText("Saved")).toBeNull(), { timeout: 3000 });
+  });
+
+  it("keeps Saved marks across a same-repository refresh and resets on a repository switch", async () => {
+    const ctx = makeCtx();
+    const view = renderSettings({ ctx });
+    fireEvent.change(screen.getByLabelText("Runtime cap (minutes)"), { target: { value: "240" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("Saved")).toBeTruthy();
+
+    // Same-repository reload reflecting the write: mark survives, no dirty bar.
+    view.rerender(h(SettingsView, {
+      projection: {
+        ...settingsProjection,
+        settings: { ...settingsProjection.settings, runtimeCapSeconds: 14400 },
+      },
+      health: healthProjection,
+      ctx,
+    }));
+    expect(screen.getByText("Saved")).toBeTruthy();
+    expect((screen.getByLabelText("Runtime cap (minutes)") as HTMLInputElement).value).toBe("240");
+    expect(screen.queryByText("Unsaved changes")).toBeNull();
+
+    // A different repository's projection reseeds the form and drops the mark.
+    view.rerender(h(SettingsView, {
+      projection: {
+        ...settingsProjection,
+        settings: { ...settingsProjection.settings, repositoryKey: "other", runtimeCapSeconds: 3600 },
+      },
+      health: healthProjection,
+      ctx: makeCtx({ repository: { ...repository, repositoryKey: "other" } }),
+    }));
+    expect(screen.queryByText("Saved")).toBeNull();
+    expect((screen.getByLabelText("Runtime cap (minutes)") as HTMLInputElement).value).toBe("60");
+  });
+
+  it("clears a field's Saved mark when the field is edited again", async () => {
+    renderSettings();
+    fireEvent.change(screen.getByLabelText("Runtime cap (minutes)"), { target: { value: "240" } });
+    fireEvent.change(screen.getByLabelText("Schedule"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Save" }));
+    expect(await screen.findAllByText("Saved")).toHaveLength(2);
+
+    fireEvent.change(screen.getByLabelText("Schedule"), { target: { value: "0 9 * * 1" } });
+    expect(screen.getAllByText("Saved")).toHaveLength(1);
+    expect(screen.getByText("Unsaved changes")).toBeTruthy();
+  });
+
+  it("does not leak storage details in helper copy", () => {
+    renderSettings();
+    expect(screen.queryByText(/Stored as seconds/)).toBeNull();
+    expect(screen.getByText("Minimum 1 minute.")).toBeTruthy();
+  });
+
+  it("falls back to the raw cron when the schedule cannot be described as a sentence", () => {
+    renderSettings();
+    fireEvent.change(screen.getByLabelText("Schedule"), { target: { value: "1-59/2 * * * *" } });
+    const fallback = screen.getByText("1-59/2 * * * *");
+    expect(fallback.tagName).toBe("CODE");
+  });
+
+  it("does not double-punctuate the provider warning", () => {
+    const health: HealthProjection = {
+      ...healthProjection,
+      providers: healthProjection.providers.map((provider) =>
+        provider.providerId === "codex"
+          ? { ...provider, availability: "limited" as const, lastError: "weekly quota." }
+          : provider),
+    };
+    renderSettings({ health });
+    expect(screen.getByText("Preferred provider is limited: weekly quota.")).toBeTruthy();
+    expect(screen.queryByText(/\.\./)).toBeNull();
   });
 
   it("warns when concurrency is raised while the preferred provider is limited", () => {
@@ -269,6 +439,40 @@ describe("SettingsView", () => {
     renderSettings({ health });
     fireEvent.change(screen.getByLabelText("Concurrency limit"), { target: { value: "3" } });
     expect(screen.getByText("The preferred provider is limited; >1 may still serialize")).toBeTruthy();
+  });
+
+  it("lists every reported provider in the preference dropdown", () => {
+    const health: HealthProjection = {
+      ...healthProjection,
+      providers: [...healthProjection.providers, {
+        providerId: "acp-opencode",
+        model: "opencode",
+        reasoningLevel: "high",
+        availability: "available",
+        limitedUntil: null,
+        activeThreadCount: 0,
+        lastError: null,
+      }],
+    };
+    renderSettings({ health });
+    const options = Array.from((screen.getByLabelText("Provider preference") as HTMLSelectElement).options)
+      .map((option) => option.textContent);
+    expect(options).toEqual([
+      "alternate (rotate providers)",
+      "codex (available)",
+      "claude-code (limited)",
+      "acp-opencode (available)",
+    ]);
+  });
+
+  it("keeps a stored provider preference when it is no longer reported", () => {
+    renderSettings({
+      projection: {
+        ...settingsProjection,
+        settings: { ...settingsProjection.settings, providerPreference: "acp-devin" },
+      },
+    });
+    expect(screen.getByRole("option", { name: "acp-devin (not reported)" })).toBeTruthy();
   });
 });
 
@@ -292,7 +496,7 @@ describe("RepositoryLandingView", () => {
     expect(screen.getByText("demo")).toBeTruthy();
     expect(screen.getByText("other")).toBeTruthy();
     expect(screen.getByText("paused")).toBeTruthy();
-    expect(await screen.findByText("3")).toBeTruthy();
+    expect(await screen.findByText("3 need attention")).toBeTruthy();
     expect(loadSummary).toHaveBeenCalledWith("demo");
     expect(loadSummary).toHaveBeenCalledWith("other");
 

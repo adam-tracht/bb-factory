@@ -24,7 +24,7 @@ import {
 const h = createElement;
 
 const inputClass =
-  "w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+  "w-full box-border rounded-md border border-border bg-background px-2.5 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 const labelClass = "text-xs font-medium text-muted-foreground";
 
 function errorText(error: unknown): string {
@@ -80,14 +80,14 @@ function RepositoryRow(props: {
       : summary.status === "error"
         ? h(Badge, { label: "!", tone: "danger", title: summary.error })
         : h(Badge, {
-            label: String(summary.attention),
+            label: `${summary.attention} need${summary.attention === 1 ? "s" : ""} attention`,
             tone: summary.attention > 0 ? "warning" : "neutral",
-            title: `${summary.attention} item${summary.attention === 1 ? "" : "s"} need attention`,
+            title: `${summary.attention} item${summary.attention === 1 ? "" : "s"} need${summary.attention === 1 ? "s" : ""} attention`,
           });
 
   return h("button", {
     type: "button",
-    className: "flex w-full items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-left transition-colors hover:bg-state-hover",
+    className: "flex w-full box-border items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-left transition-colors hover:bg-state-hover",
     onClick: onSelect,
   },
     h("div", { className: "min-w-0 flex-1" },
@@ -676,7 +676,7 @@ export function AddRepositoryView(props: {
             h("option", { key: host.hostId, value: host.hostId }, host.label ?? host.hostId)))
       : usableHosts.length === 1
         ? h("p", { className: "text-sm text-muted-foreground" },
-            `The folder picker opens on ${usableHosts[0]!.label ?? usableHosts[0]!.hostId}.`)
+            `Choose the folder on this machine (${usableHosts[0]!.label ?? usableHosts[0]!.hostId}).`)
         : null;
 
     return h("div", { className: "space-y-4" },

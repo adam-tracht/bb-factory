@@ -45,6 +45,7 @@ const snapshot = {
       validate: [],
       notes: null,
       blockingQuestionIds: ["Q1"],
+      staleBlockingQuestionIds: [],
       blockedBy: ["Q1"],
       eligible: false,
       eligibilityReasons: ["blocking-question" as const],
@@ -176,11 +177,34 @@ describe("factory route paths", () => {
   });
 
   it("keeps plain sections, the queue alias, and repository routes working", () => {
-    expect(parseFactoryRoute("")).toMatchObject({ section: "overview", anchor: null });
+    expect(parseFactoryRoute("")).toMatchObject({ section: "overview", scope: "all", anchor: null });
     expect(parseFactoryRoute("queue")).toMatchObject({ section: "work", anchor: null });
-    expect(parseFactoryRoute("repositories")).toMatchObject({ section: "repositories" });
+    expect(parseFactoryRoute("repositories")).toMatchObject({ section: "overview", scope: "all" });
     expect(parseFactoryRoute("repositories/new")).toMatchObject({ section: "add-repository" });
     expect(parseFactoryRoute("unexpected/path")).toMatchObject({ section: "not-found", raw: "unexpected/path" });
+  });
+
+  it("parses the aggregate scope: union tabs, pinned run detail, and no aggregate settings", () => {
+    expect(parseFactoryRoute("all")).toMatchObject({ section: "overview", scope: "all" });
+    expect(parseFactoryRoute("all/overview")).toMatchObject({ section: "overview", scope: "all" });
+    expect(parseFactoryRoute("all/work")).toMatchObject({ section: "work", scope: "all", runId: null });
+    expect(parseFactoryRoute("all/questions")).toMatchObject({ section: "questions", scope: "all" });
+    expect(parseFactoryRoute("all/runs")).toMatchObject({ section: "runs", scope: "all", runId: null });
+    // The run detail pins the exact repository so a selection change cannot misattribute it.
+    expect(parseFactoryRoute("all/runs/monorepo/run-9")).toMatchObject({
+      section: "runs",
+      scope: "all",
+      runRepositoryKey: "monorepo",
+      runId: "run-9",
+    });
+    expect(parseFactoryRoute("all/runs/monorepo")).toMatchObject({ section: "not-found", scope: "all" });
+    expect(parseFactoryRoute("all/settings")).toMatchObject({ section: "not-found", scope: "all" });
+    // Aggregate anchors carry the owning repository as "<repoKey>/<inner>".
+    expect(parseFactoryRoute("all/work/monorepo/work-A-1")).toMatchObject({
+      section: "work",
+      scope: "all",
+      anchor: "monorepo/work-A-1",
+    });
   });
 });
 

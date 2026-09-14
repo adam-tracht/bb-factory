@@ -19,6 +19,8 @@ import {
   pendingInteractionMetadataSchema,
   pickFolderInputSchema,
   pickFolderResultSchema,
+  providerPreferenceSchema,
+  providerStatusSchema,
   probeRepositoryInputSchema,
   questionSchema,
   repositoryProbeSchema,
@@ -75,6 +77,32 @@ describe("Phase 0 wire contracts", () => {
     const valid = "bbf:v1:monorepo:run-now:123e4567-e89b-12d3-a456-426614174000";
     expect(idempotencyKeySchema.parse(valid)).toBe(valid);
     expect(() => idempotencyKeySchema.parse("run-now-monorepo")).toThrow();
+  });
+
+  it("accepts arbitrary provider ids while rejecting malformed preferences", () => {
+    expect(providerPreferenceSchema.parse("acp-opencode")).toBe("acp-opencode");
+    expect(providerPreferenceSchema.parse("alternate")).toBe("alternate");
+    expect(() => providerPreferenceSchema.parse("ACP-OpenCode")).toThrow();
+    expect(() => providerPreferenceSchema.parse("acp opencode")).toThrow();
+  });
+
+  it("keeps provider status permission modes optional for stored health values", () => {
+    const status = {
+      providerId: "codex",
+      model: "gpt-5",
+      reasoningLevel: "medium",
+      availability: "available",
+      limitedUntil: null,
+      activeThreadCount: 0,
+      lastError: null,
+    } as const;
+    expect(providerStatusSchema.parse(status)).toEqual(status);
+    expect(providerStatusSchema.parse({ ...status, permissionModes: ["full"] })).toMatchObject({ permissionModes: ["full"] });
+  });
+
+  it("describes provider preference as a host-reported string", () => {
+    expect(factorySettingDescriptors.providerPreference.type).toBe("string");
+    expect("options" in factorySettingDescriptors.providerPreference).toBe(false);
   });
 
   it("preserves live queue status detail and omitted question recommendations", () => {
@@ -304,6 +332,18 @@ describe("Phase 0 wire contracts", () => {
       ...recommend,
       action: { ...recommend.action, providerId: "Not A Provider" },
     })).toThrow();
+
+    const recommendApproval = {
+      repositoryKey: "monorepo",
+      action: { kind: "recommend-approval", queueItemId: "A-1", providerId: "claude-code", model: "claude-sonnet-4", reasoningLevel: "high", serviceTier: "fast" },
+      idempotencyKey: "bbf:v1:monorepo:recommend-approval:223e4567-e89b-12d3-a456-426614174000",
+      expectedRevision: repositoryRevision,
+    };
+    expect(factoryActionRequestSchema.parse(recommendApproval)).toEqual(recommendApproval);
+    expect(() => factoryActionRequestSchema.parse({
+      ...recommendApproval,
+      action: { ...recommendApproval.action, queueItemId: "" },
+    })).toThrow();
   });
 
   it("carries the spawned thread id on accepted recommendation outcomes", () => {
@@ -325,6 +365,19 @@ describe("Phase 0 wire contracts", () => {
     const missingThread = { ...outcome };
     delete (missingThread as Record<string, unknown>).threadId;
     expect(() => actionOutcomeSchema.parse(missingThread)).toThrow();
+
+    const approvalOutcome = {
+      status: "accepted",
+      message: "Started an approval-drafting chat.",
+      revision: repositoryRevision,
+      runId: null,
+      leaseId: null,
+      queueItemId: "A-1",
+      action: "recommend-approval",
+      interactionId: null,
+      threadId: "thr_approval",
+    };
+    expect(actionOutcomeSchema.parse(approvalOutcome)).toEqual(approvalOutcome);
   });
 
   it("binds idempotency repository and action segments to the request", () => {
@@ -553,6 +606,9 @@ describe("Phase 0 wire contracts", () => {
       revision: repositoryRevision,
     });
     if (!parsedRepositoryResult.ok) throw new Error("expected a successful repository action result");
+    if (parsedRepositoryResult.result.action !== "answer-question" || parsedRepositoryResult.result.source !== "repository-question") {
+      throw new Error("expected a repository question outcome");
+    }
     expect(parsedRepositoryResult.result.questionId).toBe("Q6");
 
     expect(() => factoryActionResultSchema.parse({

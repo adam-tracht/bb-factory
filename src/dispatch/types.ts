@@ -50,9 +50,6 @@ export interface DispatchContext {
   readonly log?: (message: string) => void;
 }
 
-export const FACTORY_PROVIDERS = ["codex", "claude-code"] as const;
-export type FactoryProviderId = (typeof FACTORY_PROVIDERS)[number];
-
 /** The shell dispatcher marks a provider limited for six hours after a dead start or a long provider retry. */
 export const PROVIDER_LIMIT_SECONDS = 6 * 3600;
 /** A run left in `pending` past this grace period needs reconciliation: its worker spawn never landed. */
@@ -62,10 +59,6 @@ export const MAX_RUN_ATTEMPTS = 3;
 
 export function dispatcherNowSeconds(now: () => Date): number {
   return Math.floor(now().getTime() / 1000);
-}
-
-export function otherProvider(provider: FactoryProviderId): FactoryProviderId {
-  return provider === "codex" ? "claude-code" : "codex";
 }
 
 export function nightKeyAt(date: Date, windowEndHour: number): string {

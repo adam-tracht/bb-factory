@@ -197,6 +197,98 @@ describe("repository action executor", () => {
     expect(matching).toMatchObject({ ok: true, result: { status: "accepted" } });
   });
 
+  it("attaches an approved line to an already-ready entry that lacks one", async () => {
+    const files = new FakeFileSystem();
+    const { executor } = makeExecutor(files);
+    files.seed(PROTOCOL_PATHS.questions, "# Questions\n");
+    files.seed(PROTOCOL_PATHS.queue, [
+      "# Queue",
+      "",
+      "## T1 Sample task",
+      "status: ready",
+      "priority: 2",
+      "depends_on: none",
+      "risk: low",
+      "plan: plans/factory/plan-t1.md",
+      "approved: none",
+      "acceptance:",
+      "- the task is done",
+      "validate:",
+      "- pnpm test",
+      "notes: none",
+      "",
+    ].join("\n"));
+    const revision = await revisionOf({ files });
+    const result = await executor.execute(approveRequest(revision));
+    expect(result).toMatchObject({ ok: true, result: { status: "accepted", action: "approve-queue", queueItemId: "T1" } });
+    const content = files.content(PROTOCOL_PATHS.queue)!;
+    expect(content).toContain("status: ready");
+    expect(content).toContain("approved: no gated actions");
+    expect(files.writes).toHaveLength(1);
+  });
+
+  it("still rejects approval on a ready entry while a gating question is open", async () => {
+    const files = new FakeFileSystem();
+    const { executor } = makeExecutor(files);
+    files.seed(PROTOCOL_PATHS.queue, [
+      "# Queue",
+      "",
+      "## T1 Sample task",
+      "status: ready",
+      "priority: 2",
+      "depends_on: none",
+      "risk: low",
+      "plan: plans/factory/plan-t1.md",
+      "approved: none",
+      "acceptance:",
+      "- the task is done",
+      "validate:",
+      "- pnpm test",
+      "notes: none",
+      "",
+    ].join("\n"));
+    const revision = await revisionOf({ files });
+    const result = await executor.execute(approveRequest(revision));
+    expect(result).toMatchObject({ ok: false, error: { category: "blocked-by-question" } });
+    expect(files.writes).toHaveLength(0);
+    expect(files.content(PROTOCOL_PATHS.queue)).toContain("approved: none");
+  });
+
+  it("replays matching approval on a ready entry and conflicts on different authorization", async () => {
+    const files = new FakeFileSystem();
+    const { executor } = makeExecutor(files);
+    files.seed(PROTOCOL_PATHS.questions, "# Questions\n");
+    files.seed(PROTOCOL_PATHS.queue, [
+      "# Queue",
+      "",
+      "## T1 Sample task",
+      "status: ready",
+      "priority: 2",
+      "depends_on: none",
+      "risk: low",
+      "plan: plans/factory/plan-t1.md",
+      "approved: dependency add",
+      "acceptance:",
+      "- the task is done",
+      "validate:",
+      "- pnpm test",
+      "notes: none",
+      "",
+    ].join("\n"));
+    const revision = await revisionOf({ files });
+    const same = await executor.execute(approveRequest(revision, "dependency add"));
+    expect(same).toMatchObject({ ok: true, result: { status: "already-applied" } });
+    const different = await executor.execute(repositoryActionRequestSchema.parse({
+      repositoryKey: "monorepo",
+      action: { kind: "approve-queue", queueItemId: "T1", approvedText: "other text" },
+      idempotencyKey: "bbf:v1:monorepo:approve-queue:623e4567-e89b-12d3-a456-426614174000",
+      expectedRevision: revision,
+    }));
+    expect(different).toMatchObject({ ok: false, error: { category: "conflict" } });
+    if (!different.ok) expect(different.error.message).toContain("different authorization");
+    expect(files.writes).toHaveLength(0);
+  });
+
   it("replays the recorded result for an idempotent retry without a second write", async () => {
     const { files, executor } = makeExecutor();
     const revision = await revisionOf({ files });
@@ -612,6 +704,96 @@ describe("BB interaction action executor", () => {
 
     const replay = await harness.executor.execute(request);
     expect(replay).toMatchObject({ ok: true, result: { threadId: "thr_recommend" } });
+    expect(harness.spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it("spawns an advisory approval-drafting thread scoped to a queue item", async () => {
+    const harness = makeInteractionHarness([]);
+    const action = {
+      kind: "recommend-approval",
+      queueItemId: "T1",
+      providerId: "claude-code",
+      model: "claude-sonnet-4",
+      reasoningLevel: "high",
+      serviceTier: "fast",
+    } as const;
+    const request = bbRequest(action);
+    const result = await harness.executor.execute(request);
+    expect(result).toMatchObject({
+      ok: true,
+      result: { status: "accepted", action: "recommend-approval", queueItemId: "T1", threadId: "thr_recommend" },
+    });
+    expect(harness.spawn).toHaveBeenCalledTimes(1);
+    const spawned = vi.mocked(harness.spawn).mock.calls[0]![0];
+    expect(spawned).toMatchObject({
+      projectId: "project-1",
+      environment: { type: "reuse", environmentId: "environment-1" },
+      providerId: "claude-code",
+      model: "claude-sonnet-4",
+      reasoningLevel: "high",
+      serviceTier: "fast",
+      permissionMode: "auto",
+      title: "factory recommend: monorepo T1",
+      executionInputSources: { providerId: "explicit", model: "explicit", reasoningLevel: "explicit", serviceTier: "explicit" },
+    });
+    const prompt = spawned.prompt as string;
+    expect(prompt).toContain("T1");
+    expect(prompt).toContain("Sample task");
+    expect(prompt).toContain("Status: blocked by Q6");
+    expect(prompt).toContain("Risk: low");
+    expect(prompt).toContain("Plan: plans/factory/plan-t1.md");
+    expect(prompt).toContain("Acceptance criteria:");
+    expect(prompt).toContain("- the task is done");
+    expect(prompt).toContain("Validate commands:");
+    expect(prompt).toContain("- pnpm test");
+    expect(prompt).toContain("The approved: line can permit these gated actions only: merges, deploys, migrations, adding or upgrading dependencies, touching secrets, deleting data, customer-facing changes.");
+    expect(prompt).toContain("approved:");
+    expect(prompt).toContain("what stays excluded");
+    expect(prompt).toContain("Advisory only");
+
+    const replay = await harness.executor.execute(request);
+    expect(replay).toMatchObject({ ok: true, result: { threadId: "thr_recommend", queueItemId: "T1" } });
+    expect(harness.spawn).toHaveBeenCalledTimes(1);
+
+    const conflict = await harness.executor.execute({
+      ...request,
+      action: { ...action, queueItemId: "T2" },
+    });
+    expect(conflict).toMatchObject({ ok: false, error: { category: "idempotency-conflict" } });
+    expect(harness.spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects an approval recommendation for a queue item missing from the protocol", async () => {
+    const harness = makeInteractionHarness([]);
+    const result = await harness.executor.execute(bbRequest({
+      kind: "recommend-approval",
+      queueItemId: "T99",
+      providerId: "codex",
+      model: "gpt-5",
+      reasoningLevel: "medium",
+    }));
+    expect(result).toMatchObject({
+      ok: false,
+      error: { category: "not-found", message: "Queue item 'T99' is not in plans/factory/queue.md." },
+    });
+    expect(harness.spawn).not.toHaveBeenCalled();
+  });
+
+  it("marks an ambiguous approval recommendation spawn for reconciliation without respawning", async () => {
+    const harness = makeInteractionHarness([]);
+    vi.mocked(harness.spawn).mockRejectedValue(new Error("spawn lost"));
+    const request = bbRequest({
+      kind: "recommend-approval",
+      queueItemId: "T1",
+      providerId: "codex",
+      model: "gpt-5",
+      reasoningLevel: "medium",
+    });
+    const result = await harness.executor.execute(request);
+    expect(result).toMatchObject({ ok: false, error: { category: "conflict" } });
+    expect(harness.store.getPendingActionIntent(request.idempotencyKey)?.status).toBe("reconciliation-required");
+    const replay = await harness.executor.execute(request);
+    expect(replay).toMatchObject({ ok: false, error: { category: "conflict" } });
     expect(harness.spawn).toHaveBeenCalledTimes(1);
   });
 

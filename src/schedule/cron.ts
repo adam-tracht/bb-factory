@@ -36,7 +36,7 @@ export function localClock(date: Date, timeZone: string): LocalClock {
   };
 }
 
-function parseCronField(field: string, min: number, max: number): Set<number> | null {
+export function parseCronField(field: string, min: number, max: number): Set<number> | null {
   const values = new Set<number>();
   for (const part of field.split(",")) {
     const match = part.match(/^(\*|\d+|\d+-\d+)(?:\/(\d+))?$/u);

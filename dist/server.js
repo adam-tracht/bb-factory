@@ -19688,11 +19688,11 @@ var isoTimestamp = external_exports.string().datetime({ offset: true });
 var sha256 = external_exports.string().regex(/^[a-f0-9]{64}$/, "must be a lowercase SHA-256 digest");
 var absolutePath = external_exports.string().regex(/^(?:\/|[A-Za-z]:[\\/])/, "must be an absolute path");
 var repositoryKeySchema = external_exports.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/, "must be a lowercase repository key");
-var providerPreferenceSchema = external_exports.enum(["alternate", "codex", "claude-code"]);
 var providerIdSchema = nonEmptyString.regex(
   /^[a-z0-9][a-z0-9._-]{0,63}$/,
   "must be a lowercase provider id"
 );
+var providerPreferenceSchema = external_exports.union([external_exports.literal("alternate"), providerIdSchema]);
 var reasoningLevelSchema = external_exports.enum([
   "none",
   "low",
@@ -19930,6 +19930,7 @@ var queueEligibilityReasonSchema = external_exports.enum([
   "not-ready",
   "unmet-dependency",
   "blocking-question",
+  "stale-question-gate",
   "missing-authorization",
   "high-risk-approval-missing",
   "repository-policy"
@@ -19947,6 +19948,7 @@ var queueEntrySchema = external_exports.object({
   validate: external_exports.array(nonEmptyString),
   notes: external_exports.string().nullable(),
   blockingQuestionIds: external_exports.array(nonEmptyString),
+  staleBlockingQuestionIds: external_exports.array(nonEmptyString),
   blockedBy: external_exports.array(nonEmptyString),
   eligible: external_exports.boolean(),
   eligibilityReasons: external_exports.array(queueEligibilityReasonSchema)
@@ -20046,7 +20048,8 @@ var providerStatusSchema = external_exports.object({
   availability: external_exports.enum(["available", "limited", "unavailable", "unknown"]),
   limitedUntil: isoTimestamp.nullable(),
   activeThreadCount: external_exports.number().int().nonnegative(),
-  lastError: external_exports.string().nullable()
+  lastError: external_exports.string().nullable(),
+  permissionModes: external_exports.array(nonEmptyString).optional()
 }).strict();
 var hostPreflightSchema = external_exports.object({
   hostId: nonEmptyString,
@@ -20112,6 +20115,7 @@ var actionKindSchema = external_exports.enum([
   "answer-question",
   "approve-queue",
   "recommend-question",
+  "recommend-approval",
   "retry",
   "stop",
   "integration-report",
@@ -20193,12 +20197,21 @@ var recommendQuestionActionSchema = external_exports.object({
   reasoningLevel: reasoningLevelSchema,
   serviceTier: external_exports.enum(["default", "fast"]).optional()
 }).strict();
+var recommendApprovalActionSchema = external_exports.object({
+  kind: external_exports.literal("recommend-approval"),
+  queueItemId: nonEmptyString,
+  providerId: providerIdSchema,
+  model: nonEmptyString,
+  reasoningLevel: reasoningLevelSchema,
+  serviceTier: external_exports.enum(["default", "fast"]).optional()
+}).strict();
 var bbInteractionActionSchema = external_exports.union([
   external_exports.object({ kind: external_exports.literal("run-now") }).strict(),
   external_exports.object({ kind: external_exports.literal("pause") }).strict(),
   external_exports.object({ kind: external_exports.literal("resume") }).strict(),
   bbInteractionAnswerActionSchema,
   recommendQuestionActionSchema,
+  recommendApprovalActionSchema,
   external_exports.object({ kind: external_exports.literal("retry"), attemptId: nonEmptyString }).strict(),
   external_exports.object({ kind: external_exports.literal("stop") }).strict()
 ]);
@@ -20330,6 +20343,13 @@ var recommendQuestionOutcomeSchema = external_exports.object({
   interactionId: external_exports.null().optional(),
   threadId: nonEmptyString
 }).strict();
+var recommendApprovalOutcomeSchema = external_exports.object({
+  ...actionOutcomeFields,
+  action: external_exports.literal("recommend-approval"),
+  queueItemId: nonEmptyString,
+  interactionId: external_exports.null().optional(),
+  threadId: nonEmptyString
+}).strict();
 var scaffoldProtocolOutcomeSchema = external_exports.object({
   ...actionOutcomeFields,
   action: external_exports.literal("scaffold-protocol"),
@@ -20371,6 +20391,7 @@ var provisionCheckoutOutcomeSchema = external_exports.object({
 var actionOutcomeSchema = external_exports.union([
   answerQuestionOutcomeSchema,
   recommendQuestionOutcomeSchema,
+  recommendApprovalOutcomeSchema,
   scaffoldProtocolOutcomeSchema,
   provisionCheckoutOutcomeSchema,
   nonAnswerActionOutcomeSchema
@@ -21071,6 +21092,7 @@ function providerStatus(providerId, provider, catalog, providerState, usage, act
   const unavailable = provider?.available === false || modelLoadError !== null || providerState?.status === "not_installed" || providerState?.status === "unauthenticated" || providerState?.status === "expired" || providerState?.status === "unsupported_version" || usageUnavailable || model === null;
   const unknown2 = !unavailable && (provider === void 0 || providerState === void 0 || providerState.status === "unknown");
   const availability = unavailable ? "unavailable" : quotaExhausted ? "limited" : unknown2 ? "unknown" : "available";
+  const permissionModes = provider?.capabilities?.permissionModes;
   return {
     providerId: parsedProviderId,
     model: model?.model ?? "unavailable",
@@ -21078,7 +21100,8 @@ function providerStatus(providerId, provider, catalog, providerState, usage, act
     availability,
     limitedUntil,
     activeThreadCount: activeThreadCounts.get(parsedProviderId) ?? 0,
-    lastError
+    lastError,
+    ...permissionModes === void 0 ? {} : { permissionModes: [...permissionModes] }
   };
 }
 async function readActiveThreadCounts(sdk, hostId) {
@@ -21551,7 +21574,33 @@ var OPERATIONAL_STORAGE_MIGRATIONS = [
   )`,
   `INSERT INTO pending_action_intents_v4 SELECT * FROM pending_action_intents`,
   `DROP TABLE pending_action_intents`,
-  `ALTER TABLE pending_action_intents_v4 RENAME TO pending_action_intents`
+  `ALTER TABLE pending_action_intents_v4 RENAME TO pending_action_intents`,
+  // SQLite cannot alter a CHECK constraint, so widening action_kind for
+  // recommend-approval rebuilds the table again.
+  `CREATE TABLE pending_action_intents_v5 (
+    idempotency_key TEXT PRIMARY KEY,
+    repository_key TEXT NOT NULL,
+    action_kind TEXT NOT NULL CHECK (action_kind IN ('run-now', 'pause', 'resume', 'answer-question', 'approve-queue', 'recommend-question', 'recommend-approval', 'retry', 'stop', 'scaffold-protocol', 'provision-checkout')),
+    request_fingerprint TEXT NOT NULL,
+    request_json TEXT NOT NULL,
+    expected_revision_json TEXT NOT NULL,
+    target_json TEXT NOT NULL,
+    file_change_json TEXT,
+    entry_point TEXT NOT NULL CHECK (entry_point IN ('action-executor', 'native-ui-initial-ready')),
+    one_shot INTEGER NOT NULL CHECK (one_shot IN (0, 1)),
+    status TEXT NOT NULL CHECK (status IN ('pending', 'resolving', 'completed', 'reconciliation-required')),
+    submitted_at TEXT NOT NULL,
+    expires_at TEXT,
+    last_attempt_at TEXT,
+    completed_at TEXT,
+    result_json TEXT,
+    observed_status TEXT CHECK (observed_status IS NULL OR observed_status IN ('pending', 'resolving', 'resolved', 'interrupted', 'written', 'conflict', 'verified')),
+    observed_resolution_json TEXT,
+    last_error TEXT
+  )`,
+  `INSERT INTO pending_action_intents_v5 SELECT * FROM pending_action_intents`,
+  `DROP TABLE pending_action_intents`,
+  `ALTER TABLE pending_action_intents_v5 RENAME TO pending_action_intents`
 ];
 var IdempotencyConflictError = class extends Error {
   code = "idempotency-conflict";
@@ -21827,7 +21876,8 @@ function claimInitialReadyIntent(db, input2, executionNow) {
   return insertPendingActionIntent(db, normalized, "native-ui-initial-ready", true, executionNow);
 }
 function normalizePendingActionIntentInput(input2, allowInitialReady, executionNow) {
-  const request = pendingActionRequestSchema.parse(input2.request);
+  const parsedRequest = pendingActionRequestSchema.parse(input2.request);
+  const request = parsedRequest.expectedRevision === void 0 ? { ...parsedRequest, expectedRevision: EMPTY_REPOSITORY_REVISION } : parsedRequest;
   const expectedRevision = repositoryRevisionSchema.parse(request.expectedRevision);
   const target = pendingActionIntentTargetSchema.parse(input2.target);
   const submittedAt = isoTimestampSchema.parse(input2.submittedAt ?? executionTimestamp(executionNow));
@@ -21886,6 +21936,12 @@ function assertPendingActionTarget(request, target) {
   if (action.kind === "recommend-question") {
     if (target.kind !== "repository-question" || target.questionId !== action.questionId) {
       throw new Error("repository-question target does not match the action request");
+    }
+    return;
+  }
+  if (action.kind === "recommend-approval") {
+    if (target.kind !== "queue-item" || target.queueItemId !== action.queueItemId) {
+      throw new Error("queue-item target does not match the action request");
     }
     return;
   }
@@ -23548,10 +23604,10 @@ var factorySettingDescriptors = {
     experimental_schema: external_exports.number().int().positive()
   },
   providerPreference: {
-    type: "select",
+    type: "string",
     label: "Provider preference",
-    description: "Use the current alternate behavior or pin the lead provider.",
-    options: ["alternate", "codex", "claude-code"]
+    description: "Provider id to lead dispatch (any id the host reports), or alternate to rotate.",
+    experimental_schema: providerPreferenceSchema
   },
   minimumStartGapSeconds: {
     type: "number",
@@ -24186,7 +24242,7 @@ function parseQuestions(content, path) {
     const match = section.heading.match(/^(\S+)\s+(\d{4}-\d{2}-\d{2})\s+(blocking|assumption)\s+(\S+)$/u);
     if (!match) {
       if (/^Q\d+(?:\s|$)/u.test(section.heading)) {
-        throw new ProtocolError("malformed-protocol", "Question heading '" + section.heading + "' is malformed in '" + path + "'", {
+        throw new ProtocolError("malformed-protocol", "Question heading '" + section.heading + "' is malformed in '" + path + "' (expected 'Q<n> <YYYY-MM-DD> <blocking|assumption> <dashboard-id>' with a single id)", {
           path
         });
       }
@@ -24629,8 +24685,13 @@ async function queueEntry(parsed, allEntries, questions, configuration, policy, 
   const openQuestions = questions.filter(
     (question) => referencedQuestionIds.has(question.id) && questionIsOpen(question)
   );
+  const openQuestionIds = new Set(openQuestions.map((question) => question.id));
   if (openQuestions.length > 0) {
     eligibilityReasons.push("blocking-question");
+  }
+  const staleBlockingQuestionIds = [...referencedQuestionIds].filter((id) => !openQuestionIds.has(id));
+  if (parsed.status.kind === "blocked-by" && !openQuestionIds.has(parsed.status.questionId)) {
+    eligibilityReasons.push("stale-question-gate");
   }
   if (parsed.approved.kind === "none" && parsed.status.kind === "ready") {
     eligibilityReasons.push(parsed.risk === "high" ? "high-risk-approval-missing" : "missing-authorization");
@@ -24652,7 +24713,8 @@ async function queueEntry(parsed, allEntries, questions, configuration, policy, 
     acceptance: [...parsed.acceptance],
     validate: [...parsed.validate],
     notes: parsed.notes,
-    blockingQuestionIds: [...referencedQuestionIds].filter((id) => openQuestions.some((question) => question.id === id)),
+    blockingQuestionIds: [...referencedQuestionIds].filter((id) => openQuestionIds.has(id)),
+    staleBlockingQuestionIds,
     blockedBy: [...referencedQuestionIds],
     eligible: eligibilityReasons.length === 0,
     eligibilityReasons
@@ -25158,15 +25220,11 @@ function spawnEnvironment(entry) {
     }
   };
 }
-var FACTORY_PROVIDERS = ["codex", "claude-code"];
 var PROVIDER_LIMIT_SECONDS = 6 * 3600;
 var PENDING_RUN_GRACE_MS = 10 * 60 * 1e3;
 var MAX_RUN_ATTEMPTS = 3;
 function dispatcherNowSeconds(now2) {
   return Math.floor(now2().getTime() / 1e3);
-}
-function otherProvider(provider) {
-  return provider === "codex" ? "claude-code" : "codex";
 }
 function nightKeyAt(date5, windowEndHour) {
   const shifted = new Date(date5.getTime() - windowEndHour * 3600 * 1e3);
@@ -25290,6 +25348,32 @@ function recommendationPrompt(configuration, question, gates) {
     "Reply with (1) the recommended answer, (2) the reasoning, and (3) the main risk or tradeoff. Advisory only: do not edit files and do not record the answer in questions.md; the operator records it."
   );
   return lines.join("\n");
+}
+function approvalPrompt(configuration, entry) {
+  const list = (items) => items.length > 0 ? items.map((item) => `- ${item}`).join("\n") : "- none";
+  return [
+    `The factory operator asked for a draft approval for queue entry ${entry.id} in repository "${configuration.repositoryKey}".`,
+    "",
+    `Queue entry: ${entry.id}`,
+    `Title: ${entry.title}`,
+    `Status: ${entry.status.kind === "blocked-by" ? `blocked by ${entry.status.questionId}` : entry.status.kind}`,
+    `Risk: ${entry.risk}`,
+    `Plan: ${entry.planPath}`,
+    "",
+    "Acceptance criteria:",
+    list(entry.acceptance),
+    "",
+    "Validate commands:",
+    list(entry.validate),
+    "",
+    `Notes: ${entry.notes ?? "none"}`,
+    "",
+    "The approved: line can permit these gated actions only: merges, deploys, migrations, adding or upgrading dependencies, touching secrets, deleting data, customer-facing changes.",
+    "",
+    `The operator must write an approved: line on the ${entry.id} queue entry and asked you to draft it. The repository checkout is at ${configuration.checkoutPath} on the "factory" branch. Read plans/factory/queue.md for the full queue record and plans/factory/repo.md for repository protocol rules before drafting.`,
+    "",
+    "Reply with (1) the recommended approved: line text, (2) the reasoning, and (3) what stays excluded. Advisory only: do not edit files; the operator records the approval."
+  ].join("\n");
 }
 function createBbInteractionActionExecutor(options) {
   const { threads, store, interactionReader, protocolReader, repositoryLookup: repositoryLookup2, dispatch, setDispatchMode } = options;
@@ -25521,6 +25605,67 @@ function createBbInteractionActionExecutor(options) {
       }, request.expectedRevision ?? null));
     });
   }
+  async function recommendApproval(request) {
+    const action = request.action;
+    const entry = repositoryLookup2(request.repositoryKey);
+    if (!entry) {
+      return actionError("not-found", `Repository '${request.repositoryKey}' is not configured.`, request.idempotencyKey);
+    }
+    const target = { kind: "queue-item", queueItemId: action.queueItemId };
+    return guarded(request, target, async (record2) => {
+      let snapshot;
+      try {
+        snapshot = await protocolReader.loadSnapshot(entry.configuration);
+      } catch (error62) {
+        return completeIntent(store, record2, actionError(
+          "internal",
+          `Could not read the repository protocol: ${errorMessage(error62)}`,
+          request.idempotencyKey
+        ));
+      }
+      const queueEntry2 = snapshot.queue.find((candidate) => candidate.id === action.queueItemId);
+      if (!queueEntry2) {
+        return completeIntent(store, record2, actionError(
+          "not-found",
+          `Queue item '${action.queueItemId}' is not in plans/factory/queue.md.`,
+          request.idempotencyKey
+        ));
+      }
+      let spawned;
+      try {
+        spawned = await threads.spawn({
+          projectId: entry.projectId,
+          environment: spawnEnvironment(entry),
+          prompt: approvalPrompt(entry.configuration, queueEntry2),
+          providerId: action.providerId,
+          model: action.model,
+          reasoningLevel: action.reasoningLevel,
+          ...action.serviceTier === void 0 ? {} : { serviceTier: action.serviceTier },
+          permissionMode: "auto",
+          title: `factory recommend: ${entry.configuration.repositoryKey} ${queueEntry2.id}`,
+          executionInputSources: {
+            providerId: "explicit",
+            model: "explicit",
+            reasoningLevel: "explicit",
+            ...action.serviceTier === void 0 ? {} : { serviceTier: "explicit" }
+          }
+        });
+      } catch (error62) {
+        return reconcileIntent(store, record2, `Approval-drafting thread spawn for ${queueEntry2.id} failed ambiguously: ${errorMessage(error62)}. The thread may exist.`);
+      }
+      return completeIntent(store, record2, actionSuccess({
+        status: "accepted",
+        message: `Started an approval-drafting chat for ${queueEntry2.id} on ${action.providerId} (${action.model}).`,
+        revision: request.expectedRevision ?? null,
+        runId: null,
+        leaseId: null,
+        queueItemId: queueEntry2.id,
+        action: "recommend-approval",
+        interactionId: null,
+        threadId: spawned.id
+      }, request.expectedRevision ?? null));
+    });
+  }
   async function execute(request) {
     const parsed = bbInteractionActionRequestSchema.safeParse(request);
     if (!parsed.success) {
@@ -25542,6 +25687,13 @@ function createBbInteractionActionExecutor(options) {
         return await recommendQuestion(valid);
       } catch (error62) {
         return actionError("internal", `Could not spawn the recommendation thread: ${errorMessage(error62)}`, valid.idempotencyKey);
+      }
+    }
+    if (action.kind === "recommend-approval") {
+      try {
+        return await recommendApproval(valid);
+      } catch (error62) {
+        return actionError("internal", `Could not spawn the approval-drafting thread: ${errorMessage(error62)}`, valid.idempotencyKey);
       }
     }
     const target = action.kind === "retry" ? { kind: "attempt", attemptId: action.attemptId } : { kind: "repository" };
@@ -25710,7 +25862,22 @@ function planRepositoryAction(snapshot, request) {
     return actionError("not-found", `Queue item '${action.queueItemId}' is not in ${PROTOCOL_PATHS.queue}.`, request.idempotencyKey);
   }
   if (entry.status.kind === "ready") {
-    const authorized = entry.approved.kind === "explicit" && entry.approved.text === action.approvedText;
+    if (entry.approved.kind === "none") {
+      if (entry.blockingQuestionIds.length > 0) {
+        return actionError(
+          "blocked-by-question",
+          `Queue item '${entry.id}' is blocked by open question(s): ${entry.blockingQuestionIds.join(", ")}. Answer them before approval.`,
+          request.idempotencyKey
+        );
+      }
+      return {
+        targetPath: PROTOCOL_PATHS.queue,
+        target: { kind: "queue-item", queueItemId: entry.id },
+        alreadyApplied: false,
+        build: (content) => writeQueueApproval(content, entry.id, action.approvedText)
+      };
+    }
+    const authorized = entry.approved.text === action.approvedText;
     return authorized ? { targetPath: PROTOCOL_PATHS.queue, target: { kind: "queue-item", queueItemId: entry.id }, alreadyApplied: true, build: (content) => content } : actionError("conflict", `Queue item '${entry.id}' is already ready with different authorization.`, request.idempotencyKey);
   }
   if (entry.status.kind === "in-progress") {
@@ -26669,38 +26836,32 @@ async function hostPreflight(ctx, repositoryKey2) {
   }
 }
 function selectProvider(providers, state, preference, nightKey, nowS) {
-  const usable = /* @__PURE__ */ new Map();
-  for (const providerId of FACTORY_PROVIDERS) {
-    const status = providers.find((candidate) => candidate.providerId === providerId);
-    if (!status || status.availability !== "available" || status.model === "unavailable") continue;
-    const limitedUntil = state.limits[providerId] ?? 0;
-    if (limitedUntil > nowS) continue;
-    usable.set(providerId, status);
-  }
-  if (usable.size === 0) return null;
-  const lastStart = state.lastStartProvider;
-  let lead;
-  let reason;
-  if (preference === "codex" || preference === "claude-code") {
-    lead = preference;
-    reason = `providerPreference=${preference}`;
-  } else if (lastStart === "codex" || lastStart === "claude-code") {
-    lead = otherProvider(lastStart);
-    reason = `alternate after ${lastStart}`;
-  } else {
-    const nightDay = Number(nightKey.slice(-2));
-    lead = nightDay % 2 === 0 ? "codex" : "claude-code";
-    reason = `alternate lead, night ${nightKey}`;
-  }
-  const fallback = otherProvider(lead);
-  const picked = usable.get(lead) ?? usable.get(fallback);
-  if (!picked) return null;
-  return {
+  const isUsable = (provider) => {
+    const limitedUntil = state.limits[provider.providerId] ?? 0;
+    return provider.availability === "available" && provider.model !== "unavailable" && limitedUntil <= nowS && (provider.permissionModes === void 0 || provider.permissionModes.includes("full"));
+  };
+  const usable = providers.filter(isUsable);
+  if (usable.length === 0) return null;
+  const selection = (picked, reason) => ({
     providerId: picked.providerId,
     model: picked.model,
     reasoningLevel: picked.reasoningLevel,
-    reason: picked.providerId === lead ? reason : `fallback, ${lead} limited`
-  };
+    reason
+  });
+  if (preference !== void 0 && preference !== "alternate") {
+    const picked = usable.find((provider) => provider.providerId === preference) ?? usable[0];
+    return selection(picked, picked.providerId === preference ? `providerPreference=${preference}` : `fallback, ${preference} unusable`);
+  }
+  const lastStart = state.lastStartProvider;
+  const lastIndex = providers.findIndex((provider) => provider.providerId === lastStart);
+  if (lastIndex >= 0) {
+    for (let offset = 1; offset <= providers.length; offset += 1) {
+      const picked = providers[(lastIndex + offset) % providers.length];
+      if (isUsable(picked)) return selection(picked, `alternate after ${lastStart}`);
+    }
+  }
+  const nightDay = Number(nightKey.slice(-2));
+  return selection(usable[nightDay % usable.length], `alternate lead, night ${nightKey}`);
 }
 
 // src/dispatch/start.ts
@@ -26797,7 +26958,7 @@ async function startRun(ctx, input2) {
   if (!provider) {
     return noSpawn(actionError(
       "provider-unavailable",
-      "No factory provider is available right now. Both providers are unavailable or marked limited."
+      "No usable provider is available right now. Reported providers may be unavailable, limited, missing a model, or lack full permissions."
     ));
   }
   const eligible = snapshot.queue.filter((item) => item.eligible);

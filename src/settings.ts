@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { PluginSettingDescriptors } from "@get-bb/plugin-sdk";
-import { repositoryRegistrySchema } from "./contracts.js";
+import { providerPreferenceSchema, repositoryRegistrySchema } from "./contracts.js";
 
 const repositoryKey = z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/);
 const absolutePath = z.string().regex(/^(?:\/|[A-Za-z]:[\\/])/);
@@ -95,10 +95,10 @@ export const factorySettingDescriptors = {
     experimental_schema: z.number().int().positive(),
   },
   providerPreference: {
-    type: "select",
+    type: "string",
     label: "Provider preference",
-    description: "Use the current alternate behavior or pin the lead provider.",
-    options: ["alternate", "codex", "claude-code"],
+    description: "Provider id to lead dispatch (any id the host reports), or alternate to rotate.",
+    experimental_schema: providerPreferenceSchema,
   },
   minimumStartGapSeconds: {
     type: "number",

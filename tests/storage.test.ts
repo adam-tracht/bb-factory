@@ -13,6 +13,7 @@ import type {
   RepositoryRevision,
   RunIntent,
 } from "../src/contracts.js";
+import { EMPTY_REPOSITORY_REVISION } from "../src/contracts.js";
 import {
   IdempotencyConflictError,
   OPERATIONAL_STORAGE_MIGRATIONS,
@@ -370,6 +371,28 @@ describe("operational SQLite storage", () => {
       .get(request.idempotencyKey)!;
     expect(raw.request_json).not.toContain("prompt");
     expect(JSON.parse(raw.file_change_json!)).toEqual(fileChange);
+  });
+
+  it("normalizes an absent BB interaction revision and replays it under the same key", () => {
+    const store = newStore();
+    const request: BbInteractionActionRequest = {
+      repositoryKey: "monorepo",
+      action: {
+        kind: "recommend-approval",
+        queueItemId: "T1",
+        providerId: "codex",
+        model: "gpt-5",
+        reasoningLevel: "medium",
+      },
+      idempotencyKey: "bbf:v1:monorepo:recommend-approval:623e4567-e89b-12d3-a456-426614174000",
+    };
+    const input = { request, target: { kind: "queue-item" as const, queueItemId: "T1" } };
+
+    expect(store.claimPendingActionIntent(input)).toMatchObject({
+      created: true,
+      record: { request: { expectedRevision: EMPTY_REPOSITORY_REVISION }, expectedRevision: EMPTY_REPOSITORY_REVISION },
+    });
+    expect(store.claimPendingActionIntent(input)).toMatchObject({ created: false, record: { status: "pending" } });
   });
 
   it("atomically claims a native-UI initial-ready intent once", () => {

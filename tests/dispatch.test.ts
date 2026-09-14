@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { HostPreflight, ProviderStatus } from "../src/contracts.js";
 import { PROTOCOL_PATHS } from "../src/protocol/paths.js";
 import { createDispatchEngine } from "../src/dispatch/index.js";
+import { selectProvider } from "../src/dispatch/preflight.js";
 import { schedulerTick, cronMatches } from "../src/schedule/index.js";
 import type { DispatchContext } from "../src/dispatch/types.js";
 import {
@@ -54,7 +55,11 @@ class FakeThreads {
   }
 }
 
-function provider(id: string, availability: ProviderStatus["availability"] = "available"): ProviderStatus {
+function provider(
+  id: string,
+  availability: ProviderStatus["availability"] = "available",
+  permissionModes?: ProviderStatus["permissionModes"],
+): ProviderStatus {
   return {
     providerId: id,
     model: `${id}-model`,
@@ -63,6 +68,7 @@ function provider(id: string, availability: ProviderStatus["availability"] = "av
     limitedUntil: null,
     activeThreadCount: 0,
     lastError: null,
+    ...(permissionModes === undefined ? {} : { permissionModes }),
   };
 }
 
@@ -141,6 +147,18 @@ describe("dispatch engine", () => {
     expect(store.getDispatcherState("monorepo").lastStartProvider).toBe("codex");
   });
 
+  it("starts a run on a pinned non-factory provider", async () => {
+    const { engine, store } = makeHarness({
+      settings: { providerPreference: "acp-opencode" },
+      providers: [provider("codex"), provider("acp-opencode")],
+    });
+    const result = await engine.requestRun(MANUAL_REQUEST);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    const detail = await makeHarnessResult(result.result.runId!, store);
+    expect(detail.run?.summary.providerId).toBe("acp-opencode");
+  });
+
   it("reuses the pinned environment when the registry entry carries one", async () => {
     const { engine, threads, store } = makeHarness();
     const result = await engine.requestRun(MANUAL_REQUEST);
@@ -206,8 +224,11 @@ describe("dispatch engine", () => {
     expect(threads.threads.size).toBe(1);
   });
 
-  it("falls back to the other provider when the lead is limited", async () => {
-    const { engine, store } = makeHarness({ settings: { providerPreference: "codex" } });
+  it("falls back to the first usable provider when the pinned lead is limited", async () => {
+    const { engine, store } = makeHarness({
+      settings: { providerPreference: "codex" },
+      providers: [provider("codex"), provider("acp-opencode"), provider("claude-code")],
+    });
     const state = store.getDispatcherState("monorepo");
     store.saveDispatcherState({
       ...state,
@@ -217,8 +238,66 @@ describe("dispatch engine", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       const detail = await makeHarnessResult(result.result.runId!, store);
-      expect(detail.run?.summary.providerId).toBe("claude-code");
+      expect(detail.run?.summary.providerId).toBe("acp-opencode");
     }
+  });
+
+  it("rotates alternate dispatch across three usable providers in catalog order", () => {
+    const providers = [provider("codex"), provider("acp-opencode"), provider("acp-devin")];
+    const state = {
+      repositoryKey: "monorepo" as const,
+      nightKey: "2026-09-10",
+      lastState: "",
+      failedCount: 0,
+      noopCount: 0,
+      lastStartAt: 0,
+      lastStartProvider: "codex",
+      limits: {},
+    };
+    const first = selectProvider(providers, state, "alternate", state.nightKey, 0);
+    const second = selectProvider(providers, { ...state, lastStartProvider: first!.providerId }, "alternate", state.nightKey, 0);
+    const third = selectProvider(providers, { ...state, lastStartProvider: second!.providerId }, "alternate", state.nightKey, 0);
+    const fourth = selectProvider(providers, { ...state, lastStartProvider: third!.providerId }, "alternate", state.nightKey, 0);
+    expect([first?.providerId, second?.providerId, third?.providerId, fourth?.providerId]).toEqual([
+      "acp-opencode",
+      "acp-devin",
+      "codex",
+      "acp-opencode",
+    ]);
+    expect(first?.reason).toBe("alternate after codex");
+  });
+
+  it("rotates alternate past an unusable previous provider in catalog order", () => {
+    const providers = [
+      provider("acp-devin"),
+      provider("codex", "unavailable"),
+      provider("acp-opencode"),
+    ];
+    const state = {
+      repositoryKey: "monorepo" as const,
+      nightKey: "2026-09-10",
+      lastState: "",
+      failedCount: 0,
+      noopCount: 0,
+      lastStartAt: 0,
+      lastStartProvider: "codex",
+      limits: {},
+    };
+    const picked = selectProvider(providers, state, "alternate", state.nightKey, 0);
+    expect(picked?.providerId).toBe("acp-opencode");
+    expect(picked?.reason).toBe("alternate after codex");
+  });
+
+  it("skips a provider without full permission support", async () => {
+    const { engine, store } = makeHarness({
+      settings: { providerPreference: "acp-opencode" },
+      providers: [provider("acp-opencode", "available", ["auto"]), provider("codex", "available", ["full"])],
+    });
+    const result = await engine.requestRun(MANUAL_REQUEST);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    const detail = await makeHarnessResult(result.result.runId!, store);
+    expect(detail.run?.summary.providerId).toBe("codex");
   });
 
   it("refuses dispatch when no provider is usable", async () => {

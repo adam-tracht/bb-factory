@@ -7,13 +7,13 @@ import type {
   ProviderStatus,
   SettingsProjection,
 } from "../../contracts.js";
-import { describeCron, nextCronTimes } from "../../schedule/cron.js";
+import { nextCronTimes } from "../../schedule/cron.js";
+import { describeSchedule } from "../../schedule/describe.js";
 import type { AttentionItem } from "../attention.js";
 import type { ViewContext } from "../context.js";
 import {
   ActionButton,
   Badge,
-  Card,
   CopyText,
   Disclosure,
   ErrorNotice,
@@ -27,8 +27,10 @@ import {
   repositoryFileTarget,
   runStatusLabel,
   runStatusTone,
+  sectionStorageKey,
   shortSha,
   timeAgo,
+  usePhoneViewport,
   type Tone,
 } from "../primitives.js";
 
@@ -137,23 +139,35 @@ function NeedsAttention(props: { attention: readonly AttentionItem[]; settings: 
   return h(Section, {
     title: "Needs attention",
     count: attention.length,
+    collapsible: true,
+    defaultOpen: true,
+    storageKey: sectionStorageKey(ctx.repository.repositoryKey, "overview", "needs-attention"),
     children: attention.map((item) => {
       const action = attentionAction(item, ctx);
       const mutating = action?.pendingTarget !== undefined;
-      return h("div", { key: item.id, className: "flex items-center gap-3 py-2", "data-attention-id": item.id },
-        h(StatusDot, { tone: SEVERITY_TONE[item.severity] }),
+      return h("div", { key: item.id, className: "flex min-w-0 flex-wrap items-start gap-3 py-2 sm:flex-nowrap sm:items-center", "data-attention-id": item.id },
+        h("span", { className: "mt-1.5 shrink-0 sm:mt-0" },
+          h(StatusDot, { tone: SEVERITY_TONE[item.severity] })),
         h("div", { className: "min-w-0 flex-1" },
-          h("p", { className: "text-sm text-foreground" }, item.title),
-          h("p", { className: "truncate text-xs text-muted-foreground", title: item.detail }, item.detail)),
+          h(Disclosure, {
+            summary: h("span", null,
+              h("span", { className: "text-sm font-normal text-foreground" }, item.title),
+              h("span", {
+                className: "mt-0.5 line-clamp-2 break-words text-xs font-normal text-muted-foreground sm:line-clamp-1",
+                title: item.detail,
+              }, item.detail)),
+            children: h("p", { className: "break-words text-xs text-muted-foreground" }, item.detail),
+          })),
         action
-          ? h(ActionButton, {
-              label: action.label,
-              variant: "ghost",
-              size: "xs",
-              onClick: action.onClick,
-              disabled: mutating && ctx.pendingTarget !== null,
-              busy: mutating && ctx.pendingTarget === action.pendingTarget,
-            })
+          ? h("div", { className: "flex basis-full justify-end sm:basis-auto" },
+              h(ActionButton, {
+                label: action.label,
+                variant: "ghost",
+                size: "xs",
+                onClick: action.onClick,
+                disabled: mutating && ctx.pendingTarget !== null,
+                busy: mutating && ctx.pendingTarget === action.pendingTarget,
+              }))
           : null);
     }),
   });
@@ -162,11 +176,15 @@ function NeedsAttention(props: { attention: readonly AttentionItem[]; settings: 
 function CurrentRunCard(props: { run: OperationalRunSummary; ctx: ViewContext }) {
   const { run, ctx } = props;
   const now = useNow(30000);
+  const phone = usePhoneViewport();
   const elapsed = formatDuration(run.startedAt ?? run.requestedAt, null, now);
   const threadId = run.workerThreadId;
-  return h(Card, {
+  return h(Section, {
     title: "Current run",
-    children: [
+    collapsible: true,
+    defaultOpen: !phone,
+    storageKey: sectionStorageKey(ctx.repository.repositoryKey, "overview", "current-run"),
+    children: h("div", { className: "px-1 py-1" }, [
       h("div", { key: "status", className: "flex flex-wrap items-center gap-2" },
         h(StatusDot, { tone: "primary", pulse: true }),
         h("span", { className: "text-sm font-medium" },
@@ -178,38 +196,56 @@ function CurrentRunCard(props: { run: OperationalRunSummary; ctx: ViewContext })
       run.queueItemIds.length > 0
         ? h("div", { key: "items", className: "mt-2 flex flex-wrap gap-1" },
             run.queueItemIds.map((id) =>
-              h("span", { key: id, className: "rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground" }, id)))
+              h("span", {
+                key: id,
+                className: "max-w-full box-border break-all rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground",
+                style: { overflowWrap: "anywhere" },
+              }, id)))
         : null,
       h("p", { key: "note", className: "mt-3 text-xs text-muted-foreground" }, "Pause stops new runs; this one continues."),
-    ],
+    ]),
   });
 }
 
 function LastRunLine(props: { runs: OperationalRunListProjection | null; ctx: ViewContext }) {
   const { runs, ctx } = props;
-  const finished = (runs?.runs ?? [])
+  const phone = usePhoneViewport();
+  if (!runs) return null;
+  const finished = runs.runs
     .filter((run) => run.finishedAt !== null)
     .sort((left, right) => new Date(right.finishedAt ?? 0).getTime() - new Date(left.finishedAt ?? 0).getTime());
   const last = finished[0];
-  if (!last) {
-    return runs ? h("p", { className: "px-1 text-xs text-muted-foreground" }, "No finished runs on record.") : null;
-  }
-  const duration = formatDuration(last.startedAt ?? last.requestedAt, last.finishedAt);
-  return h("div", { className: "flex flex-wrap items-center gap-2 px-1 text-sm" },
-    h("span", { className: "text-xs text-muted-foreground" }, "Last run"),
-    h("span", { className: "text-foreground" }, timeAgo(last.finishedAt) ?? formatTimestamp(last.finishedAt) ?? ""),
-    h(Badge, { label: runStatusLabel(last.status), tone: runStatusTone(last.status) }),
-    last.providerId ? h("span", { className: "text-xs text-muted-foreground" }, last.providerId) : null,
-    duration ? h("span", { className: "text-xs text-muted-foreground" }, duration) : null,
-    h(ActionButton, { label: "View", variant: "ghost", size: "xs", onClick: () => ctx.onOpenRun(last.runId) }));
+  const duration = last ? formatDuration(last.startedAt ?? last.requestedAt, last.finishedAt) : null;
+  const content = !last
+    ? h("p", { className: "px-1 py-2 text-xs text-muted-foreground" }, "No finished runs on record.")
+    : h("div", { className: "flex flex-wrap items-center gap-2 px-1 py-2 text-sm" },
+        h("span", { className: "text-foreground" }, timeAgo(last.finishedAt) ?? formatTimestamp(last.finishedAt) ?? ""),
+        h(Badge, { label: runStatusLabel(last.status), tone: runStatusTone(last.status) }),
+        last.providerId ? h("span", { className: "text-xs text-muted-foreground" }, last.providerId) : null,
+        duration ? h("span", { className: "text-xs text-muted-foreground" }, duration) : null,
+        h(ActionButton, { label: "View", variant: "ghost", size: "xs", onClick: () => ctx.onOpenRun(last.runId) }));
+  return h(Section, {
+    title: "Last run",
+    collapsible: true,
+    defaultOpen: !phone,
+    storageKey: sectionStorageKey(ctx.repository.repositoryKey, "overview", "last-run"),
+    children: content,
+  });
 }
 
 function DispatchCard(props: { settings: SettingsProjection | null; health: HealthProjection | null; ctx: ViewContext }) {
   const { settings, health, ctx } = props;
+  const phone = usePhoneViewport();
+  const healthRow = h("div", { key: "health", className: "mt-3 border-t border-border pt-2" }, h(HealthLine, { health, settings }));
   if (!settings) {
-    return h(Card, {
+    return h(Section, {
       title: "Dispatch",
-      children: h("p", { className: "text-sm text-muted-foreground" }, "Dispatch settings are unavailable."),
+      collapsible: true,
+      defaultOpen: !phone,
+      storageKey: sectionStorageKey(ctx.repository.repositoryKey, "overview", "dispatch"),
+      children: h("div", { className: "px-1 py-1" },
+        h("p", { className: "text-sm text-muted-foreground" }, "Dispatch settings are unavailable."),
+        healthRow),
     });
   }
   const dispatch = settings.dispatch;
@@ -227,16 +263,19 @@ function DispatchCard(props: { settings: SettingsProjection | null; health: Heal
     ? health?.providers.find((provider) => provider.providerId === preference) ?? null
     : null;
 
-  return h(Card, {
+  return h(Section, {
     title: "Dispatch",
+    collapsible: true,
+    defaultOpen: !phone,
+    storageKey: sectionStorageKey(ctx.repository.repositoryKey, "overview", "dispatch"),
     actions: h("div", { className: "flex items-center gap-2" },
       h(Badge, { label: mode.label, tone: mode.tone }),
       h(ActionButton, { label: "Edit", variant: "ghost", size: "xs", onClick: () => ctx.onOpenSection("settings") })),
-    children: [
+    children: h("div", { className: "px-1 py-1" }, [
     h("dl", { key: "fields", className: "grid gap-3 sm:grid-cols-2" },
       h(Field, { label: "Schedule" },
         h("dd", { className: "mt-0.5 text-sm" },
-          cron ? describeCron(cron) ?? h("code", { className: "font-mono text-xs" }, cron) : "No schedule set",
+          cron ? describeSchedule(cron) ?? h("code", { className: "font-mono text-xs" }, cron) : "No schedule set",
           cron && timeZone !== "server-local"
             ? h("span", { className: "text-xs text-muted-foreground" }, ` (${timeZone})`)
             : null)),
@@ -265,7 +304,8 @@ function DispatchCard(props: { settings: SettingsProjection | null; health: Heal
     h("p", { key: "status", className: "mt-3 border-t border-border pt-2 text-xs text-muted-foreground" },
       `${dispatch.acceptingNewRuns ? "Accepting new runs" : "Not accepting new runs"}; ${dispatch.activeRunCount} of ${settings.settings.concurrencyLimit} slot${settings.settings.concurrencyLimit === 1 ? "" : "s"} in use.`,
       dispatch.reason ? ` ${dispatch.reason}` : null),
-    ],
+    healthRow,
+    ]),
   });
 }
 
@@ -302,13 +342,17 @@ function HealthLine(props: { health: HealthProjection | null; settings: Settings
 
 function RepositoryCard(props: { snapshot: ProtocolSnapshot; health: HealthProjection | null; ctx: ViewContext }) {
   const { snapshot, health, ctx } = props;
+  const phone = usePhoneViewport();
   const repository = ctx.repository;
   const dashboard = snapshot.dashboard;
   const branch = health?.host.branch ?? snapshot.repository.factoryBranch;
   const commit = snapshot.revision.gitCommit;
-  return h(Card, {
+  return h(Section, {
     title: "Repository",
-    children: [
+    collapsible: true,
+    defaultOpen: !phone,
+    storageKey: sectionStorageKey(ctx.repository.repositoryKey, "overview", "repository"),
+    children: h("div", { className: "px-1 py-1" }, [
     h("div", { key: "status", className: "flex flex-wrap items-center gap-2 text-sm" },
       h(Badge, { label: branch, tone: "neutral", title: "Checked-out branch" }),
       h("span", { className: "text-muted-foreground" },
@@ -336,7 +380,9 @@ function RepositoryCard(props: { snapshot: ProtocolSnapshot; health: HealthProje
                   h("span", { className: "min-w-0 break-words" }, entry.subject)))),
           }))
       : null,
-    ],
+    h("div", { key: "links", className: "mt-3 border-t border-border pt-2" },
+      h(ProtocolLinks, { snapshot, ctx })),
+    ]),
   });
 }
 
@@ -361,16 +407,18 @@ function ProtocolLinks(props: { snapshot: ProtocolSnapshot; ctx: ViewContext }) 
           : h("span", { className: "text-muted-foreground" }, "none"))));
 }
 
-function TechnicalDetails(props: { snapshot: ProtocolSnapshot; settings: SettingsProjection | null }) {
-  const { snapshot, settings } = props;
+function TechnicalDetails(props: { snapshot: ProtocolSnapshot; settings: SettingsProjection | null; ctx: ViewContext }) {
+  const { snapshot, settings, ctx } = props;
   const row = (label: string, value: ReactNode) =>
     h("div", { className: "flex items-center justify-between gap-3 py-0.5" },
       h("dt", { className: "text-xs text-muted-foreground" }, label),
       h("dd", { className: "min-w-0 text-right text-xs" }, value));
-  return h(Disclosure, {
-    summary: "Technical details",
-    className: "px-1",
-    children: h("dl", { className: "rounded-md border border-border px-3 py-2" },
+  return h(Section, {
+    title: "Technical details",
+    collapsible: true,
+    defaultOpen: false,
+    storageKey: sectionStorageKey(ctx.repository.repositoryKey, "overview", "technical-details"),
+    children: h("dl", { className: "mx-1 rounded-md border border-border px-3 py-2" },
       row("Foreman digest", h(CopyText, {
         value: snapshot.foremanTemplate.contentSha256,
         label: shortSha(snapshot.foremanTemplate.contentSha256) ?? undefined,
@@ -409,8 +457,6 @@ export function OverviewView(props: {
     activeRun && isActiveRunStatus(activeRun.status) ? h(CurrentRunCard, { run: activeRun, ctx }) : null,
     h(LastRunLine, { runs, ctx }),
     h(DispatchCard, { settings, health, ctx }),
-    h(HealthLine, { health, settings }),
     snapshot ? h(RepositoryCard, { snapshot, health, ctx }) : null,
-    snapshot ? h(ProtocolLinks, { snapshot, ctx }) : null,
-    snapshot ? h(TechnicalDetails, { snapshot, settings }) : null);
+    snapshot ? h(TechnicalDetails, { snapshot, settings, ctx }) : null);
 }

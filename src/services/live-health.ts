@@ -19,7 +19,7 @@ type ProviderModel = ExecutionOptions["models"][number];
 type ProviderState = Awaited<ReturnType<BbSdk["system"]["providerStates"]>>["providers"][number];
 type ProviderUsage = Awaited<ReturnType<BbSdk["system"]["usageLimits"]>>[string];
 type UsageWindow = Extract<ProviderUsage, { status: "ok" }>["windows"][number];
-type HostInfo = Awaited<ReturnType<BbSdk["hosts"]["get"]>>;
+type HostInfo = Awaited<ReturnType<BbSdk["hosts"]["list"]>>[number];
 type Environment = Awaited<ReturnType<BbSdk["environments"]["get"]>>;
 
 export interface LiveHealthOptions {
@@ -138,6 +138,7 @@ function providerStatus(
       : unknown
         ? "unknown"
         : "available";
+  const permissionModes = provider?.capabilities?.permissionModes;
   return {
     providerId: parsedProviderId,
     model: model?.model ?? "unavailable",
@@ -146,6 +147,7 @@ function providerStatus(
     limitedUntil,
     activeThreadCount: activeThreadCounts.get(parsedProviderId) ?? 0,
     lastError,
+    ...(permissionModes === undefined ? {} : { permissionModes: [...permissionModes] }),
   };
 }
 

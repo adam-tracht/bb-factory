@@ -22,7 +22,24 @@ beforeAll(async () => {
   ({ QuestionsView } = await import("../src/ui/views/questions.js"));
 });
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  window.sessionStorage.clear();
+  vi.unstubAllGlobals();
+});
+
+function stubPhoneViewport(phone: boolean): void {
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    matches: phone,
+    media: query,
+    onchange: null,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: () => false,
+  }));
+}
 
 const revision = {
   gitCommit: "abc1234",
@@ -67,6 +84,7 @@ function makeQueueEntry(overrides: Partial<QueueEntry>): QueueEntry {
     validate: [],
     notes: null,
     blockingQuestionIds: [],
+    staleBlockingQuestionIds: [],
     blockedBy: [],
     eligible: false,
     eligibilityReasons: [],
@@ -326,6 +344,96 @@ describe("QuestionsView repository questions", () => {
     const rowDetails = row.querySelector("details") as HTMLDetailsElement | null;
     expect(rowDetails?.open).toBe(true);
   });
+
+  it("reveals an answered question focused after the view is already mounted", async () => {
+    const scrollSpy = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollSpy;
+    const ctx = makeCtx();
+    try {
+      const view = renderView({ ctx });
+      const group = screen.getByTestId("answered-questions") as HTMLDetailsElement;
+      expect(group.open).toBe(false);
+      expect(view.container.querySelector("#question-Q4")).toBeNull();
+
+      view.rerender(h(QuestionsView, {
+        snapshot: makeSnapshot(),
+        interactions: null,
+        ctx,
+        focusQuestionId: "Q4",
+      }));
+
+      expect(group.open).toBe(true);
+      const row = view.container.querySelector("#question-Q4") as HTMLElement;
+      expect(row).not.toBeNull();
+      await vi.waitFor(() => expect(scrollSpy).toHaveBeenCalled());
+      const rowDetails = row.querySelector("details") as HTMLDetailsElement | null;
+      expect(rowDetails?.open).toBe(true);
+    } finally {
+      if (original) {
+        Element.prototype.scrollIntoView = original;
+      } else {
+        Reflect.deleteProperty(Element.prototype, "scrollIntoView");
+      }
+    }
+  });
+
+  it("reveals an open question focused after the view mounted while its group was stored closed", async () => {
+    window.sessionStorage.setItem("bb-factory:section:demo:questions:open", "0");
+    const scrollSpy = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollSpy;
+    const ctx = makeCtx();
+    try {
+      const view = renderView({ ctx });
+      const group = screen.getByRole("heading", { name: "Open" }).closest("details") as HTMLDetailsElement;
+      expect(group.open).toBe(false);
+      expect(view.container.querySelector("#question-Q1")).toBeNull();
+
+      view.rerender(h(QuestionsView, {
+        snapshot: makeSnapshot(),
+        interactions: null,
+        ctx,
+        focusQuestionId: "Q1",
+      }));
+
+      expect(group.open).toBe(true);
+      expect(view.container.querySelector("#question-Q1")).not.toBeNull();
+      await vi.waitFor(() => expect(scrollSpy).toHaveBeenCalled());
+    } finally {
+      if (original) {
+        Element.prototype.scrollIntoView = original;
+      } else {
+        Reflect.deleteProperty(Element.prototype, "scrollIntoView");
+      }
+    }
+  });
+
+  it("re-arms a focused question when the repository changes", async () => {
+    const scrollSpy = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollSpy;
+    const otherRepository = { ...repository, repositoryKey: "other" };
+    try {
+      const view = renderView({ focusQuestionId: "Q1" });
+      expect(scrollSpy).toHaveBeenCalledTimes(1);
+
+      view.rerender(h(QuestionsView, {
+        snapshot: makeSnapshot({ repository: otherRepository }),
+        interactions: null,
+        ctx: makeCtx({ repository: otherRepository }),
+        focusQuestionId: "Q1",
+      }));
+
+      await vi.waitFor(() => expect(scrollSpy).toHaveBeenCalledTimes(2));
+    } finally {
+      if (original) {
+        Element.prototype.scrollIntoView = original;
+      } else {
+        Reflect.deleteProperty(Element.prototype, "scrollIntoView");
+      }
+    }
+  });
 });
 
 describe("QuestionsView agent recommendation", () => {
@@ -504,5 +612,275 @@ describe("QuestionsView BB interactions", () => {
     const row = within(container.querySelector("#interaction-int-3") as HTMLElement);
     fireEvent.click(row.getByRole("button", { name: "Respond in the thread" }));
     expect(ctx.onOpenThread).toHaveBeenCalledWith("thr_3");
+  });
+});
+
+describe("QuestionsView phone layout", () => {
+  it("clamps an answered question summary to two lines with the full question text", () => {
+    const longQuestion =
+      "Should the rollout proceed in a single step across every repository, or should it be staged gradually so each repository can be verified independently first?";
+    renderView({
+      snapshot: makeSnapshot({
+        questions: [makeQuestion({ id: "Q9", question: longQuestion, answer: "Staged." })],
+      }),
+    });
+    const answeredGroup = screen.getByTestId("answered-questions");
+    fireEvent.click(answeredGroup.querySelector("summary")!);
+    const summary = within(answeredGroup).getByText(longQuestion);
+    expect(summary.className).toContain("line-clamp-2");
+  });
+
+  it("keeps the Answered and Recorded chips unsquashed next to a long question title", () => {
+    const longQuestion =
+      "Should the rollout proceed in a single step across every repository, or should it be staged gradually so each repository can be verified independently first?";
+    const { container } = renderView({
+      snapshot: makeSnapshot({
+        questions: [
+          makeQuestion({ id: "Q8", question: longQuestion, answer: "Staged." }),
+          makeQuestion({ id: "Q9", question: `${longQuestion} And in what order?` }),
+        ],
+      }),
+    });
+    const q9 = within(container.querySelector("#question-Q9") as HTMLElement);
+    fireEvent.change(q9.getByLabelText("Answer Q9"), { target: { value: "Noted." } });
+    fireEvent.click(q9.getByRole("button", { name: "Record answer" }));
+    fireEvent.click(
+      within(screen.getByRole("alertdialog")).getByRole("button", { name: "Record answer" }),
+    );
+
+    const answeredGroup = screen.getByTestId("answered-questions");
+    fireEvent.click(answeredGroup.querySelector("summary")!);
+    const q8Row = container.querySelector("#question-Q8") as HTMLElement;
+    const q9Row = container.querySelector("#question-Q9") as HTMLElement;
+    expect(within(q8Row).getByText("Answered").className).toContain("shrink-0");
+    expect(within(q9Row).getByText("Recorded").className).toContain("shrink-0");
+  });
+
+  it("reveals the full question text when an answered row is expanded", () => {
+    const longQuestion =
+      "Should the rollout proceed in a single step across every repository, or should it be staged gradually so each repository can be verified independently first?";
+    const { container } = renderView({
+      snapshot: makeSnapshot({
+        questions: [makeQuestion({ id: "Q9", question: longQuestion, answer: "Staged." })],
+      }),
+    });
+    const answeredGroup = screen.getByTestId("answered-questions");
+    fireEvent.click(answeredGroup.querySelector("summary")!);
+    const row = container.querySelector("#question-Q9") as HTMLElement;
+    fireEvent.click(row.querySelector("details summary")!);
+    expect(within(row).getAllByText(longQuestion)).toHaveLength(2);
+  });
+
+  it("wraps long gated task ids and keeps the open-gated handler", () => {
+    const longId = "MON-LONG-0123456789-ABCDEFGHIJ-KLMNOPQRSTUVWXYZ";
+    const { container, ctx } = renderView({
+      snapshot: makeSnapshot({
+        queue: [makeQueueEntry({ id: longId, blockedBy: ["Q1"], blockingQuestionIds: ["Q1"] })],
+      }),
+    });
+    const q1 = within(container.querySelector("#question-Q1") as HTMLElement);
+    const chip = q1.getByRole("button", { name: longId });
+    expect(chip.className).toContain("break-all");
+    expect(chip.className).toContain("max-w-full");
+    fireEvent.click(chip);
+    expect(ctx.onOpenSection).toHaveBeenCalledWith("work", `work-${longId}`);
+  });
+
+  it("gives the filter input its own phone line with the selects as wrapping siblings", () => {
+    renderView();
+    const input = screen.getByLabelText("Filter questions");
+    const row = input.parentElement as HTMLElement;
+    expect(row.className).toContain("flex-wrap");
+    // The input fills the row on phones; flex grow takes over at sm+.
+    expect(input.className).toContain("w-full");
+    expect(input.className).toContain("sm:flex-1");
+    // A padded w-full control needs border-box to stay inside the row.
+    expect(input.className).toContain("box-border");
+    expect(within(row).getByLabelText("Question kind")).toBeTruthy();
+    expect(within(row).getByLabelText("Question state")).toBeTruthy();
+  });
+
+  it("keeps the answer composer and its actions inside the card on phones", () => {
+    const { container } = renderView();
+    const q1 = within(container.querySelector("#question-Q1") as HTMLElement);
+    const textarea = q1.getByLabelText("Answer Q1");
+    expect(textarea.className).toContain("w-full");
+    expect(textarea.className).toContain("box-border");
+
+    const record = q1.getByRole("button", { name: "Record answer" });
+    const group = record.parentElement as HTMLElement;
+    expect(group.className).toContain("ml-auto");
+    expect(group.className).toContain("flex-wrap");
+    const actionRow = group.parentElement as HTMLElement;
+    expect(actionRow.className).toContain("flex-wrap");
+    expect(within(actionRow).getByRole("button", { name: "Ask an agent" })).toBeTruthy();
+  });
+});
+
+describe("QuestionsView section disclosure", () => {
+  it("restores a stored open choice for the Answered group", () => {
+    window.sessionStorage.setItem("bb-factory:section:demo:questions:answered", "1");
+    const { container } = renderView();
+    const group = screen.getByTestId("answered-questions") as HTMLDetailsElement;
+    expect(group.open).toBe(true);
+    expect(container.querySelector("#question-Q4")).not.toBeNull();
+  });
+
+  it("force-opens the Answered group for a focused question without rewriting storage", () => {
+    window.sessionStorage.setItem("bb-factory:section:demo:questions:answered", "0");
+    renderView({ focusQuestionId: "Q4" });
+    const group = screen.getByTestId("answered-questions") as HTMLDetailsElement;
+    expect(group.open).toBe(true);
+    expect(window.sessionStorage.getItem("bb-factory:section:demo:questions:answered")).toBe("0");
+  });
+
+  it("force-opens a stored-closed Open group for a focused open question and stays closable", () => {
+    window.sessionStorage.setItem("bb-factory:section:demo:questions:open", "0");
+    const { container } = renderView({ focusQuestionId: "Q1" });
+    const group = screen.getByRole("heading", { name: "Open" }).closest("details") as HTMLDetailsElement;
+    expect(group.open).toBe(true);
+    expect(container.querySelector("#question-Q1")).not.toBeNull();
+    expect(window.sessionStorage.getItem("bb-factory:section:demo:questions:open")).toBe("0");
+
+    fireEvent.click(group.querySelector("summary")!);
+    expect(group.open).toBe(false);
+    expect(container.querySelector("#question-Q1")).toBeNull();
+  });
+
+  it("reopens the Answered section for a new focused question after the user closed it", async () => {
+    const scrollSpy = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollSpy;
+    const twoAnswered = makeSnapshot({
+      questions: [
+        makeQuestion({ id: "Q4", question: "First answered", answer: "Ship first." }),
+        makeQuestion({ id: "Q5", question: "Second answered", answer: "Ship second." }),
+        makeQuestion({ id: "Q1" }),
+      ],
+    });
+    const ctx = makeCtx();
+    try {
+      const view = renderView({ snapshot: twoAnswered, ctx, focusQuestionId: "Q4" });
+      const group = screen.getByTestId("answered-questions") as HTMLDetailsElement;
+      expect(group.open).toBe(true);
+      await vi.waitFor(() => expect(scrollSpy).toHaveBeenCalledTimes(1));
+
+      fireEvent.click(group.querySelector("summary")!);
+      expect(group.open).toBe(false);
+      expect(view.container.querySelector("#question-Q4")).toBeNull();
+
+      view.rerender(h(QuestionsView, {
+        snapshot: twoAnswered,
+        interactions: null,
+        ctx,
+        focusQuestionId: "Q5",
+      }));
+      expect(group.open).toBe(true);
+      expect(view.container.querySelector("#question-Q5")).not.toBeNull();
+      await vi.waitFor(() => expect(scrollSpy).toHaveBeenCalledTimes(2));
+
+      // The same target stays closable: re-rendering an unchanged focus does
+      // not force the section back open.
+      fireEvent.click(group.querySelector("summary")!);
+      expect(group.open).toBe(false);
+      view.rerender(h(QuestionsView, {
+        snapshot: twoAnswered,
+        interactions: null,
+        ctx: makeCtx(),
+        focusQuestionId: "Q5",
+      }));
+      expect(group.open).toBe(false);
+    } finally {
+      if (original) {
+        Element.prototype.scrollIntoView = original;
+      } else {
+        Reflect.deleteProperty(Element.prototype, "scrollIntoView");
+      }
+    }
+  });
+
+  it("collapses BB questions on phone widths while Open stays open with its count", () => {
+    stubPhoneViewport(true);
+    const { container } = renderView({
+      interactions: makeInteractions([makeInteraction({ interactionId: "int-1" })]),
+    });
+    const bb = screen.getByRole("heading", { name: "BB questions" }).closest("details") as HTMLDetailsElement;
+    expect(bb.open).toBe(false);
+    expect(within(bb).getByText("1")).toBeTruthy();
+    const open = screen.getByRole("heading", { name: "Open" }).closest("details") as HTMLDetailsElement;
+    expect(open.open).toBe(true);
+    expect(container.querySelector("#question-Q1")).not.toBeNull();
+  });
+});
+
+describe("QuestionsView refresh re-arm", () => {
+  it("does not re-scroll a focused question when an unrelated protocol file changes", () => {
+    const scrollSpy = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollSpy;
+    try {
+      const view = renderView({ focusQuestionId: "Q1" });
+      expect(scrollSpy).toHaveBeenCalledTimes(1);
+
+      const refreshed = {
+        ...revision,
+        protocolDigest: "f".repeat(64),
+        fileDigests: { ...revision.fileDigests, "plans/factory/current.md": "e".repeat(64) },
+      };
+      view.rerender(h(QuestionsView, {
+        snapshot: makeSnapshot({ revision: refreshed }),
+        interactions: null,
+        ctx: makeCtx({ revision: refreshed }),
+        focusQuestionId: "Q1",
+      }));
+
+      expect(scrollSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      if (original) {
+        Element.prototype.scrollIntoView = original;
+      } else {
+        Reflect.deleteProperty(Element.prototype, "scrollIntoView");
+      }
+    }
+  });
+
+  it("reveals the focused question again when a questions.md change moves it to Answered", async () => {
+    const scrollSpy = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollSpy;
+    try {
+      const view = renderView({ focusQuestionId: "Q1" });
+      expect(scrollSpy).toHaveBeenCalledTimes(1);
+
+      const refreshed = {
+        ...revision,
+        fileDigests: { ...revision.fileDigests, "plans/factory/questions.md": "f".repeat(64) },
+      };
+      const answered = makeSnapshot({
+        revision: refreshed,
+        questions: questions.map((question) =>
+          question.id === "Q1" ? { ...question, answer: "Use the mock provider." } : question),
+      });
+      view.rerender(h(QuestionsView, {
+        snapshot: answered,
+        interactions: null,
+        ctx: makeCtx({ revision: refreshed }),
+        focusQuestionId: "Q1",
+      }));
+
+      const group = screen.getByTestId("answered-questions") as HTMLDetailsElement;
+      expect(group.open).toBe(true);
+      const row = view.container.querySelector("#question-Q1") as HTMLElement;
+      expect(row).not.toBeNull();
+      await vi.waitFor(() => expect(scrollSpy).toHaveBeenCalledTimes(2));
+      const rowDetails = row.querySelector("details") as HTMLDetailsElement | null;
+      expect(rowDetails?.open).toBe(true);
+    } finally {
+      if (original) {
+        Element.prototype.scrollIntoView = original;
+      } else {
+        Reflect.deleteProperty(Element.prototype, "scrollIntoView");
+      }
+    }
   });
 });
