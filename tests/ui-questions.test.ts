@@ -408,6 +408,32 @@ describe("QuestionsView repository questions", () => {
       }
     }
   });
+
+  it("re-arms a focused question when the repository changes", async () => {
+    const scrollSpy = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollSpy;
+    const otherRepository = { ...repository, repositoryKey: "other" };
+    try {
+      const view = renderView({ focusQuestionId: "Q1" });
+      expect(scrollSpy).toHaveBeenCalledTimes(1);
+
+      view.rerender(h(QuestionsView, {
+        snapshot: makeSnapshot({ repository: otherRepository }),
+        interactions: null,
+        ctx: makeCtx({ repository: otherRepository }),
+        focusQuestionId: "Q1",
+      }));
+
+      await vi.waitFor(() => expect(scrollSpy).toHaveBeenCalledTimes(2));
+    } finally {
+      if (original) {
+        Element.prototype.scrollIntoView = original;
+      } else {
+        Reflect.deleteProperty(Element.prototype, "scrollIntoView");
+      }
+    }
+  });
 });
 
 describe("QuestionsView agent recommendation", () => {

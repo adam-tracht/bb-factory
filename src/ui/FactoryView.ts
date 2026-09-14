@@ -465,8 +465,9 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
   const onOpenRun = useCallback((runId: string) => {
     navigate.toPluginPanel(panelPath, { subPath: runDetailPath(runId) });
   }, [navigate, panelPath]);
-  const onShowRepositories = useCallback(() => {
-    navigate.toPluginPanel(panelPath, { subPath: aggregateSectionPath("overview") });
+  const onShowRepositories = useCallback((section: FactorySection = "overview") => {
+    const aggregateSection = section === "settings" ? "overview" : section;
+    navigate.toPluginPanel(panelPath, { subPath: aggregateSectionPath(aggregateSection) });
   }, [navigate, panelPath]);
   // Aggregate tabs stay inside the "all/..." namespace so the scope survives
   // reloads and deep links.
@@ -982,6 +983,7 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
     tabs: aggregate ? AGGREGATE_TABS : undefined,
     repositories: repositoryProjection?.repositories ?? [],
     selectedRepositoryKey: selectedRepositoryKey(repositoryProjection ?? { repositories: [], selectedRepositoryKey: null }),
+    aggregateScope,
     repositoriesActive,
     wizardMode: route.section === "add-repository",
     repositorySelectionLoading: repositoriesPending || data.repositories.status === "loading",

@@ -17,6 +17,7 @@ function shellProps(overrides: Partial<FactoryShellProps> = {}): FactoryShellPro
     onNavigate: () => undefined,
     repositories: [],
     selectedRepositoryKey: "demo",
+    aggregateScope: false,
     repositoriesActive: false,
     repositorySelectionLoading: false,
     onSelectRepository: () => undefined,
@@ -113,7 +114,7 @@ describe("FactoryShell", () => {
     expect(group).not.toMatch(/aria-pressed="false"[^>]*class="[^"]*shadow-sm/);
   });
 
-  it("hides repo-scoped chrome on the repositories landing but keeps the switcher, shared controls, and aggregate tabs", () => {
+  it("hides repo-scoped chrome on the repositories landing but keeps the switcher and aggregate tabs", () => {
     const markup = renderToStaticMarkup(h(FactoryShell, shellProps({
       repositories: switcherRepositories("alpha", "beta"),
       selectedRepositoryKey: "alpha",
@@ -146,10 +147,78 @@ describe("FactoryShell", () => {
     expect(markup).not.toContain(">Pause<");
     expect(markup).not.toContain("Running");
     expect(markup).not.toContain("Run now");
+    expect(markup).not.toContain('data-testid="factory-status-row"');
+    expect(markup).not.toContain('data-testid="factory-controls-row"');
     expect(markup).toContain(">Factory<");
     expect(markup).toContain('aria-label="Configured repository"');
-    expect(markup).toContain("refreshed");
-    expect(markup).toContain('aria-label="Chip legend"');
+  });
+
+  it("renders status and controls rows only for repository scope", () => {
+    const aggregate = renderToStaticMarkup(h(FactoryShell, shellProps({
+      repositories: switcherRepositories("alpha", "beta"),
+      selectedRepositoryKey: "alpha",
+      repositoriesActive: true,
+      tabs: ["overview", "work", "questions", "runs"],
+      children: "body",
+    })));
+    expect(aggregate).not.toContain('data-testid="factory-status-row"');
+    expect(aggregate).not.toContain('data-testid="factory-controls-row"');
+    expect(aggregate).not.toContain('aria-label="Chip legend"');
+    expect(aggregate).not.toContain("refreshed");
+
+    const repository = renderToStaticMarkup(h(FactoryShell, shellProps({
+      repositories: switcherRepositories("alpha", "beta"),
+      selectedRepositoryKey: "alpha",
+      children: "body",
+    })));
+    expect(repository).toContain('data-testid="factory-status-row"');
+    expect(repository).toContain('data-testid="factory-controls-row"');
+    expect(repository).toContain('aria-label="Chip legend"');
+    expect(repository).toContain("refreshed");
+  });
+
+  it("keeps aggregate chrome hidden while the repository list is cold or failed", () => {
+    const cold = renderToStaticMarkup(h(FactoryShell, shellProps({
+      aggregateScope: true,
+      repositoriesActive: false,
+      repositorySelectionLoading: true,
+      repositories: [],
+      dispatch: null,
+      refreshedAt: null,
+      children: "loading",
+    })));
+    const failed = renderToStaticMarkup(h(FactoryShell, shellProps({
+      aggregateScope: true,
+      repositoriesActive: false,
+      repositorySelectionLoading: false,
+      repositories: [],
+      dispatch: null,
+      refreshedAt: null,
+      children: "failed",
+    })));
+    for (const markup of [cold, failed]) {
+      expect(markup).not.toContain('data-testid="factory-status-row"');
+      expect(markup).not.toContain('data-testid="factory-controls-row"');
+      expect(markup).not.toContain('aria-label="Chip legend"');
+      expect(markup).toContain('role="tablist"');
+    }
+  });
+
+  it("closes the legend when controls hide and does not restore it on return", () => {
+    const { rerender } = render(h(FactoryShell, shellProps({ children: "repository" })));
+    fireEvent.click(screen.getByRole("button", { name: "Chip legend" }));
+    expect(screen.getByRole("dialog", { name: "Chip legend" })).toBeTruthy();
+
+    rerender(h(FactoryShell, shellProps({
+      aggregateScope: true,
+      repositoriesActive: false,
+      children: "aggregate",
+    })));
+    expect(screen.queryByRole("dialog", { name: "Chip legend" })).toBeNull();
+
+    rerender(h(FactoryShell, shellProps({ children: "repository again" })));
+    expect(screen.queryByRole("dialog", { name: "Chip legend" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Chip legend" })).toBeTruthy();
   });
 
   it("keeps the selected repository pill active off the landing", () => {
@@ -225,7 +294,62 @@ describe("FactoryShell", () => {
   it("hides the commit sha chip below sm while the branch name stays visible", () => {
     const markup = renderToStaticMarkup(h(FactoryShell, shellProps({ children: "body" })));
     expect(markup).toMatch(/<span class="hidden sm:inline-flex"><button[^>]*><span[^>]*>@abcdef1/);
-    expect(markup).toMatch(/font-mono text-xs text-muted-foreground">factory<span class="hidden sm:inline-flex">/);
+    expect(markup).toMatch(/<span class="hidden sm:inline">factory<\/span><span class="hidden sm:inline-flex">/);
+  });
+
+  it("uses an explicit All repositories select value and keeps the current section", () => {
+    const onShowRepositories = vi.fn();
+    const onSelectRepository = vi.fn();
+    render(h(FactoryShell, shellProps({
+      section: "work",
+      repositories: switcherRepositories("alpha", "beta"),
+      selectedRepositoryKey: null,
+      repositoriesActive: true,
+      onShowRepositories,
+      onSelectRepository,
+      children: "body",
+    })));
+    const select = screen.getAllByRole("combobox", { name: "Configured repository" })[0] as HTMLSelectElement;
+    expect(select.value).toBe("__all__");
+    expect(within(select).getByRole("option", { name: "All repositories" }).getAttribute("value")).toBe("__all__");
+    fireEvent.change(select, { target: { value: "beta" } });
+    expect(onSelectRepository).toHaveBeenCalledWith("beta");
+    fireEvent.change(select, { target: { value: "__all__" } });
+    expect(onShowRepositories).toHaveBeenCalledWith("work");
+  });
+
+  it("leaves the wizard select unselected and labels unexpected branches on phones", () => {
+    const slot = render(h(FactoryShell, shellProps({
+      wizardMode: true,
+      repositories: switcherRepositories("alpha"),
+      repositoriesActive: false,
+      branch: "release",
+      children: "body",
+    })));
+    expect((screen.getByRole("combobox", { name: "Configured repository" }) as HTMLSelectElement).value).toBe("");
+    slot.unmount();
+    const markup = renderToStaticMarkup(h(FactoryShell, shellProps({
+      repositories: switcherRepositories("alpha"),
+      repositoriesActive: false,
+      branch: "release",
+      children: "body",
+    })));
+    expect(markup).toContain("Branch: release");
+    expect(markup).toContain("hidden shrink-0 text-sm font-semibold sm:inline");
+  });
+
+  it("keeps phone shell rows, hit areas, refresh width, and tab clipping deterministic", () => {
+    const markup = renderToStaticMarkup(h(FactoryShell, shellProps({
+      repositories: switcherRepositories("alpha", "beta"),
+      selectedRepositoryKey: "alpha",
+      children: "body",
+    })));
+    expect(markup).toContain("flex flex-col gap-1");
+    expect(markup).toContain("min-h-8 min-w-8");
+    expect(markup).toContain("min-w-[4.5rem]");
+    expect(markup).toContain("[scrollbar-width:none]");
+    expect(markup).toContain("bg-gradient-to-l");
+    expect(markup).toContain("basis-1/5");
   });
 
   it("scrolls the active tab into view on selection so a clipped tab is revealed", () => {
@@ -247,22 +371,23 @@ describe("FactoryShell", () => {
     }
   });
 
-  it("gives the refresh, legend, and add repository buttons at least 24px hit areas", () => {
+  it("gives each mobile refresh, legend, and add control its own minimum hit area", () => {
     const markup = renderToStaticMarkup(h(FactoryShell, shellProps({
       repositories: switcherRepositories("alpha"),
       selectedRepositoryKey: "alpha",
       children: "body",
     })));
     const refresh = /<button[^>]*aria-label="refreshed[^"]*"[^>]*>/.exec(markup)?.[0] ?? "";
-    expect(refresh).toContain("min-h-6");
+    expect(refresh).toContain("min-h-8");
+    expect(refresh).toContain("min-w-[4.5rem]");
     const legend = /<button[^>]*aria-label="Chip legend"[^>]*>/.exec(markup)?.[0] ?? "";
-    expect(legend).toContain("min-h-6");
-    expect(legend).toContain("min-w-6");
+    expect(legend).toContain("min-h-8");
+    expect(legend).toContain("min-w-8");
     const addButtons = markup.match(/<button[^>]*aria-label="Add repository"[^>]*>/g) ?? [];
-    expect(addButtons.length).toBeGreaterThan(0);
+    expect(addButtons).toHaveLength(2);
     for (const tag of addButtons) {
-      expect(tag).toContain("min-h-6");
-      expect(tag).toContain("min-w-6");
+      expect(tag).toContain("min-h-8");
+      expect(tag).toContain("min-w-8");
     }
   });
 

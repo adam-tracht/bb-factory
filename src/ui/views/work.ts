@@ -40,10 +40,10 @@ const NOTE_CHAR_CLAMP = 320;
 const ROUTINE_SCOPE_APPROVAL = "routine implementation per plan; no merges, deploys, migrations, dependency changes, secrets, data deletion, or customer-facing changes";
 const APPROVAL_GATED_ACTIONS = "merges, deploys, migrations, adding or upgrading dependencies, touching secrets, deleting data, customer-facing changes";
 
-type WorkGroup = "needs-you" | "ready" | "blocked" | "running" | "draft" | "done";
+export type WorkGroup = "needs-you" | "ready" | "blocked" | "running" | "draft" | "done";
 
 /** Muted line shown inside an expanded group that has no entries. */
-const EMPTY_GROUP_LINE: Record<WorkGroup, string> = {
+export const EMPTY_GROUP_LINE: Record<WorkGroup, string> = {
   "needs-you": "Nothing needs you right now",
   ready: "Nothing ready right now",
   blocked: "Nothing blocked right now",
@@ -91,13 +91,35 @@ function needsYou(entry: QueueEntry): boolean {
  * Partition: every entry lands in exactly one group. Terminal and active
  * statuses win first so done or running items never surface needs-you noise.
  */
-function groupOf(entry: QueueEntry): WorkGroup {
+export function groupOf(entry: QueueEntry): WorkGroup {
   if (entry.status.kind === "done") return "done";
   if (entry.status.kind === "in-progress") return "running";
   if (entry.status.kind === "draft") return "draft";
   if (needsYou(entry)) return "needs-you";
   if (entry.eligible) return "ready";
   return "blocked";
+}
+
+export const WORK_GROUPS: ReadonlyArray<{ key: WorkGroup; title: string; defaultOpen: boolean }> = [
+  { key: "needs-you", title: "Needs you", defaultOpen: true },
+  { key: "ready", title: "Ready", defaultOpen: true },
+  { key: "blocked", title: "Blocked", defaultOpen: true },
+  { key: "running", title: "Running", defaultOpen: true },
+  { key: "draft", title: "Drafts", defaultOpen: true },
+  { key: "done", title: "Done", defaultOpen: false },
+];
+
+export function bucketWorkEntries(entries: readonly QueueEntry[]): Record<WorkGroup, QueueEntry[]> {
+  const buckets: Record<WorkGroup, QueueEntry[]> = {
+    "needs-you": [],
+    ready: [],
+    blocked: [],
+    running: [],
+    draft: [],
+    done: [],
+  };
+  for (const entry of entries) buckets[groupOf(entry)].push(entry);
+  return buckets;
 }
 
 // Supported provenance ids are prefix-shaped: run_/thr_/wfr_ plus letters or
@@ -547,6 +569,68 @@ function WorkRow(props: {
     }) : null);
 }
 
+export function WorkGroupRows(props: {
+  group: WorkGroup;
+  entries: readonly QueueEntry[];
+  ctx: ViewContext;
+  focusItemId?: string | null;
+  providers?: readonly ProviderStatus[];
+  preferredProviderId?: string | null;
+  showEmpty?: boolean;
+}): ReactNode {
+  if (props.entries.length === 0) {
+    return props.showEmpty === false
+      ? null
+      : h("p", { className: "px-1 py-2 text-sm text-muted-foreground" }, EMPTY_GROUP_LINE[props.group]);
+  }
+  return props.entries.map((entry) =>
+    h(WorkRow, {
+      key: entry.id,
+      entry,
+      group: props.group,
+      ctx: props.ctx,
+      defaultExpanded: entry.id === props.focusItemId,
+      providers: props.providers ?? [],
+      preferredProviderId: props.preferredProviderId ?? null,
+    }));
+}
+
+export function WorkGroupSection(props: {
+  group: WorkGroup;
+  title?: string;
+  entries: readonly QueueEntry[];
+  ctx: ViewContext;
+  focusItemId?: string | null;
+  providers?: readonly ProviderStatus[];
+  preferredProviderId?: string | null;
+  defaultOpen?: boolean;
+  storageKey?: string;
+  showEmpty?: boolean;
+}): ReactNode {
+  const phone = usePhoneViewport();
+  const focusItemId = props.focusItemId ?? null;
+  const focusedGroup = props.entries.some((entry) => entry.id === focusItemId);
+  const focusElementId = focusItemId ? `${props.ctx.idPrefix ?? ""}work-${focusItemId}` : null;
+  const workSourceDigest = [QUEUE_PATH, QUESTIONS_PATH, REPO_PATH]
+    .map((path) => props.ctx.revision?.fileDigests[path] ?? "")
+    .join("|");
+  useRevealOnFocus(focusElementId ? `${focusElementId}@${workSourceDigest}` : null, () => {
+    const element = focusElementId ? document.getElementById(focusElementId) : null;
+    if (!element) return false;
+    element.scrollIntoView?.({ block: "start" });
+    return true;
+  });
+  return h(Section, {
+    title: props.title ?? WORK_GROUPS.find((section) => section.key === props.group)?.title ?? props.group,
+    count: props.entries.length,
+    collapsible: true,
+    defaultOpen: props.defaultOpen ?? (props.group === "needs-you" || (props.group !== "done" && !phone)),
+    forceOpen: focusedGroup ? focusElementId : false,
+    storageKey: props.storageKey ?? sectionStorageKey(props.ctx.repository.repositoryKey, "work", props.group),
+    children: h(WorkGroupRows, props),
+  });
+}
+
 export function WorkView(props: {
   snapshot: ProtocolSnapshot;
   ctx: ViewContext;
@@ -557,50 +641,9 @@ export function WorkView(props: {
   const { snapshot, ctx, focusItemId } = props;
   const providers = props.providers ?? [];
   const preferredProviderId = props.preferredProviderId ?? null;
-  const phone = usePhoneViewport();
-
-  const groups = useMemo(() => {
-    const buckets: Record<WorkGroup, QueueEntry[]> = {
-      "needs-you": [],
-      ready: [],
-      blocked: [],
-      running: [],
-      draft: [],
-      done: [],
-    };
-    for (const entry of snapshot.queue) buckets[groupOf(entry)].push(entry);
-    return buckets;
-  }, [snapshot.queue]);
-
-  const focusedEntry = focusItemId
-    ? snapshot.queue.find((entry) => entry.id === focusItemId) ?? null
-    : null;
-  const focusedGroup = focusedEntry ? groupOf(focusedEntry) : null;
-
-  // forceOpen opens the focused row's section in this commit, but the row
-  // itself mounts in the follow-up commit; the reveal retries until it exists.
-  // The key carries the digest of the files the queue projection is read from,
-  // so a refresh that regroups or remounts the focused row reveals it again
-  // while an unrelated file change does not scroll the view.
-  const focusElementId = focusItemId ? `${ctx.idPrefix ?? ""}work-${focusItemId}` : null;
-  const workSourceDigest = [QUEUE_PATH, QUESTIONS_PATH, REPO_PATH]
-    .map((path) => ctx.revision?.fileDigests[path] ?? "")
-    .join("|");
-  useRevealOnFocus(focusElementId ? `${focusElementId}@${workSourceDigest}` : null, () => {
-    const element = focusElementId ? document.getElementById(focusElementId) : null;
-    if (!element) return false;
-    element.scrollIntoView?.({ block: "start" });
-    return true;
-  });
-
-  const sections: Array<{ key: WorkGroup; title: string; defaultOpen: boolean }> = [
-    { key: "needs-you", title: "Needs you", defaultOpen: true },
-    { key: "ready", title: "Ready", defaultOpen: !phone },
-    { key: "blocked", title: "Blocked", defaultOpen: !phone },
-    { key: "running", title: "Running", defaultOpen: !phone },
-    { key: "draft", title: "Drafts", defaultOpen: !phone },
-    { key: "done", title: "Done", defaultOpen: false },
-  ];
+  const groups = useMemo(() => bucketWorkEntries(snapshot.queue), [snapshot.queue]);
+  const focusedSection = WORK_GROUPS.find((section) => groups[section.key].some((entry) => entry.id === focusItemId))?.key
+    ?? WORK_GROUPS[0]!.key;
 
   return h("div", { className: "space-y-4" },
     h(FeedbackNotice, { feedback: ctx.feedback }),
@@ -614,28 +657,16 @@ export function WorkView(props: {
             fileLink: ctx.fileLink,
           }),
         })
-      : sections.map((section) =>
-          h(Section, {
+      : WORK_GROUPS.map((section) =>
+          h(WorkGroupSection, {
             key: section.key,
+            group: section.key,
             title: section.title,
-            count: groups[section.key].length,
-            collapsible: true,
-            defaultOpen: section.defaultOpen,
-            // The focus id doubles as the force-open token: a new target in
-            // the same section reopens it, a repeated one stays user-closable.
-            forceOpen: focusedGroup === section.key ? focusElementId : false,
-            storageKey: sectionStorageKey(ctx.repository.repositoryKey, "work", section.key),
-            children: groups[section.key].length === 0
-              ? h("p", { className: "px-1 py-2 text-sm text-muted-foreground" }, EMPTY_GROUP_LINE[section.key])
-              : groups[section.key].map((entry) =>
-                  h(WorkRow, {
-                    key: entry.id,
-                    entry,
-                    group: section.key,
-                    ctx,
-                    defaultExpanded: entry.id === focusItemId,
-                    providers,
-                    preferredProviderId,
-                  })),
-          })));
+            entries: groups[section.key],
+            ctx,
+            focusItemId: section.key === focusedSection ? focusItemId : null,
+            providers,
+            preferredProviderId,
+          })),
+  );
 }

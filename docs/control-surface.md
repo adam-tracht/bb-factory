@@ -26,15 +26,23 @@ any repository policy. Action-layer guards live in
 ## Aggregate composition
 
 The "All" tabs are a pure view-layer union (`src/ui/views/aggregate.ts`):
-`AggregateSectionView` renders one section per registered repository, headed
-by the repository key and connected host id, each rendered by the same
-per-repository view (`WorkView`, `QuestionsView`, `RunsView`) against a
-context scoped to that repository. FactoryView fetches each repository's
-existing read projections into a `data.all` bundle map, sharing in-flight
-fetches with the landing cards' `loadSummary`, so no new RPC or storage seam
-exists and the wire contract is unchanged. The aggregate overview reuses the
-repository landing cards, which show a labeled count ("2 need attention")
-instead of a bare number.
+`AggregateSectionView` renders status categories first, then only the
+repository subgroups that contribute rows to that category. All Work uses
+Needs you, Ready, Blocked, Running, Drafts, and Done; All Questions uses BB
+questions, Open, and Answered; All Runs uses Active and History. Each subgroup
+uses the same per-repository rows (`WorkView`, `QuestionsView`, `RunsView`)
+against a context scoped to that repository. FactoryView fetches each
+repository's existing read projections into a `data.all` bundle map, sharing
+in-flight fetches with the landing cards' `loadSummary`, so no new RPC or
+storage seam exists and the wire contract is unchanged. The aggregate
+overview remains repository-first and reuses the repository landing cards,
+which show a labeled count ("2 need attention") instead of a bare number.
+
+Aggregate sections settle independently. A ready repository renders its rows
+while another repository remains in a loading or error subgroup, and the
+outer count is the sum of ready rows only. A repository subgroup is omitted
+when it has no rows; when every source is settled and empty, the tab shows one
+explicit all-repositories empty state instead of misleading zero-count rows.
 
 ## Repository-scoped actions
 
@@ -92,11 +100,16 @@ highlighted.
 
 ## Responsive rows
 
-Under `sm` (639px): the header drops the `@sha` chip and wraps the status
-line under the first row; the tab strip scrolls the active tab into view;
-small controls (refreshed indicator, add-repository "+", legend "?", file
-links) keep a 24px minimum hit area and the run-detail back control a 44px
-one. Work rows wrap the title to a clamped second line, run history rows lay
+Under `sm` (639px): the shell uses deterministic repository, status, controls,
+and tabs rows. The duplicate Factory title is hidden, the expected `factory`
+branch is hidden, and an unexpected branch is labeled `Branch: <name>`.
+The `@sha` chip is hidden and the tab strip scrolls the active tab into view;
+mobile tabs use equal widths with a clipped-edge affordance and a hidden
+scrollbar, then fall back to horizontal scrolling when their minimum width is
+reached. Small controls (refreshed indicator, add-repository "+", legend "?",
+file links) keep a 32px minimum hit area and the run-detail back control a 44px
+one. The refresh cue stays in the controls row. Work rows wrap the title to a
+clamped second line, run history rows lay
 out as two lines (time, status, provider, duration, then a wrapping group of
 task-id chips) with the chevron centered, and question titles clamp to two
 lines with the Answered or Recorded chip still visible. Work row chips

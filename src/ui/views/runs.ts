@@ -37,7 +37,7 @@ const h = createElement;
  * Local ticking clock for live elapsed timers. The shell keeps its own copy;
  * primitives does not export one.
  */
-function useNow(intervalMs = 15_000): number {
+export function useRunsNow(intervalMs = 15_000): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), intervalMs);
@@ -121,18 +121,54 @@ function HistoryRunRow({ run, now, ctx }: { run: OperationalRunSummary; now: num
     h("span", { className: "shrink-0 self-center text-muted-foreground", "aria-hidden": true }, "›"));
 }
 
+export type RunGroup = "active" | "history";
+
+export const RUN_GROUPS: ReadonlyArray<{ key: RunGroup; title: string; defaultOpen: boolean }> = [
+  { key: "active", title: "Active", defaultOpen: true },
+  { key: "history", title: "History", defaultOpen: true },
+];
+
+export function bucketRuns(runs: readonly OperationalRunSummary[]): Record<RunGroup, OperationalRunSummary[]> {
+  const buckets: Record<RunGroup, OperationalRunSummary[]> = { active: [], history: [] };
+  for (const run of runs) (isActiveRunStatus(run.status) ? buckets.active : buckets.history).push(run);
+  return buckets;
+}
+
+export function RunGroupRows(props: {
+  group: RunGroup;
+  runs: readonly OperationalRunSummary[];
+  now: number;
+  ctx: ViewContext;
+}): ReactNode {
+  return props.runs.map((run) => props.group === "active"
+    ? h(ActiveRunRow, { key: run.runId, run, now: props.now, ctx: props.ctx })
+    : h(HistoryRunRow, { key: run.runId, run, now: props.now, ctx: props.ctx }));
+}
+
+export function RunGroupSection(props: {
+  group: RunGroup;
+  title?: string;
+  runs: readonly OperationalRunSummary[];
+  now: number;
+  ctx: ViewContext;
+  defaultOpen?: boolean;
+  storageKey?: string;
+}): ReactNode {
+  const phone = usePhoneViewport();
+  return h(Section, {
+    title: props.title ?? RUN_GROUPS.find((section) => section.key === props.group)?.title ?? props.group,
+    count: props.runs.length,
+    collapsible: true,
+    defaultOpen: props.defaultOpen ?? (props.group === "active" || !phone),
+    storageKey: props.storageKey ?? sectionStorageKey(props.ctx.repository.repositoryKey, "runs", props.group),
+    children: h(RunGroupRows, props),
+  });
+}
+
 export function RunsView(props: { runs: OperationalRunListProjection; ctx: ViewContext }): ReactNode {
   const { runs, ctx } = props;
-  const now = useNow();
-  const phone = usePhoneViewport();
-  const { active, history } = useMemo(() => {
-    const activeRuns: OperationalRunSummary[] = [];
-    const historyRuns: OperationalRunSummary[] = [];
-    for (const run of runs.runs) {
-      (isActiveRunStatus(run.status) ? activeRuns : historyRuns).push(run);
-    }
-    return { active: activeRuns, history: historyRuns };
-  }, [runs]);
+  const now = useRunsNow();
+  const { active, history } = useMemo(() => bucketRuns(runs.runs), [runs.runs]);
 
   if (runs.runs.length === 0) {
     return h("div", { className: "space-y-4" },
@@ -154,24 +190,10 @@ export function RunsView(props: { runs: OperationalRunListProjection; ctx: ViewC
   return h("div", { className: "space-y-4" },
     h(FeedbackNotice, { feedback: ctx.feedback }),
     active.length > 0
-      ? h(Section, {
-          title: "Active",
-          count: active.length,
-          collapsible: true,
-          defaultOpen: true,
-          storageKey: sectionStorageKey(ctx.repository.repositoryKey, "runs", "active"),
-          children: active.map((run) => h(ActiveRunRow, { key: run.runId, run, now, ctx })),
-        })
+      ? h(RunGroupSection, { group: "active", runs: active, now, ctx })
       : null,
     history.length > 0
-      ? h(Section, {
-          title: "History",
-          count: history.length,
-          collapsible: true,
-          defaultOpen: !phone,
-          storageKey: sectionStorageKey(ctx.repository.repositoryKey, "runs", "history"),
-          children: history.map((run) => h(HistoryRunRow, { key: run.runId, run, now, ctx })),
-        })
+      ? h(RunGroupSection, { group: "history", runs: history, now, ctx })
       : null,
     runs.nextCursor
       ? h("p", { className: "px-1 text-xs text-muted-foreground" }, "More runs exist beyond this page.")
@@ -231,9 +253,10 @@ function AttemptRow({ attempt, ctx }: { attempt: DispatchAttempt; ctx: ViewConte
 export function RunDetailView(props: { detail: OperationalRunDetail; ctx: ViewContext }): ReactNode {
   const { detail, ctx } = props;
   const run = detail.summary;
-  const now = useNow();
+  const now = useRunsNow();
   const [confirm, setConfirm] = useState<"retry" | "stop" | null>(null);
   const threadId = run.workerThreadId;
+  const phone = usePhoneViewport();
 
   const latestAttempt = detail.attempts.length > 0 ? detail.attempts[detail.attempts.length - 1] : null;
   const active = isActiveRunStatus(run.status);
@@ -242,7 +265,6 @@ export function RunDetailView(props: { detail: OperationalRunDetail; ctx: ViewCo
   const pending = ctx.pendingTarget === `run:${run.runId}`;
   const duration = formatDuration(run.startedAt, run.finishedAt, now);
   const when = timeAgo(run.startedAt ?? run.requestedAt, now);
-  const phone = usePhoneViewport();
   const sectionKey = (name: string) =>
     sectionStorageKey(ctx.repository.repositoryKey, "runs", name);
 

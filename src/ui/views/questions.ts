@@ -39,11 +39,11 @@ const inputClass =
   "box-border rounded-md border border-border bg-background px-2 py-1 text-sm text-foreground placeholder:text-muted-foreground";
 const labelClass = "text-xs font-medium uppercase tracking-wide text-muted-foreground";
 
-type KindFilter = "all" | "blocking" | "assumption";
-type StateFilter = "all" | "open" | "answered";
+export type KindFilter = "all" | "blocking" | "assumption";
+export type StateFilter = "all" | "open" | "answered";
 
 /** Queue items a question gates, resolved via blockedBy and blocked-by status. */
-function questionGates(snapshot: ProtocolSnapshot, questionId: string): string[] {
+export function questionGates(snapshot: ProtocolSnapshot, questionId: string): string[] {
   return snapshot.queue
     .filter(
       (entry) =>
@@ -86,7 +86,7 @@ function ClampedMarkdown({ content, className }: { content: string; className?: 
   );
 }
 
-function RepositoryQuestionCard(props: {
+export function RepositoryQuestionCard(props: {
   question: Question;
   gates: string[];
   pending: boolean;
@@ -244,7 +244,7 @@ function RepositoryQuestionCard(props: {
   );
 }
 
-function AnsweredQuestionRow(props: { question: Question; recorded: boolean; idPrefix?: string }) {
+export function AnsweredQuestionRow(props: { question: Question; recorded: boolean; idPrefix?: string }) {
   const { question, recorded } = props;
   return h(
     "div",
@@ -461,7 +461,7 @@ const INTERACTION_KIND_TONE: Record<PendingInteraction["kind"], Tone> = {
   plugin: "neutral",
 };
 
-function PendingInteractionRow(props: { interaction: PendingInteraction; ctx: ViewContext }) {
+export function PendingInteractionRow(props: { interaction: PendingInteraction; ctx: ViewContext }) {
   const { interaction, ctx } = props;
   const pending = ctx.pendingTarget === `interaction:${interaction.interactionId}`;
   const resolve = (resolution: BbInteractionResolution) =>
@@ -509,7 +509,7 @@ function PendingInteractionRow(props: { interaction: PendingInteraction; ctx: Vi
  * scroll. False while the card has not mounted yet; a section just opened by
  * forceOpen mounts its children in the follow-up commit.
  */
-function revealQuestion(id: string, idPrefix?: string): boolean {
+export function revealQuestion(id: string, idPrefix?: string): boolean {
   if (typeof document === "undefined") return false;
   const element = document.getElementById(`${idPrefix ?? ""}question-${id}`);
   if (!element) return false;
@@ -524,6 +524,72 @@ function revealQuestion(id: string, idPrefix?: string): boolean {
     element.scrollIntoView({ block: "nearest" });
   }
   return true;
+}
+
+export function filterQuestions(
+  questions: readonly Question[],
+  query: string,
+  kindFilter: KindFilter,
+  stateFilter: StateFilter,
+  locallyAnswered: ReadonlySet<string>,
+): Question[] {
+  const needle = query.trim().toLowerCase();
+  return questions.filter((question) => {
+    if (kindFilter !== "all" && question.classification !== kindFilter) return false;
+    const answered = question.answer !== null || locallyAnswered.has(question.id);
+    if (stateFilter === "open" && answered) return false;
+    if (stateFilter === "answered" && !answered) return false;
+    if (needle && !`${question.id} ${question.question} ${question.context}`.toLowerCase().includes(needle)) {
+      return false;
+    }
+    return true;
+  });
+}
+
+export function QuestionFilterControls(props: {
+  query: string;
+  kindFilter: KindFilter;
+  stateFilter: StateFilter;
+  onQueryChange: (value: string) => void;
+  onKindChange: (value: KindFilter) => void;
+  onStateChange: (value: StateFilter) => void;
+}): ReactNode {
+  return h(
+    "div",
+    { className: "flex flex-wrap items-center gap-2" },
+    h("input", {
+      type: "search",
+      className: `${inputClass} w-full min-w-0 sm:w-auto sm:min-w-48 sm:flex-1`,
+      placeholder: "Filter by id, question, or context",
+      "aria-label": "Filter questions",
+      value: props.query,
+      onChange: (event: { target: { value: string } }) => props.onQueryChange(event.target.value),
+    }),
+    h(
+      "select",
+      {
+        className: inputClass,
+        "aria-label": "Question kind",
+        value: props.kindFilter,
+        onChange: (event: { target: { value: string } }) => props.onKindChange(event.target.value as KindFilter),
+      },
+      h("option", { value: "all" }, "All"),
+      h("option", { value: "blocking" }, "Blocking"),
+      h("option", { value: "assumption" }, "Assumption"),
+    ),
+    h(
+      "select",
+      {
+        className: inputClass,
+        "aria-label": "Question state",
+        value: props.stateFilter,
+        onChange: (event: { target: { value: string } }) => props.onStateChange(event.target.value as StateFilter),
+      },
+      h("option", { value: "all" }, "All"),
+      h("option", { value: "open" }, "Open"),
+      h("option", { value: "answered" }, "Answered"),
+    ),
+  );
 }
 
 export function QuestionsView(props: {
@@ -554,19 +620,10 @@ export function QuestionsView(props: {
   const isAnswered = (question: Question) =>
     question.answer !== null || locallyAnswered.has(question.id);
 
-  const filtered = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    return snapshot.questions.filter((question) => {
-      if (kindFilter !== "all" && question.classification !== kindFilter) return false;
-      const answered = question.answer !== null || locallyAnswered.has(question.id);
-      if (stateFilter === "open" && answered) return false;
-      if (stateFilter === "answered" && !answered) return false;
-      if (needle && !`${question.id} ${question.question} ${question.context}`.toLowerCase().includes(needle)) {
-        return false;
-      }
-      return true;
-    });
-  }, [snapshot.questions, kindFilter, stateFilter, query, locallyAnswered]);
+  const filtered = useMemo(
+    () => filterQuestions(snapshot.questions, query, kindFilter, stateFilter, locallyAnswered),
+    [snapshot.questions, kindFilter, stateFilter, query, locallyAnswered],
+  );
 
   const openQuestions = filtered
     .filter((question) => !isAnswered(question))
@@ -580,7 +637,7 @@ export function QuestionsView(props: {
   // the focused card (open -> answered group move) scrolls back to it.
   const focusElementId = focusQuestionId ? `${ctx.idPrefix ?? ""}question-${focusQuestionId}` : null;
   useRevealOnFocus(
-    focusElementId ? `${focusElementId}@${questionsDigest ?? ""}` : null,
+    focusElementId ? `${ctx.repository.repositoryKey}:${focusElementId}@${questionsDigest ?? ""}` : null,
     () => focusQuestionId !== null && revealQuestion(focusQuestionId, ctx.idPrefix),
   );
 
@@ -619,42 +676,14 @@ export function QuestionsView(props: {
     "div",
     { className: "space-y-4" },
     h(FeedbackNotice, { feedback: ctx.feedback }),
-    h(
-      "div",
-      { className: "flex flex-wrap items-center gap-2" },
-      h("input", {
-        type: "search",
-        className: `${inputClass} w-full min-w-0 sm:w-auto sm:min-w-48 sm:flex-1`,
-        placeholder: "Filter by id, question, or context",
-        "aria-label": "Filter questions",
-        value: query,
-        onChange: (event: { target: { value: string } }) => setQuery(event.target.value),
-      }),
-      h(
-        "select",
-        {
-          className: inputClass,
-          "aria-label": "Question kind",
-          value: kindFilter,
-          onChange: (event: { target: { value: string } }) => setKindFilter(event.target.value as KindFilter),
-        },
-        h("option", { value: "all" }, "All"),
-        h("option", { value: "blocking" }, "Blocking"),
-        h("option", { value: "assumption" }, "Assumption"),
-      ),
-      h(
-        "select",
-        {
-          className: inputClass,
-          "aria-label": "Question state",
-          value: stateFilter,
-          onChange: (event: { target: { value: string } }) => setStateFilter(event.target.value as StateFilter),
-        },
-        h("option", { value: "all" }, "All"),
-        h("option", { value: "open" }, "Open"),
-        h("option", { value: "answered" }, "Answered"),
-      ),
-    ),
+    h(QuestionFilterControls, {
+      query,
+      kindFilter,
+      stateFilter,
+      onQueryChange: setQuery,
+      onKindChange: setKindFilter,
+      onStateChange: setStateFilter,
+    }),
     pendingInteractions.length > 0
       ? h(Section, {
           title: "BB questions",

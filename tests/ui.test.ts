@@ -453,14 +453,11 @@ describe("Factory view shell", () => {
       expect(within(header).queryByText(/@abcdef1/)).toBeNull();
       expect(within(header).queryByRole("button", { name: "Resume" })).toBeNull();
       expect(within(header).queryByRole("button", { name: "Run now" })).toBeNull();
-      // The title, switcher, refreshed indicator, and legend stay.
+      // The title and switcher stay; aggregate scope has no status or controls rows.
       expect(within(header).getByText("Factory")).toBeTruthy();
       expect(within(header).getByRole("group", { name: "Configured repository" })).toBeTruthy();
-      // refreshedAt lands when the aggregate bundles finish, after the cards.
-      // Assert the control's accessible name: its visible text flips to
-      // "Updated" for 1.5s on every refresh, which raced this assertion.
-      await within(header).findByRole("button", { name: /refreshed/ });
-      expect(within(header).getByRole("button", { name: "Chip legend" })).toBeTruthy();
+      expect(within(header).queryByRole("button", { name: /refreshed/ })).toBeNull();
+      expect(within(header).queryByRole("button", { name: "Chip legend" })).toBeNull();
     } finally {
       landing.lifecycle.unmount();
     }
@@ -805,7 +802,7 @@ describe("Factory aggregate scope", () => {
     );
   };
   const groupFor = (slot: ReturnType<typeof renderSlot>, repositoryKey: string) =>
-    Array.from(slot.container.querySelectorAll("section")).find(
+    Array.from(slot.container.querySelectorAll("section, details")).find(
       (section) => section.querySelector("h2")?.textContent === repositoryKey,
     ) as HTMLElement;
 
@@ -826,6 +823,233 @@ describe("Factory aggregate scope", () => {
       expect((await slot.findByRole("tab", { name: /^Work/ })).getAttribute("aria-selected")).toBe("true");
       expect(slot.container.querySelectorAll('[role="tab"]')).toHaveLength(4);
       expect(within(slot.container as HTMLElement).queryByRole("tab", { name: "Settings" })).toBeNull();
+    } finally {
+      slot.lifecycle.unmount();
+      controlledSettingsState = { values: { repositoryKey: "demo" }, isLoading: false };
+    }
+  });
+
+  it("orders aggregate status categories before repository subgroups", async () => {
+    const { FactoryView } = await import("../src/ui/FactoryView.js");
+    const categorizedSnapshot = (key: string) => {
+      const base = snapshotForSwitch(key);
+      if (key === "monorepo") return {
+        ...base,
+        queue: [{ ...base.queue[0]!, id: "ready-mono" }],
+        questions: [{ ...base.questions[0]!, id: "Q-mono" }],
+      };
+      return {
+        ...base,
+        queue: [{
+          ...base.queue[0]!,
+          id: "done-data",
+          status: { kind: "done" as const, detail: "shipped" },
+          eligible: false,
+          eligibilityReasons: ["not-ready" as const],
+        }],
+        questions: [{ ...base.questions[0]!, id: "Q-data", answer: "answered" }],
+      };
+    };
+    const pendingInteraction = {
+      source: "bb-interaction" as const,
+      interactionId: "interaction-1",
+      threadId: "thr_1",
+      turnId: "turn-1",
+      status: "pending" as const,
+      title: "Need a decision",
+      prompt: "Choose one",
+      createdAt: "2026-09-10T12:00:00Z",
+      expiresAt: null,
+      kind: "approval" as const,
+      metadata: {
+        kind: "approval" as const,
+        availableDecisions: ["allow_once", "allow_for_session", "deny"] as Array<"allow_once" | "allow_for_session" | "deny">,
+      },
+    };
+    const rpc = {
+      ...aggregateRpc(categorizedSnapshot),
+      factory_interactions: vi.fn(({ repositoryKey }: { repositoryKey: string }) => repositoryKey === "monorepo"
+        ? {
+            repositoryKey,
+            interactions: [pendingInteraction],
+          }
+        : { repositoryKey, interactions: [] }),
+      factory_runs: vi.fn(({ repositoryKey }: { repositoryKey: string }) => repositoryKey === "monorepo"
+        ? { runs: [{ ...runSummary, repositoryKey, status: "started" as const, finishedAt: null }], nextCursor: null }
+        : runsForSwitch(repositoryKey)),
+    };
+
+    const headings = (slot: ReturnType<typeof mountAggregate>) =>
+      Array.from(slot.container.querySelectorAll("h2")).map((heading) => heading.textContent ?? "");
+    const workSlot = mountAggregate(FactoryView, "all/work", rpc);
+    try {
+      await workSlot.findByRole("heading", { name: "Done" });
+      const doneSection = workSlot.getByRole("heading", { name: "Done" }).closest("details") as HTMLDetailsElement;
+      expect(doneSection.open).toBe(false);
+      fireEvent.click(doneSection.querySelector("summary") as HTMLElement);
+      const workHeadings = headings(workSlot);
+      expect(workHeadings.indexOf("Ready")).toBeLessThan(workHeadings.indexOf("monorepo"));
+      expect(workHeadings.indexOf("Done")).toBeLessThan(workHeadings.indexOf("data"));
+
+      const dataSubgroup = workSlot.getByRole("heading", { name: "data" }).closest("details") as HTMLDetailsElement;
+      expect(dataSubgroup.open).toBe(false);
+    } finally {
+      workSlot.lifecycle.unmount();
+    }
+
+    const questionsSlot = mountAggregate(FactoryView, "all/questions", rpc);
+    try {
+      const answeredHeading = await questionsSlot.findByRole("heading", { name: "Answered" });
+      fireEvent.click(answeredHeading.closest("summary") as HTMLElement);
+      await questionsSlot.findByRole("heading", { name: "data" });
+      const questionHeadings = headings(questionsSlot);
+      const bbIndex = questionHeadings.indexOf("BB questions");
+      const openIndex = questionHeadings.indexOf("Open");
+      const answeredIndex = questionHeadings.indexOf("Answered");
+      expect(bbIndex).toBeGreaterThanOrEqual(0);
+      expect(bbIndex).toBeLessThan(openIndex);
+      expect(openIndex).toBeLessThan(answeredIndex);
+      expect(questionHeadings.slice(bbIndex + 1)).toContain("monorepo");
+      expect(questionHeadings.slice(openIndex + 1)).toContain("monorepo");
+      expect(questionHeadings.slice(answeredIndex + 1)).toContain("data");
+    } finally {
+      questionsSlot.lifecycle.unmount();
+    }
+
+    const runsSlot = mountAggregate(FactoryView, "all/runs", rpc);
+    try {
+      await runsSlot.findByRole("heading", { name: "History" });
+      const runHeadings = headings(runsSlot);
+      expect(runHeadings.indexOf("Active")).toBeLessThan(runHeadings.indexOf("monorepo"));
+      expect(runHeadings.indexOf("History")).toBeLessThan(runHeadings.indexOf("data"));
+    } finally {
+      runsSlot.lifecycle.unmount();
+      controlledSettingsState = { values: { repositoryKey: "demo" }, isLoading: false };
+    }
+  });
+
+  it("omits empty aggregate repository subgroups and keeps all-empty work explicit", async () => {
+    const { FactoryView } = await import("../src/ui/FactoryView.js");
+    const rpc = aggregateRpc((key) => key === "data"
+      ? { ...snapshotForSwitch(key), queue: [], questions: [] }
+      : snapshotForSwitch(key));
+    const slot = mountAggregate(FactoryView, "all/work", rpc);
+    try {
+      await slot.findByRole("heading", { name: "Ready" });
+      expect(slot.container.querySelectorAll("h2")).toHaveLength(2);
+      expect(slot.container.textContent).not.toContain("No work across configured repositories");
+    } finally {
+      slot.lifecycle.unmount();
+    }
+
+    const emptyRpc = {
+      ...aggregateRpc(() => ({ ...snapshotForSwitch("monorepo"), queue: [], questions: [] })),
+      factory_runs: vi.fn(() => ({ runs: [], nextCursor: null })),
+    };
+    const emptySlot = mountAggregate(FactoryView, "all/work", emptyRpc);
+    try {
+      await emptySlot.findByText("No work across configured repositories");
+      expect(emptySlot.container.querySelectorAll("h2")).toHaveLength(0);
+    } finally {
+      emptySlot.lifecycle.unmount();
+      controlledSettingsState = { values: { repositoryKey: "demo" }, isLoading: false };
+    }
+  });
+
+  it("keeps aggregate optimistic answers with their repository while another settles", async () => {
+    const { FactoryView } = await import("../src/ui/FactoryView.js");
+    let resolveDataSnapshot: ((value: unknown) => void) | null = null;
+    const rpc = {
+      ...aggregateRpc((key) => key === "data"
+        ? new Promise((resolve) => { resolveDataSnapshot = resolve; })
+        : snapshotForSwitch(key)),
+      factory_action: vi.fn(() => new Promise<unknown>(() => undefined)) as unknown as PluginRpcTestHandlers<FactoryRpcContract>["factory_action"],
+    };
+    const slot = mountAggregate(FactoryView, "all/questions", rpc);
+    try {
+      const monoGroup = await slot.findByRole("heading", { name: "monorepo" });
+      const answer = await within(monoGroup.closest("details") as HTMLElement).findByLabelText("Answer Q1");
+      fireEvent.change(answer, { target: { value: "Keep the existing provider." } });
+      fireEvent.click(within(monoGroup.closest("details") as HTMLElement).getByRole("button", { name: "Record answer" }));
+      const dialog = await slot.findByRole("alertdialog");
+      fireEvent.click(within(dialog as HTMLElement).getByRole("button", { name: "Record answer" }));
+
+      await slot.findByTestId("answered-questions");
+      await act(async () => {
+        resolveDataSnapshot?.(snapshotForSwitch("data"));
+      });
+      await slot.findByRole("heading", { name: "data" });
+
+      const answered = slot.getByTestId("answered-questions") as HTMLDetailsElement;
+      if (!answered.open) fireEvent.click(answered.querySelector("summary") as HTMLElement);
+      const recorded = slot.container.querySelector('[id="monorepo:question-Q1"]') as HTMLElement;
+      expect(recorded).not.toBeNull();
+      expect(within(recorded).getByText("Recorded")).toBeTruthy();
+    } finally {
+      slot.lifecycle.unmount();
+      controlledSettingsState = { values: { repositoryKey: "demo" }, isLoading: false };
+    }
+  });
+
+  it("reveals every repository for a bare aggregate question anchor", async () => {
+    const { FactoryView } = await import("../src/ui/FactoryView.js");
+    const scrollSpy = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollSpy;
+    const slot = mountAggregate(FactoryView, "all/questions/question-Q1", aggregateRpc());
+    try {
+      await vi.waitFor(() => expect(scrollSpy.mock.calls.length).toBeGreaterThanOrEqual(2));
+      expect(document.getElementById("monorepo:question-Q1")?.closest("details")).toHaveProperty("open", true);
+      expect(document.getElementById("data:question-Q1")?.closest("details")).toHaveProperty("open", true);
+    } finally {
+      slot.lifecycle.unmount();
+      if (original) {
+        Element.prototype.scrollIntoView = original;
+      } else {
+        Reflect.deleteProperty(Element.prototype, "scrollIntoView");
+      }
+      controlledSettingsState = { values: { repositoryKey: "demo" }, isLoading: false };
+    }
+  });
+
+  it("reopens the aggregate Open disclosure when a scoped question changes repositories", async () => {
+    const { FactoryView } = await import("../src/ui/FactoryView.js");
+    const rpc = aggregateRpc();
+    const slot = mountAggregate(FactoryView, "all/questions/monorepo/question-Q1", rpc);
+    try {
+      const open = (await slot.findByRole("heading", { name: "Open" })).closest("details") as HTMLDetailsElement;
+      expect(open.open).toBe(true);
+      fireEvent.click(open.querySelector("summary") as HTMLElement);
+      expect(open.open).toBe(false);
+
+      await act(async () => {
+        slot.rerender(createElement(FactoryView, { subPath: "all/questions/data/question-Q1", panelPath: "factory" }));
+      });
+      await vi.waitFor(() => expect(open.open).toBe(true));
+    } finally {
+      slot.lifecycle.unmount();
+      controlledSettingsState = { values: { repositoryKey: "demo" }, isLoading: false };
+    }
+  });
+
+  it("reopens the aggregate Answered disclosure when a scoped question changes repositories", async () => {
+    const { FactoryView } = await import("../src/ui/FactoryView.js");
+    const answeredSnapshot = (key: string) => ({
+      ...snapshotForSwitch(key),
+      questions: snapshotForSwitch(key).questions.map((question) => ({ ...question, answer: "Recorded answer." })),
+    });
+    const rpc = aggregateRpc(answeredSnapshot);
+    const slot = mountAggregate(FactoryView, "all/questions/monorepo/question-Q1", rpc);
+    try {
+      const answered = await slot.findByTestId("answered-questions") as HTMLDetailsElement;
+      expect(answered.open).toBe(true);
+      fireEvent.click(answered.querySelector("summary") as HTMLElement);
+      expect(answered.open).toBe(false);
+
+      await act(async () => {
+        slot.rerender(createElement(FactoryView, { subPath: "all/questions/data/question-Q1", panelPath: "factory" }));
+      });
+      await vi.waitFor(() => expect(answered.open).toBe(true));
     } finally {
       slot.lifecycle.unmount();
       controlledSettingsState = { values: { repositoryKey: "demo" }, isLoading: false };
@@ -1068,10 +1292,9 @@ describe("Factory aggregate scope", () => {
     const slot = mountAggregate(FactoryView, "all/work", rpc);
     try {
       await slot.findByText("FIRST-DATA-TASK");
-      const refresh = slot.container.querySelector('[title="Refresh now"]') as HTMLElement;
-      fireEvent.click(refresh);
+      await slot.emitRealtime("factory", null);
       await vi.waitFor(() => expect(dataCalls).toBe(2));
-      fireEvent.click(refresh);
+      await slot.emitRealtime("factory", null);
       await slot.findByText("CURRENT-DATA-TASK");
       // The superseded load's bundle lands last and must not overwrite the
       // group the current load already committed.
@@ -1335,10 +1558,10 @@ describe("Add-repository wizard chrome", () => {
       expect(within(header).queryByRole("button", { name: "Pause" })).toBeNull();
       expect(within(header).queryByRole("button", { name: "Resume" })).toBeNull();
       expect(within(header).queryByRole("button", { name: "Run now" })).toBeNull();
-      // The title, switcher, refreshed indicator, and legend stay mounted.
+      // The title and switcher stay mounted; the wizard has no status or controls rows.
       expect(within(header).getByText("Factory")).toBeTruthy();
-      expect(within(header).getByRole("button", { name: /refreshed/ })).toBeTruthy();
-      expect(within(header).getByRole("button", { name: "Chip legend" })).toBeTruthy();
+      expect(within(header).queryByRole("button", { name: /refreshed/ })).toBeNull();
+      expect(within(header).queryByRole("button", { name: "Chip legend" })).toBeNull();
 
       const wizardSwitcher = (await slot.findByRole("group", { name: "Configured repository" })) as HTMLElement;
       const allPill = within(wizardSwitcher).getByRole("button", { name: "All" });
