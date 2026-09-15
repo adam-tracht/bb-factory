@@ -713,7 +713,7 @@ validate:
 notes: Follow-up from live review. Above the sm breakpoint the row switched to items-center and dropped the dot's mt-1.5 offset, so an expanded (taller) row centered the dot on the whole block instead of the title line. The row now anchors every item to the first line: items-start at all widths, the dot keeps mt-1.5, and the action sits in a one-line-tall lane that centers it on the title line.
 
 ## BBF-0043 Pick provider, model, and thinking on manual Run now
-status: ready
+status: in-progress (thread thr_fcb53czy7e, 2026-09-15T04:39Z)
 priority: 2
 depends_on: none
 risk: medium
