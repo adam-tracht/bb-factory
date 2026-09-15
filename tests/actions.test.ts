@@ -660,6 +660,39 @@ describe("BB interaction action executor", () => {
     expect(harness.dispatch.requestStop).toHaveBeenCalledWith("monorepo");
   });
 
+  it("passes an explicit run-now execution triple and service tier to dispatch", async () => {
+    const harness = makeInteractionHarness([]);
+    const result = await harness.executor.execute(bbRequest({
+      kind: "run-now",
+      providerId: "claude-code",
+      model: "claude-opus-5",
+      reasoningLevel: "high",
+      serviceTier: "fast",
+    }));
+    expect(result.ok).toBe(true);
+    expect(harness.dispatch.requestRun).toHaveBeenCalledWith(expect.objectContaining({
+      repositoryKey: "monorepo",
+      trigger: "manual",
+      providerOverride: { providerId: "claude-code", model: "claude-opus-5", reasoningLevel: "high" },
+      serviceTier: "fast",
+    }));
+  });
+
+  it("omits the override keys when run-now carries none", async () => {
+    const harness = makeInteractionHarness([]);
+    await harness.executor.execute(bbRequest({ kind: "run-now" }));
+    const input = vi.mocked(harness.dispatch.requestRun).mock.calls[0]![0];
+    expect("providerOverride" in input).toBe(false);
+    expect("serviceTier" in input).toBe(false);
+  });
+
+  it("rejects a partial run-now provider override at the schema boundary", async () => {
+    const harness = makeInteractionHarness([]);
+    const result = await harness.executor.execute(bbRequest({ kind: "run-now", providerId: "codex" }));
+    expect(result).toMatchObject({ ok: false, error: { category: "invalid-input" } });
+    expect(harness.dispatch.requestRun).not.toHaveBeenCalled();
+  });
+
   it("deduplicates an identical action under the same idempotency key", async () => {
     const harness = makeInteractionHarness([]);
     const request = bbRequest({ kind: "run-now" });

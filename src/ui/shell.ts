@@ -2,6 +2,7 @@ import { createElement, Fragment, useEffect, useRef, useState, type ReactNode } 
 import type {
   DispatchStatus,
   OperationalRunSummary,
+  ProviderStatus,
   RepositoryKey,
   RepositorySelection,
 } from "../contracts.js";
@@ -18,6 +19,7 @@ import {
 } from "./primitives.js";
 import type { FactorySection } from "./context.js";
 import { repositoryLabel } from "../repository-label.js";
+import { ProviderModelPicker, providerModelPickerBound, seedPickerValue, type PickerRouting, type PickerValue } from "./providerPicker.js";
 
 const h = createElement;
 
@@ -38,7 +40,16 @@ export interface ShellRunNow {
   readonly reason: string | null;
   readonly confirmTitle: string;
   readonly confirmBody: ReactNode;
-  readonly onConfirm: () => void;
+  /** Live provider catalog for the picker's seed; empty or absent keeps the plain confirm. */
+  readonly providers?: readonly ProviderStatus[];
+  readonly preferredProviderId?: string | null;
+  readonly pickerRouting?: PickerRouting;
+  /** True when the bound picker has a usable seed; only then does the dialog offer a custom pick. */
+  readonly canPickProvider?: boolean;
+  /** Explains the automatic pick (configured preference/rotation) while the picker is bound. */
+  readonly automaticHint?: ReactNode;
+  /** Receives the picked execution triple, or null when the automatic default is confirmed. */
+  readonly onConfirm: (selection: PickerValue | null) => void;
 }
 
 export interface FactoryShellProps {
@@ -243,6 +254,8 @@ export function FactoryShell(props: FactoryShellProps) {
   const now = useNow(15000);
   const [legendOpen, setLegendOpen] = useState(false);
   const [runNowOpen, setRunNowOpen] = useState(false);
+  const [runNowSelection, setRunNowSelection] = useState<PickerValue | null>(null);
+  const [runNowCustom, setRunNowCustom] = useState(false);
   const [justRefreshed, setJustRefreshed] = useState(false);
   const seenRefreshedAtRef = useRef<number | null>(props.refreshedAt);
   const tabStripRef = useRef<HTMLElement | null>(null);
@@ -310,7 +323,16 @@ export function FactoryShell(props: FactoryShellProps) {
         className: "min-h-8 min-w-8 sm:min-h-0 sm:min-w-0 sm:order-4",
         title: props.runNow.disabled ? props.runNow.reason ?? "Unavailable" : "Start a run immediately",
         disabled: props.runNow.disabled || props.actionPending,
-        onClick: () => setRunNowOpen(true),
+        onClick: () => {
+          // Seed once per open so a canceled dialog never leaks a stale pick;
+          // the override stays opt-in behind the "Choose provider" radio.
+          const runNow = props.runNow;
+          setRunNowSelection(runNow?.canPickProvider === true
+            ? seedPickerValue(runNow.providers ?? [], runNow.preferredProviderId ?? null)
+            : null);
+          setRunNowCustom(false);
+          setRunNowOpen(true);
+        },
       })
     : null;
   const mobileDispatch = repoChrome && props.dispatch
@@ -448,12 +470,48 @@ export function FactoryShell(props: FactoryShellProps) {
       ? h(ConfirmDialog, {
           open: runNowOpen,
           title: props.runNow.confirmTitle,
-          body: props.runNow.confirmBody,
+          body: providerModelPickerBound && runNowSelection !== null
+            ? h("div", { className: "space-y-3" },
+                props.runNow.confirmBody,
+                h("div", {
+                  role: "radiogroup",
+                  "aria-label": "Provider selection",
+                  className: "space-y-1.5",
+                },
+                  h("label", { className: "flex items-center gap-2 text-xs text-foreground" },
+                    h("input", {
+                      type: "radio",
+                      name: "factory-run-now-provider",
+                      checked: !runNowCustom,
+                      disabled: props.actionPending,
+                      onChange: () => setRunNowCustom(false),
+                    }),
+                    "Automatic"),
+                  h("label", { className: "flex items-center gap-2 text-xs text-foreground" },
+                    h("input", {
+                      type: "radio",
+                      name: "factory-run-now-provider",
+                      checked: runNowCustom,
+                      disabled: props.actionPending,
+                      onChange: () => setRunNowCustom(true),
+                    }),
+                    "Choose provider and model")),
+                runNowCustom && ProviderModelPicker !== undefined
+                  ? h(ProviderModelPicker, {
+                      value: runNowSelection,
+                      onChange: (next: PickerValue) => setRunNowSelection(next),
+                      routing: props.runNow.pickerRouting,
+                      disabled: props.actionPending,
+                    })
+                  : props.runNow.automaticHint != null
+                    ? h("p", { className: "text-xs" }, props.runNow.automaticHint)
+                    : null)
+            : props.runNow.confirmBody,
           confirmLabel: "Run now",
           busy: props.actionPending,
           onConfirm: () => {
             setRunNowOpen(false);
-            props.runNow?.onConfirm();
+            props.runNow?.onConfirm(runNowCustom ? runNowSelection : null);
           },
           onCancel: () => setRunNowOpen(false),
         })

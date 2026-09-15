@@ -573,6 +573,11 @@ export function createBbInteractionActionExecutor(options: BbInteractionActionEx
             trigger: "manual",
             idempotencyKey: valid.idempotencyKey,
             expectedRevision: valid.expectedRevision,
+            // The schema guarantees the triple arrives all-or-none.
+            ...(action.providerId !== undefined && action.model !== undefined && action.reasoningLevel !== undefined
+              ? { providerOverride: { providerId: action.providerId, model: action.model, reasoningLevel: action.reasoningLevel } }
+              : {}),
+            ...(action.serviceTier === undefined ? {} : { serviceTier: action.serviceTier }),
           });
           break;
         case "pause":

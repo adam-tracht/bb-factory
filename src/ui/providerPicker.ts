@@ -13,6 +13,9 @@ export const ProviderModelPicker = experimental_ProviderModelPicker as Component
   disabled?: boolean;
 }> | undefined;
 
+/** True when the running host bound the shared picker. */
+export const providerModelPickerBound = ProviderModelPicker !== undefined;
+
 /** Seed the picker from live health: the configured preference, then the first available provider. */
 export function seedPickerValue(
   providers: readonly ProviderStatus[],

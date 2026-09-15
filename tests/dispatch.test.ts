@@ -17,21 +17,23 @@ import {
 
 afterEach(cleanupStorages);
 
+type SpawnInput = Parameters<DispatchContext["sdk"]["threads"]["spawn"]>[0];
+
 class FakeThreads {
   public threads = new Map<string, { id: string; status: string; prompt?: string; providerId?: string }>();
   public stopped: string[] = [];
   public retried: string[] = [];
   public spawnError: Error | null = null;
-  public spawnCalls: Array<{ environment?: unknown; prompt: string; title?: string }> = [];
+  public spawnCalls: SpawnInput[] = [];
   /** Returned on spawn results, mirroring bb's auto-registered environment id. */
   public spawnedEnvironmentId: string | null = null;
   private counter = 0;
 
-  async spawn(input: { prompt: string; providerId?: string; environment?: unknown; title?: string }) {
+  async spawn(input: SpawnInput) {
     if (this.spawnError) throw this.spawnError;
     this.counter += 1;
     const id = `thread-${this.counter}`;
-    this.spawnCalls.push({ environment: input.environment, prompt: input.prompt, title: input.title });
+    this.spawnCalls.push(input);
     this.threads.set(id, { id, status: "active", prompt: input.prompt, providerId: input.providerId });
     return { id, environmentId: this.spawnedEnvironmentId };
   }
@@ -145,6 +147,84 @@ describe("dispatch engine", () => {
     expect(detail.run?.attempts).toHaveLength(1);
     expect(threads.threads.get("thread-1")?.prompt).toContain("foreman.md");
     expect(store.getDispatcherState("monorepo").lastStartProvider).toBe("codex");
+  });
+
+  it("runs an explicit provider override with caller-explicit execution inputs", async () => {
+    const { engine, threads, store } = makeHarness({ settings: { providerPreference: "codex" } });
+    const result = await engine.requestRun({
+      ...MANUAL_REQUEST,
+      providerOverride: { providerId: "claude-code", model: "claude-opus-5", reasoningLevel: "xhigh" },
+      serviceTier: "fast",
+    });
+    expect(result).toMatchObject({ ok: true, result: { status: "accepted", action: "run-now" } });
+    if (!result.ok) throw new Error("expected success");
+    const spawn = threads.spawnCalls[0]!;
+    expect(spawn).toMatchObject({
+      providerId: "claude-code",
+      model: "claude-opus-5",
+      reasoningLevel: "xhigh",
+      serviceTier: "fast",
+      executionInputSources: {
+        providerId: "explicit",
+        model: "explicit",
+        reasoningLevel: "explicit",
+        serviceTier: "explicit",
+      },
+    });
+    const detail = await store.getRun({ repositoryKey: "monorepo", runId: result.result.runId! });
+    expect(detail.run?.attempts[0]).toMatchObject({
+      providerId: "claude-code",
+      model: "claude-opus-5",
+      reasoningLevel: "xhigh",
+    });
+    expect(detail.run?.summary.providerId).toBe("claude-code");
+  });
+
+  it("rejects an override naming a provider that fails the usability check", async () => {
+    const { engine, threads, store } = makeHarness({
+      providers: [provider("codex"), provider("claude-code", "limited")],
+    });
+    const result = await engine.requestRun({
+      ...MANUAL_REQUEST,
+      providerOverride: { providerId: "claude-code", model: "claude-opus-5", reasoningLevel: "high" },
+    });
+    expect(result).toMatchObject({ ok: false, error: { category: "provider-unavailable" } });
+    if (result.ok) throw new Error("expected failure");
+    expect(result.error.message).toContain("claude-code");
+    expect(threads.threads.size).toBe(0);
+    expect(store.listActiveRuns("monorepo")).toHaveLength(0);
+  });
+
+  it("rejects an override naming a provider absent from the live catalog", async () => {
+    const { engine, threads } = makeHarness({ providers: [provider("codex")] });
+    const result = await engine.requestRun({
+      ...MANUAL_REQUEST,
+      providerOverride: { providerId: "pi", model: "pi-model", reasoningLevel: "high" },
+    });
+    expect(result).toMatchObject({ ok: false, error: { category: "provider-unavailable" } });
+    if (result.ok) throw new Error("expected failure");
+    expect(result.error.message).toContain("pi");
+    expect(threads.threads.size).toBe(0);
+  });
+
+  it("keeps the rotation spawn untouched when run-now carries no override", async () => {
+    const { engine, threads } = makeHarness({ settings: { providerPreference: "codex" } });
+    const result = await engine.requestRun(MANUAL_REQUEST);
+    expect(result.ok).toBe(true);
+    const spawn = threads.spawnCalls[0]!;
+    expect(spawn.providerId).toBe("codex");
+    expect("executionInputSources" in spawn).toBe(false);
+    expect("serviceTier" in spawn).toBe(false);
+  });
+
+  it("marks a lone serviceTier explicit while provider selection still applies", async () => {
+    const { engine, threads } = makeHarness({ settings: { providerPreference: "codex" } });
+    const result = await engine.requestRun({ ...MANUAL_REQUEST, serviceTier: "fast" });
+    expect(result.ok).toBe(true);
+    const spawn = threads.spawnCalls[0]!;
+    expect(spawn.providerId).toBe("codex");
+    expect(spawn.serviceTier).toBe("fast");
+    expect(spawn.executionInputSources).toEqual({ serviceTier: "explicit" });
   });
 
   it("uses the display name only for the worker thread title", async () => {

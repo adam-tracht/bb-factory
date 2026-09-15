@@ -29,6 +29,14 @@ export interface ProviderSelection {
  * configured model, is not durably limited, and supports full permissions
  * when the host reports permission modes.
  */
+export function providerUsable(provider: ProviderStatus, state: DispatcherState, nowS: number): boolean {
+  const limitedUntil = state.limits[provider.providerId] ?? 0;
+  return provider.availability === "available"
+    && provider.model !== "unavailable"
+    && limitedUntil <= nowS
+    && (provider.permissionModes === undefined || provider.permissionModes.includes("full"));
+}
+
 export function selectProvider(
   providers: readonly ProviderStatus[],
   state: DispatcherState,
@@ -36,14 +44,7 @@ export function selectProvider(
   nightKey: string,
   nowS: number,
 ): ProviderSelection | null {
-  const isUsable = (provider: ProviderStatus): boolean => {
-    const limitedUntil = state.limits[provider.providerId] ?? 0;
-    return provider.availability === "available"
-      && provider.model !== "unavailable"
-      && limitedUntil <= nowS
-      && (provider.permissionModes === undefined || provider.permissionModes.includes("full"));
-  };
-  const usable = providers.filter(isUsable);
+  const usable = providers.filter((provider) => providerUsable(provider, state, nowS));
   if (usable.length === 0) return null;
 
   const selection = (picked: ProviderStatus, reason: string): ProviderSelection => ({
@@ -65,10 +66,26 @@ export function selectProvider(
   if (lastIndex >= 0) {
     for (let offset = 1; offset <= providers.length; offset += 1) {
       const picked = providers[(lastIndex + offset) % providers.length]!;
-      if (isUsable(picked)) return selection(picked, `alternate after ${lastStart}`);
+      if (providerUsable(picked, state, nowS)) return selection(picked, `alternate after ${lastStart}`);
     }
   }
 
   const nightDay = Number(nightKey.slice(-2));
   return selection(usable[nightDay % usable.length]!, `alternate lead, night ${nightKey}`);
+}
+
+/**
+ * A manual run-now may pin the execution triple explicitly. The pick faces
+ * the same usability gate as rotation, but a rejected provider errors out
+ * instead of silently substituting another.
+ */
+export function selectExplicitProvider(
+  providers: readonly ProviderStatus[],
+  state: DispatcherState,
+  override: { providerId: ProviderId; model: string; reasoningLevel: ProviderStatus["reasoningLevel"] },
+  nowS: number,
+): ProviderSelection | null {
+  const picked = providers.find((provider) => provider.providerId === override.providerId);
+  if (picked === undefined || !providerUsable(picked, state, nowS)) return null;
+  return { providerId: picked.providerId, model: override.model, reasoningLevel: override.reasoningLevel, reason: "manual selection" };
 }

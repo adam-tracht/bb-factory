@@ -396,6 +396,34 @@ describe("Phase 0 wire contracts", () => {
     })).toThrow();
   });
 
+  it("accepts a full run-now provider override and rejects partial triples", () => {
+    const request = (action: Record<string, unknown>) => ({
+      repositoryKey: "monorepo",
+      action,
+      idempotencyKey: "bbf:v1:monorepo:run-now:123e4567-e89b-12d3-a456-426614174000",
+      expectedRevision: repositoryRevision,
+    });
+
+    const full = { kind: "run-now", providerId: "claude-code", model: "claude-opus-5", reasoningLevel: "high", serviceTier: "fast" };
+    expect(factoryActionRequestSchema.parse(request(full))).toEqual(request(full));
+    expect(factoryActionRequestSchema.parse(request({ kind: "run-now" }))).toEqual(request({ kind: "run-now" }));
+    // serviceTier rides alone; only the provider/model/reasoning triple is all-or-none.
+    expect(factoryActionRequestSchema.parse(request({ kind: "run-now", serviceTier: "fast" })))
+      .toMatchObject({ action: { kind: "run-now", serviceTier: "fast" } });
+
+    for (const action of [
+      { kind: "run-now", providerId: "codex" },
+      { kind: "run-now", providerId: "codex", model: "gpt-5" },
+      { kind: "run-now", model: "gpt-5", reasoningLevel: "high" },
+      { kind: "run-now", reasoningLevel: "high" },
+      { kind: "run-now", providerId: "codex", reasoningLevel: "high" },
+      { kind: "run-now", providerId: "codex", model: "gpt-5", reasoningLevel: "high", extra: true },
+      { kind: "run-now", providerId: "Not A Provider", model: "gpt-5", reasoningLevel: "high" },
+    ]) {
+      expect(() => factoryActionRequestSchema.parse(request(action))).toThrow();
+    }
+  });
+
   it("carries the spawned thread id on accepted recommendation outcomes", () => {
     const outcome = {
       status: "accepted",

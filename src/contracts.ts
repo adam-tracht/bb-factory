@@ -715,8 +715,33 @@ const recommendApprovalActionSchema = z
   })
   .strict();
 
+/**
+ * A manual run may pin provider, model, and reasoning level; the three are
+ * all-or-none so a partial override never silently mixes with rotation.
+ * serviceTier stays independently optional, matching the recommend-* actions.
+ */
+const runNowActionSchema = z
+  .object({
+    kind: z.literal("run-now"),
+    providerId: providerIdSchema.optional(),
+    model: nonEmptyString.optional(),
+    reasoningLevel: reasoningLevelSchema.optional(),
+    serviceTier: z.enum(["default", "fast"]).optional(),
+  })
+  .strict()
+  .superRefine((action, context) => {
+    const triple = [action.providerId, action.model, action.reasoningLevel];
+    if (triple.some((value) => value !== undefined) && triple.some((value) => value === undefined)) {
+      context.addIssue({
+        code: "custom",
+        path: ["providerId"],
+        message: "providerId, model, and reasoningLevel must be provided together",
+      });
+    }
+  });
+
 export const bbInteractionActionSchema = z.union([
-  z.object({ kind: z.literal("run-now") }).strict(),
+  runNowActionSchema,
   z.object({ kind: z.literal("pause") }).strict(),
   z.object({ kind: z.literal("resume") }).strict(),
   bbInteractionAnswerActionSchema,

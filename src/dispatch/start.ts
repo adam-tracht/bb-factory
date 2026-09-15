@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import type {
   FactoryActionResult,
   ProtocolSnapshot,
+  ProviderId,
+  ReasoningLevel,
   RepositoryKey,
   RepositoryRevision,
   RunIntent,
@@ -11,7 +13,7 @@ import { PROTOCOL_PATHS } from "../protocol/paths.js";
 import { repositoryLabel } from "../repository-label.js";
 import { IdempotencyConflictError } from "../storage/index.js";
 import { OwnershipHeldError } from "./ownership.js";
-import { hostPreflight, selectProvider, type ProviderSelection } from "./preflight.js";
+import { hostPreflight, selectExplicitProvider, selectProvider, type ProviderSelection } from "./preflight.js";
 import { dispatcherNowSeconds, nightKeyAt, nightState, spawnEnvironment, type DispatchContext } from "./types.js";
 
 export interface StartRunInput {
@@ -24,6 +26,16 @@ export interface StartRunInput {
    */
   readonly expectedRevision?: RepositoryRevision;
   readonly preflightedSnapshot?: ProtocolSnapshot;
+  /**
+   * A manual run-now may pin the execution triple; the action schema delivers
+   * it all-or-none. Omitting it keeps the preference/rotation path.
+   */
+  readonly providerOverride?: {
+    readonly providerId: ProviderId;
+    readonly model: string;
+    readonly reasoningLevel: ReasoningLevel;
+  };
+  readonly serviceTier?: "default" | "fast";
 }
 
 export interface StartRunResult {
@@ -148,11 +160,16 @@ export async function startRun(ctx: DispatchContext, input: StartRunInput): Prom
   }
   const nightKey = nightKeyAt(ctx.now(), ctx.settings.nightWindowEndHour);
   const dispatcherState = nightState(ctx.store.getDispatcherState(input.repositoryKey), nightKey);
-  const provider = selectProvider(providers, dispatcherState, ctx.settings.providerPreference, nightKey, dispatcherNowSeconds(ctx.now));
+  const nowS = dispatcherNowSeconds(ctx.now);
+  const provider = input.providerOverride === undefined
+    ? selectProvider(providers, dispatcherState, ctx.settings.providerPreference, nightKey, nowS)
+    : selectExplicitProvider(providers, dispatcherState, input.providerOverride, nowS);
   if (!provider) {
     return noSpawn(actionError(
       "provider-unavailable",
-      "No usable provider is available right now. Reported providers may be unavailable, limited, missing a model, or lack full permissions.",
+      input.providerOverride === undefined
+        ? "No usable provider is available right now. Reported providers may be unavailable, limited, missing a model, or lack full permissions."
+        : `Provider '${input.providerOverride.providerId}' is not usable right now. It may be unavailable, limited, missing a model, or lack full permissions.`,
     ));
   }
 
@@ -240,6 +257,20 @@ export async function startRun(ctx: DispatchContext, input: StartRunInput): Prom
   // bb registers an unmanaged environment for a host-workspace spawn and
   // returns its id on the thread; a pinned environment id reuses instead.
   let environmentId: string | null;
+  // Caller-picked inputs are marked explicit so the server does not re-derive
+  // the project's stored execution defaults over them.
+  const executionInputSources: {
+    providerId?: "explicit";
+    model?: "explicit";
+    reasoningLevel?: "explicit";
+    serviceTier?: "explicit";
+  } = {};
+  if (input.providerOverride !== undefined) {
+    executionInputSources.providerId = "explicit";
+    executionInputSources.model = "explicit";
+    executionInputSources.reasoningLevel = "explicit";
+  }
+  if (input.serviceTier !== undefined) executionInputSources.serviceTier = "explicit";
   try {
     const spawned = await ctx.sdk.threads.spawn({
       projectId: entry.projectId,
@@ -248,8 +279,10 @@ export async function startRun(ctx: DispatchContext, input: StartRunInput): Prom
       providerId: provider.providerId,
       model: provider.model,
       reasoningLevel: provider.reasoningLevel,
+      ...(input.serviceTier === undefined ? {} : { serviceTier: input.serviceTier }),
       permissionMode: "full",
       title: runTitle(input.repositoryKey, entry.displayName, provider.providerId),
+      ...(Object.keys(executionInputSources).length === 0 ? {} : { executionInputSources }),
     });
     threadId = spawned.id;
     environmentId = entry.environmentId ?? spawned.environmentId;
@@ -300,6 +333,7 @@ export async function startRun(ctx: DispatchContext, input: StartRunInput): Prom
     transaction.saveDispatcherState({
       ...nightState(state, nightKey),
       lastStartAt: dispatcherNowSeconds(ctx.now),
+      // An explicit manual pick still advances the cursor, so the next alternate step skips it.
       lastStartProvider: provider.providerId,
     });
   });

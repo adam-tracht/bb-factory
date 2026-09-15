@@ -56,6 +56,7 @@ import {
 } from "./primitives.js";
 import { aggregateRunDetailPath, aggregateSectionPath, parseFactoryRoute, runDetailPath, sectionPath } from "./routes.js";
 import { FactoryShell } from "./shell.js";
+import { providerModelPickerBound, seedPickerValue } from "./providerPicker.js";
 import {
   AggregateSectionView,
   AggregateOverviewView,
@@ -763,7 +764,8 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
       })
     : [];
 
-  // Run-now confirmation copy includes provider context from health.
+  // Run-now confirmation copy includes provider context from health; a bound
+  // provider picker supersedes the line with a live seeded selection.
   const preferredProvider = settings?.settings.providerPreference && settings.settings.providerPreference !== "alternate"
     ? settings.settings.providerPreference
     : null;
@@ -773,6 +775,8 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
   const providerLine = preferredProvider
     ? `Provider: ${preferredProvider}${preferredStatus ? ` (${preferredStatus.availability})` : ""}.`
     : "Provider: rotates between available providers.";
+  const canPickProvider = providerModelPickerBound
+    && seedPickerValue(health?.providers ?? [], preferredProvider) !== null;
   const selectedRepositoryLabel = selectedConfiguration
     ? repositoryLabel(selectedConfiguration.repositoryKey, selectedEntry?.displayName)
     : null;
@@ -1005,8 +1009,27 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
           disabled: runNowDisabledReason !== null,
           reason: runNowDisabledReason,
           confirmTitle: `Run the foreman on ${selectedRepositoryLabel ?? "this repository"}?`,
-          confirmBody: `Starts a foreman run on ${selectedRepositoryLabel ?? "the repository"} now, ignoring the night window and minimum gap. ${providerLine}`,
-          onConfirm: () => void submitAction({ kind: "run-now" }, "dispatch", repoKey, snapshot, scopeSection),
+          confirmBody: `Starts a foreman run on ${selectedRepositoryLabel ?? "the repository"} now, ignoring the night window and minimum gap.${canPickProvider ? "" : ` ${providerLine}`}`,
+          providers: health?.providers ?? [],
+          preferredProviderId: preferredProvider,
+          canPickProvider,
+          automaticHint: providerLine,
+          pickerRouting: selectedConfiguration
+            ? selectedEntry?.environmentId != null
+              ? { kind: "environment", environmentId: selectedEntry.environmentId }
+              : { kind: "host", hostId: selectedConfiguration.connectedHostId }
+            : undefined,
+          onConfirm: (picked) => void submitAction(
+            picked === null
+              ? { kind: "run-now" }
+              : {
+                  kind: "run-now",
+                  providerId: picked.providerId,
+                  model: picked.model,
+                  reasoningLevel: picked.reasoningLevel,
+                  ...(picked.serviceTier === undefined ? {} : { serviceTier: picked.serviceTier }),
+                },
+            "dispatch", repoKey, snapshot, scopeSection),
         }
       : null,
     actionPending: actionState.pendingTarget !== null,

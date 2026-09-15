@@ -265,6 +265,39 @@ describe("FactoryShell", () => {
     expect(screen.getByRole("alertdialog", { name: "Run?" })).toBeTruthy();
   });
 
+  it("keeps the plain run-now confirm when the host binds no provider picker", () => {
+    // This suite never installs the test runtime, so ProviderModelPicker is undefined.
+    const onConfirm = vi.fn();
+    render(h(FactoryShell, shellProps({
+      runNow: {
+        disabled: false,
+        reason: null,
+        confirmTitle: "Run?",
+        confirmBody: "body",
+        providers: [{
+          providerId: "codex",
+          model: "gpt-5",
+          reasoningLevel: "high",
+          availability: "available",
+          limitedUntil: null,
+          activeThreadCount: 0,
+          lastError: null,
+        }],
+        preferredProviderId: "codex",
+        pickerRouting: { kind: "host", hostId: "host-1" },
+        onConfirm,
+      },
+      children: "repository",
+    })));
+    fireEvent.click(screen.getByRole("button", { name: "Run now" }));
+    const dialog = screen.getByRole("alertdialog", { name: "Run?" });
+    expect(dialog.textContent).toContain("body");
+    expect(within(dialog).queryByTestId("bb-provider-model-picker")).toBeNull();
+    expect(within(dialog).queryByRole("radio")).toBeNull();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Run now" }));
+    expect(onConfirm).toHaveBeenCalledWith(null);
+  });
+
   it("keeps the selected repository pill active off the landing", () => {
     const markup = renderToStaticMarkup(h(FactoryShell, shellProps({
       repositories: switcherRepositories("alpha", "beta"),
