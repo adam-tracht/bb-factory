@@ -18,6 +18,7 @@ Results measured on 2026-09-11 at scaffold time.
 ## Repo-specific limits
 
 - Never push to `main` and never commit on `main`. Factory work lives on the `factory` branch only.
+- Preflight exception: never `git rebase origin/main`. Main is a synthetic release branch: each commit is a commit-tree of factory minus `plans/` plus `dist/` (scripts/release.sh), so a rebase conflicts on every plans-touching commit and drags build output into working history. Instead, after `git fetch origin`, check `git log origin/main -20 --format=%s`: every commit must be a `release:` artifact commit (the two `chore:`/`release:` setup commits at the branch base are known history). Any other commit on main means source landed outside the release flow: stop, file a blocking question, and do not claim work.
 - Never add or upgrade dependencies without an `approved:` queue line.
 - BB plugin installs use `npm`; `pnpm` is the local development manager only and must never be described as the BB installation mechanism.
 - Files under `plans/factory/` are authoritative protocol state; plugin SQLite must never mirror queue or question state.
