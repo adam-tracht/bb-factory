@@ -711,3 +711,68 @@ validate:
 - pnpm typecheck
 - pnpm lint
 notes: Follow-up from live review. Above the sm breakpoint the row switched to items-center and dropped the dot's mt-1.5 offset, so an expanded (taller) row centered the dot on the whole block instead of the title line. The row now anchors every item to the first line: items-start at all widths, the dot keeps mt-1.5, and the action sits in a one-line-tall lane that centers it on the title line.
+
+## BBF-0043 Pick provider, model, and thinking on manual Run now
+status: draft
+priority: 2
+depends_on: none
+risk: medium
+plan: src/contracts.ts (run-now action variant, line ~719), src/dispatch/start.ts, src/dispatch/types.ts, src/actions/interactions.ts, src/ui/shell.ts, src/ui/FactoryView.ts, src/ui/providerPicker.ts, tests/dispatch.test.ts, tests/ui-shell.test.ts, tests/ui.test.ts
+approved: none
+acceptance:
+- The run-now confirm dialog embeds the shared ProviderModelPicker seeded from live provider status via seedPickerValue (configured preference first), so a manual run starts on a chosen provider, model, and thinking level; on hosts that do not bind experimental_ProviderModelPicker the dialog keeps today's plain confirm behavior.
+- The run-now action accepts optional providerId, model, reasoningLevel, and serviceTier (the PickerValue shape recommend-approval already carries); scheduled and retry-driven runs omit them and behave exactly as today.
+- An explicitly chosen provider that fails the usability check returns provider-unavailable naming that provider rather than silently substituting another; no override keeps the existing preference/rotation path untouched.
+- The thread spawn marks the chosen triple explicit via executionInputSources (matching the recommend-* spawns at src/actions/interactions.ts:437-442) so the server does not re-derive project defaults, and the dispatch attempt row records the effective providerId, model, and reasoningLevel.
+- Regression coverage for override accepted, unusable override rejected, and no-override parity with today.
+validate:
+- pnpm test
+- pnpm typecheck
+- pnpm lint
+- pnpm build
+- bb plugin types --check .
+- git diff --check
+notes: Widens the strict `{ kind: "run-now" }` variant (src/contracts.ts:719) with optional fields; additive and wire-compatible (old senders omit, new readers default), but it is a v1.2 contract touch and returns to review before landing per the interface-change rule. The idempotency key shape, action kind set, and storage CHECK lists are unchanged. UI reuse: work.ts:299-336 shows the ConfirmDialog + ProviderModelPicker + routing pattern; the run-now dialog already computes provider context copy at src/ui/FactoryView.ts:766-775 which the picker supersedes.
+
+## BBF-0044 Default model and thinking per provider
+status: draft
+priority: 2
+depends_on: none
+risk: medium
+plan: src/contracts.ts (factorySettingsSchema ~line 173, factorySettingsPatchSchema ~line 1295), src/settings.ts (providerPreference descriptor), src/dispatch/preflight.ts (selectProvider), src/ui/views/settings.ts (provider FormRow ~line 623), tests/settings-mutations.test.ts, tests/dispatch.test.ts, tests/ui-settings.test.ts
+approved: none
+acceptance:
+- Settings persists an optional per-provider default `{ model, reasoningLevel }` keyed by provider id; model names are not portable across providers, so the store is a keyed map, not one global pair. Providers without an entry keep the host-reported default.
+- When providerPreference pins a specific provider, the Settings provider section exposes a model and thinking control for that provider (reusing ProviderModelPicker's host catalog via routing where supported) and saves through the existing factory_update_settings patch path with the established Saving/Saved feedback.
+- selectProvider applies the configured default to the selected provider after the usability check, so a configured model never resurrects a provider the host reports unusable; the selection reason notes the override and the dispatch attempt persists the effective model and reasoning level.
+- Stored defaults for providers the host no longer reports parse cleanly and render tolerantly (matching the `(not reported)` option precedent).
+validate:
+- pnpm test
+- pnpm typecheck
+- pnpm lint
+- pnpm build
+- bb plugin types --check .
+- git diff --check
+notes: Additive optional keys on factorySettingsSchema and factorySettingsPatchSchema plus a settings descriptor; no action-schema or key-shape change. Today model and reasoning come straight from ProviderStatus (host-reported default model and its defaultReasoningEffort, src/services/live-health.ts:65-74,109); this adds a configured override layer at selection time. "Thinking" maps to reasoningLevel (low|medium|high|xhigh|max); validate a configured level is one the chosen model supports if the catalog reports that, else pass through.
+
+## BBF-0045 User-configured alternate rotation of up to 5 providers
+status: draft
+priority: 3
+depends_on: BBF-0044
+risk: low
+plan: src/contracts.ts (providerRotation on factorySettingsSchema and factorySettingsPatchSchema), src/settings.ts, src/dispatch/preflight.ts (selectProvider alternate branch, lines 63-73), src/ui/views/settings.ts (provider FormRow), tests/dispatch.test.ts, tests/ui-settings.test.ts, tests/settings-mutations.test.ts
+approved: none
+acceptance:
+- Settings persists an optional ordered providerRotation list of 2 to 5 unique provider ids; null or absent clears it. The Settings UI offers the rotation editor only when providerPreference is alternate, lets the user add, remove, and reorder providers from the reported catalog, and tolerantly renders stored ids the host no longer reports.
+- With providerPreference alternate and a rotation set, selectProvider advances through the configured list order from lastStartProvider and picks the first usable member; with no list the catalog-wide rotation behaves exactly as today.
+- If every rotation member is unusable, dispatch falls back to any usable provider outside the list with a recorded reason, matching the pinned-provider fallback contract.
+- Rotation members with a BBF-0044 per-provider default use their configured model and thinking when selected.
+- Regression coverage for list ordering, skipping unusable members, all-unusable fallback, and unset-list parity.
+validate:
+- pnpm test
+- pnpm typecheck
+- pnpm lint
+- pnpm build
+- bb plugin types --check .
+- git diff --check
+notes: Additive optional settings key only; selectProvider's signature gains the list internally, wire key shape untouched. depends_on BBF-0044 because both extend the settings provider section and selectProvider in the same places; land sequentially to avoid churn. Rotation semantics mirror the existing catalog rotation (preflight.ts:63-73): advance from lastStartProvider, first usable member wins.
