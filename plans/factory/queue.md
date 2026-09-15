@@ -718,7 +718,7 @@ priority: 2
 depends_on: none
 risk: medium
 plan: src/contracts.ts (run-now action variant, line ~719), src/dispatch/start.ts, src/dispatch/types.ts, src/actions/interactions.ts, src/ui/shell.ts, src/ui/FactoryView.ts, src/ui/providerPicker.ts, tests/dispatch.test.ts, tests/ui-shell.test.ts, tests/ui.test.ts
-approved: none
+approved: user direction 2026-09-15 (reviewed as draft, marked ready, run directed in-thread)
 acceptance:
 - The run-now confirm dialog embeds the shared ProviderModelPicker seeded from live provider status via seedPickerValue (configured preference first), so a manual run starts on a chosen provider, model, and thinking level; on hosts that do not bind experimental_ProviderModelPicker the dialog keeps today's plain confirm behavior.
 - The run-now action accepts optional providerId, model, reasoningLevel, and serviceTier (the PickerValue shape recommend-approval already carries); scheduled and retry-driven runs omit them and behave exactly as today.
@@ -740,7 +740,7 @@ priority: 2
 depends_on: none
 risk: medium
 plan: src/contracts.ts (factorySettingsSchema ~line 173, factorySettingsPatchSchema ~line 1295), src/settings.ts (providerPreference descriptor), src/dispatch/preflight.ts (selectProvider), src/ui/views/settings.ts (provider FormRow ~line 623), tests/settings-mutations.test.ts, tests/dispatch.test.ts, tests/ui-settings.test.ts
-approved: none
+approved: user direction 2026-09-15 (reviewed as draft, marked ready, run directed in-thread)
 acceptance:
 - Settings persists an optional per-provider default `{ model, reasoningLevel }` keyed by provider id; model names are not portable across providers, so the store is a keyed map, not one global pair. Providers without an entry keep the host-reported default.
 - When providerPreference pins a specific provider, the Settings provider section exposes a model and thinking control for that provider (reusing ProviderModelPicker's host catalog via routing where supported) and saves through the existing factory_update_settings patch path with the established Saving/Saved feedback.
@@ -761,7 +761,7 @@ priority: 3
 depends_on: BBF-0044
 risk: low
 plan: src/contracts.ts (providerRotation on factorySettingsSchema and factorySettingsPatchSchema), src/settings.ts, src/dispatch/preflight.ts (selectProvider alternate branch, lines 63-73), src/ui/views/settings.ts (provider FormRow), tests/dispatch.test.ts, tests/ui-settings.test.ts, tests/settings-mutations.test.ts
-approved: none
+approved: user direction 2026-09-15 (reviewed as draft, marked ready, run directed in-thread)
 acceptance:
 - Settings persists an optional ordered providerRotation list of 2 to 5 unique provider ids; null or absent clears it. The Settings UI offers the rotation editor only when providerPreference is alternate, lets the user add, remove, and reorder providers from the reported catalog, and tolerantly renders stored ids the host no longer reports.
 - With providerPreference alternate and a rotation set, selectProvider advances through the configured list order from lastStartProvider and picks the first usable member; with no list the catalog-wide rotation behaves exactly as today.

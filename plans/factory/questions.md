@@ -23,3 +23,9 @@ question: `bb plugin types --check` is a required repo standard check and fails 
 context: plans/factory/repo.md standard checks table; package.json devDependencies; queue entries BBF-0029/BBF-0030.
 recommended: Yes; authorize the repin so the required check passes.
 answer: Approved 2026-09-14. Repin @get-bb/plugin-sdk to the host version 0.4.87 and rerun the complete validation suite. This fully resolves Q2.
+
+## Q3 2026-09-15 assumption BBF-0043
+question: The preflight step says `git rebase origin/main`, but this repository's main is a synthetic release branch (each main commit is a commit-tree of factory minus plans/ plus dist/, per scripts/release.sh). Rebasing factory onto it would conflict on every plans/-touching commit and merge release artifacts back into working state. Is skipping the rebase and documenting it here the right read?
+context: scripts/release.sh:39-45; git rev-list shows factory is only ever "behind" main by release-artifact commits that carry no source changes.
+assumed: Fetched origin and skipped the rebase; factory is the sole working branch and main only receives release commits, so there is nothing to rebase onto.
+recommended: Yes. If a different sync is wanted, say so and the protocol gets a repo.md override.
