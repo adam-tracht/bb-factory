@@ -695,3 +695,19 @@ validate:
 - pnpm typecheck
 - pnpm lint
 notes: Follow-up from live review of BBF-0040 on the aggregate overview. The basis-full action wrapper forced a second line per item; it now shares the title line with ml-auto fallback for extreme widths. Disclosure's body gains pl-3 so expanded content aligns under the summary text at every call site. BBF-0039's uncommitted display-name work remains excluded from commits.
+
+## BBF-0042 Attention row severity dot drifts off the title line when expanded
+status: done (interactive session 2026-09-14)
+priority: 2
+depends_on: BBF-0041
+risk: low
+plan: src/ui/views/overview.ts, src/ui/views/aggregate.ts, docs/control-surface.md
+approved: user direction 2026-09-14 (follow-up review of BBF-0041)
+acceptance:
+- The severity dot stays vertically aligned with the disclosure caret and title line whether the row is collapsed or expanded, at every viewport width.
+- The row action stays centered on the title line when the row is collapsed and remains pinned to it when expanded.
+validate:
+- pnpm test
+- pnpm typecheck
+- pnpm lint
+notes: Follow-up from live review. Above the sm breakpoint the row switched to items-center and dropped the dot's mt-1.5 offset, so an expanded (taller) row centered the dot on the whole block instead of the title line. The row now anchors every item to the first line: items-start at all widths, the dot keeps mt-1.5, and the action sits in a one-line-tall lane that centers it on the title line.

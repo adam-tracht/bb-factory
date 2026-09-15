@@ -47,8 +47,8 @@ run when present, Last run, Dispatch, and a conditional Repository section.
 Each category nests only contributing repositories under a scoped context.
 Repository subgroup headings render at normal weight under the semibold
 category titles, Needs attention rows show only the item title in the summary
-and reveal the detail line indented under it on expand while the row action
-stays on the title line, and on desktop the Work queue subgroup
+and reveal the detail line indented under it on expand while the severity dot
+and row action stay anchored to the title line at every viewport width, and on desktop the Work queue subgroup
 carries its status chips and Open work action inline on the repository row
 (on phone they stay inside the collapsible body). The
 Last run category always has one row per repository, including repositories
