@@ -231,9 +231,10 @@ export function Section(props: {
   actions?: ReactNode;
   id?: string;
   testId?: string;
+  titleClassName?: string;
 }) {
   const heading = h("div", { className: "flex items-center gap-2 py-1.5" },
-    h("h2", { className: "text-sm font-semibold text-foreground" }, props.title),
+    h("h2", { className: props.titleClassName ?? "text-sm font-semibold text-foreground" }, props.title),
     props.count !== undefined
       ? h("span", { className: "rounded bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground" }, String(props.count))
       : null,
@@ -270,7 +271,7 @@ export function Disclosure(props: { summary: ReactNode; children: ReactNode; cla
     className: props.className,
     summaryClassName: "cursor-pointer list-none select-none text-xs font-medium text-muted-foreground transition-colors hover:text-foreground",
     summaryPrefix: h("span", { className: "inline-block transition-transform group-open:rotate-90" }, "▸"),
-    bodyClassName: "mt-2",
+    bodyClassName: "mt-2 pl-3",
     heading: props.summary,
     children: props.children,
   });

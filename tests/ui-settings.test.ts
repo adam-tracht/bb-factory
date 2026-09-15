@@ -201,6 +201,48 @@ describe("SettingsView", () => {
     expect(await screen.findByText("saved")).toBeTruthy();
   });
 
+  it("sets and clears the optional display name through the existing repository mutation", async () => {
+    const ctx = makeCtx({
+      displayName: "Old name",
+      updateRepository: vi.fn(async (input: Parameters<ViewContext["updateRepository"]>[0]) => ({
+        ok: true as const,
+        message: input.displayName === null
+          ? "Display name cleared for 'demo'."
+          : "Display name saved as 'Friendly repo'.",
+      })),
+    });
+    renderSettings({ ctx });
+    const input = screen.getByLabelText("Display name") as HTMLInputElement;
+    expect(input.value).toBe("Old name");
+
+    fireEvent.change(input, { target: { value: "Friendly repo" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save display name" }));
+    await waitFor(() => expect(ctx.updateRepository).toHaveBeenCalledWith({
+      repositoryKey: "demo",
+      displayName: "Friendly repo",
+    }));
+    expect(await screen.findByText("Display name saved as 'Friendly repo'.")).toBeTruthy();
+
+    fireEvent.change(input, { target: { value: "   " } });
+    fireEvent.click(screen.getByRole("button", { name: "Save display name" }));
+    await waitFor(() => expect(ctx.updateRepository).toHaveBeenLastCalledWith({
+      repositoryKey: "demo",
+      displayName: null,
+    }));
+    expect(await screen.findByText("Display name cleared for 'demo'.")).toBeTruthy();
+  });
+
+  it("blocks an overlong display name before the Settings mutation", () => {
+    const ctx = makeCtx({ displayName: "Old name" });
+    renderSettings({ ctx });
+    const input = screen.getByLabelText("Display name") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "x".repeat(65) } });
+
+    expect(screen.getByRole("button", { name: "Save display name" })).toHaveProperty("disabled", true);
+    expect(screen.getByText("Use 64 characters or fewer")).toBeTruthy();
+    expect(ctx.updateRepository).not.toHaveBeenCalled();
+  });
+
   it("shows the dirty bar on edit, restores on Discard, and saves a converted patch", async () => {
     const ctx = makeCtx();
     renderSettings({ ctx });
@@ -477,6 +519,18 @@ describe("SettingsView", () => {
 });
 
 describe("RepositoryLandingView", () => {
+  it("uses the display name for the visible repository card while selecting by key", () => {
+    const onSelect = vi.fn();
+    render(h(RepositoryLandingView, {
+      repositories: [makeSelection("demo", { displayName: "Demo app" })],
+      onSelect,
+      onAddRepository: vi.fn(),
+    }));
+    expect(screen.getByText("Demo app")).toBeTruthy();
+    fireEvent.click(screen.getByText("Demo app").closest("button") as HTMLElement);
+    expect(onSelect).toHaveBeenCalledWith("demo");
+  });
+
   it("renders a row per repository with lazy attention counts and selects on click", async () => {
     const onSelect = vi.fn();
     const onAddRepository = vi.fn();

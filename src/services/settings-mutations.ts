@@ -1,6 +1,7 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import {
   factorySettingsSchema,
+  repositoryDisplayNameSchema,
   repositoryRegistryEntrySchema,
   repositoryRegistrySchema,
   type AddRepositoryInput,
@@ -10,6 +11,7 @@ import {
   type UpdateRepositoryInput,
 } from "../contracts.js";
 import { errorMessage } from "../errors.js";
+import { repositoryLabel } from "../repository-label.js";
 import type { ReadComposition } from "./read-composition.js";
 
 type BbSdk = BbPluginApi["sdk"];
@@ -93,20 +95,46 @@ export function createSettingsMutationHandlers(options: SettingsMutationOptions)
     },
 
     async factory_update_repository(input) {
+      if (input.dispatchPaused === undefined && input.displayName === undefined) {
+        return failure("invalid-input", "At least one repository setting is required.");
+      }
+      let displayNameInput: string | null | undefined;
+      if (input.displayName === undefined || input.displayName === null) {
+        displayNameInput = input.displayName;
+      } else {
+        const parsedDisplayName = repositoryDisplayNameSchema.safeParse(input.displayName);
+        if (!parsedDisplayName.success) return invalidSettings(parsedDisplayName.error);
+        displayNameInput = parsedDisplayName.data;
+      }
       const registry = readRegistry(getSettings());
-      if (!registry || !getComposition().getRepositoryEntry(input.repositoryKey)) {
+      const currentEntry = getComposition().getRepositoryEntry(input.repositoryKey);
+      if (!registry || !currentEntry) {
         return failure("not-found", `Repository '${input.repositoryKey}' is not configured.`);
       }
-      const repositories = registry.repositories.map((entry) =>
-        entry.configuration.repositoryKey === input.repositoryKey
-          ? { ...entry, dispatchPaused: input.dispatchPaused }
-          : entry,
-      );
+      const repositories = registry.repositories.map((entry) => {
+        if (entry.configuration.repositoryKey !== input.repositoryKey) return entry;
+        const updated = { ...entry };
+        if (input.dispatchPaused !== undefined) updated.dispatchPaused = input.dispatchPaused;
+        if (displayNameInput !== undefined) {
+          if (displayNameInput === null) delete updated.displayName;
+          else updated.displayName = displayNameInput;
+        }
+        return updated;
+      });
+      const displayName = displayNameInput === undefined
+        ? currentEntry.displayName
+        : displayNameInput ?? undefined;
+      const label = repositoryLabel(input.repositoryKey, displayName);
+      const message = input.dispatchPaused === undefined
+        ? displayNameInput === null
+          ? `Display name cleared for '${label}'.`
+          : `Display name saved as '${label}'.`
+        : input.dispatchPaused
+          ? `Dispatch paused for '${label}'. Scheduled and manual starts are blocked; running runs continue.`
+          : `Dispatch resumed for '${label}'.`;
       return writeRegistry(
         { repositories, defaultRepositoryKey: registry.defaultRepositoryKey },
-        input.dispatchPaused
-          ? `Dispatch paused for '${input.repositoryKey}'. Scheduled and manual starts are blocked; running runs continue.`
-          : `Dispatch resumed for '${input.repositoryKey}'.`,
+        message,
       );
     },
 
@@ -120,6 +148,7 @@ export function createSettingsMutationHandlers(options: SettingsMutationOptions)
         projectId: input.projectId,
         environmentId: input.environmentId,
         dispatchPaused: input.dispatchPaused,
+        displayName: input.displayName,
       });
       if (!entry.success) {
         return invalidSettings(entry.error);
@@ -145,7 +174,7 @@ export function createSettingsMutationHandlers(options: SettingsMutationOptions)
       }
       return writeRegistry(
         { repositories, defaultRepositoryKey },
-        `Repository '${key}' added${input.dispatchPaused ? " with dispatch paused" : ""}.${protocolNote}`,
+        `Repository '${repositoryLabel(key, entry.data.displayName)}' added${input.dispatchPaused ? " with dispatch paused" : ""}.${protocolNote}`,
       );
     },
   };

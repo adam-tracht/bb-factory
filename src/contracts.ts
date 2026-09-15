@@ -10,6 +10,10 @@ export const repositoryKeySchema = z
   .regex(/^[a-z0-9][a-z0-9._-]{0,63}$/, "must be a lowercase repository key");
 export type RepositoryKey = z.infer<typeof repositoryKeySchema>;
 
+/** Optional presentation text. It never participates in repository identity. */
+export const repositoryDisplayNameSchema = z.string().trim().min(1).max(64);
+export type RepositoryDisplayName = z.infer<typeof repositoryDisplayNameSchema>;
+
 export const providerIdSchema = nonEmptyString.regex(
   /^[a-z0-9][a-z0-9._-]{0,63}$/,
   "must be a lowercase provider id",
@@ -60,6 +64,7 @@ export const repositoryRegistryEntrySchema = z
     // registers an unmanaged environment record for it.
     environmentId: nonEmptyString.optional(),
     dispatchPaused: z.boolean().optional(),
+    displayName: repositoryDisplayNameSchema.optional(),
   })
   .strict();
 export type RepositoryRegistryEntry = z.infer<typeof repositoryRegistryEntrySchema>;
@@ -1057,6 +1062,7 @@ export const repositorySelectionSchema = z
     projectId: nonEmptyString,
     environmentId: nonEmptyString.nullable(),
     dispatchPaused: z.boolean(),
+    displayName: repositoryDisplayNameSchema.optional(),
     selected: z.boolean(),
     available: z.boolean(),
     reasons: z.array(nonEmptyString),
@@ -1306,8 +1312,16 @@ export const updateSettingsInputSchema = z
 export type UpdateSettingsInput = z.infer<typeof updateSettingsInputSchema>;
 
 export const updateRepositoryInputSchema = z
-  .object({ repositoryKey: repositoryKeySchema, dispatchPaused: z.boolean() })
-  .strict();
+  .object({
+    repositoryKey: repositoryKeySchema,
+    dispatchPaused: z.boolean().optional(),
+    displayName: repositoryDisplayNameSchema.nullable().optional(),
+  })
+  .strict()
+  .refine(
+    (input) => input.dispatchPaused !== undefined || input.displayName !== undefined,
+    "at least one repository setting is required",
+  );
 export type UpdateRepositoryInput = z.infer<typeof updateRepositoryInputSchema>;
 
 export const addRepositoryInputSchema = z
@@ -1324,6 +1338,7 @@ export const addRepositoryInputSchema = z
     projectId: nonEmptyString,
     environmentId: nonEmptyString.optional(),
     dispatchPaused: z.boolean().default(true),
+    displayName: repositoryDisplayNameSchema.optional(),
   })
   .strict();
 export type AddRepositoryInput = z.infer<typeof addRepositoryInputSchema>;

@@ -145,21 +145,16 @@ function NeedsAttention(props: { attention: readonly AttentionItem[]; settings: 
     children: attention.map((item) => {
       const action = attentionAction(item, ctx);
       const mutating = action?.pendingTarget !== undefined;
-      return h("div", { key: item.id, className: "flex min-w-0 flex-wrap items-start gap-3 py-2 sm:flex-nowrap sm:items-center", "data-attention-id": item.id },
-        h("span", { className: "mt-1.5 shrink-0 sm:mt-0" },
+      return h("div", { key: item.id, className: "flex min-w-0 flex-wrap items-start gap-3 py-2 sm:flex-nowrap", "data-attention-id": item.id },
+        h("span", { className: "mt-1.5 shrink-0" },
           h(StatusDot, { tone: SEVERITY_TONE[item.severity] })),
         h("div", { className: "min-w-0 flex-1" },
           h(Disclosure, {
-            summary: h("span", null,
-              h("span", { className: "text-sm font-normal text-foreground" }, item.title),
-              h("span", {
-                className: "mt-0.5 line-clamp-2 break-words text-xs font-normal text-muted-foreground sm:line-clamp-1",
-                title: item.detail,
-              }, item.detail)),
+            summary: h("span", { className: "text-sm font-normal text-foreground" }, item.title),
             children: h("p", { className: "break-words text-xs text-muted-foreground" }, item.detail),
           })),
         action
-          ? h("div", { className: "flex basis-full justify-end sm:basis-auto" },
+          ? h("div", { className: "ml-auto flex h-5 items-center justify-end" },
               h(ActionButton, {
                 label: action.label,
                 variant: "ghost",

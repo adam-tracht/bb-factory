@@ -319,17 +319,17 @@ describe("OverviewView", () => {
 });
 
 describe("OverviewView phone layout", () => {
-  it("clamps Needs attention detail text and keeps the full text on the title attribute", () => {
+  it("hides Needs attention detail text until the row is expanded", () => {
     const detail =
       "T2 waits on approval text that runs long, and T3 still needs a dependency review before it can dispatch.";
-    renderOverview({
+    const { container } = renderOverview({
       attention: [
         { id: "approvals", severity: "action", section: "work", title: "2 items need approval", detail },
       ],
     });
-    const detailEl = screen.getByText(detail);
-    expect(detailEl.className).toContain("line-clamp-2");
-    expect(detailEl.getAttribute("title")).toBe(detail);
+    const row = container.querySelector("[data-attention-id='approvals']") as HTMLElement;
+    expect(within(row).getByText("2 items need approval")).toBeTruthy();
+    expect(within(row).queryByText(detail)).toBeNull();
   });
 
   it("expands a Needs attention row to reveal the full detail and keeps the action outside the summary", () => {
@@ -344,15 +344,20 @@ describe("OverviewView phone layout", () => {
     const details = row.querySelector("details") as HTMLDetailsElement | null;
     expect(details).toBeTruthy();
     const summary = details!.querySelector("summary") as HTMLElement;
-    expect(within(row).getAllByText(detail)).toHaveLength(1);
+    expect(within(row).queryByText(detail)).toBeNull();
 
     fireEvent.click(summary);
     expect(details!.open).toBe(true);
-    expect(within(row).getAllByText(detail)).toHaveLength(2);
+    expect(within(row).getAllByText(detail)).toHaveLength(1);
 
     const action = within(row).getByRole("button", { name: "Review" });
     expect(summary.contains(action)).toBe(false);
     expect(details!.contains(action)).toBe(false);
+    // The action stays on the title line; it never takes a dedicated full-width row.
+    expect((action.parentElement as HTMLElement).className).not.toContain("basis-full");
+    // The expanded detail indents under the title text, past the disclosure caret.
+    const body = details!.querySelector("summary")!.nextElementSibling as HTMLElement;
+    expect(body.className).toContain("pl-3");
   });
 
   it("wraps long current-run task ids instead of overflowing", () => {

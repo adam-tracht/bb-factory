@@ -42,6 +42,7 @@ import {
   type SettingsProjection,
 } from "../contracts.js";
 import type { FactoryRpcContract } from "../rpc.js";
+import { repositoryLabel } from "../repository-label.js";
 import { computeAttention, attentionCounts, type AttentionInput, type AttentionItem } from "./attention.js";
 import type { FactoryAction, FactorySection, ViewContext } from "./context.js";
 import {
@@ -675,6 +676,7 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
   const ctx: ViewContext | null = selectedConfiguration
     ? {
         repository: selectedConfiguration,
+        displayName: selectedEntry?.displayName,
         environmentId: selectedEntry?.environmentId ?? null,
         projectId: selectedEntry?.projectId ?? null,
         dispatchPaused: selectedEntry?.dispatchPaused ?? false,
@@ -715,6 +717,7 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
     return {
       idPrefix: `${key}:`,
       repository: entry.configuration,
+      displayName: entry.displayName,
       environmentId: entry.environmentId ?? null,
       projectId: entry.projectId ?? null,
       dispatchPaused: entry.dispatchPaused ?? false,
@@ -770,6 +773,9 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
   const providerLine = preferredProvider
     ? `Provider: ${preferredProvider}${preferredStatus ? ` (${preferredStatus.availability})` : ""}.`
     : "Provider: rotates between available providers.";
+  const selectedRepositoryLabel = selectedConfiguration
+    ? repositoryLabel(selectedConfiguration.repositoryKey, selectedEntry?.displayName)
+    : null;
   const runNowDisabledReason = !settings
     ? null
     : settings.dispatch.mode !== "enabled"
@@ -998,8 +1004,8 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
       ? {
           disabled: runNowDisabledReason !== null,
           reason: runNowDisabledReason,
-          confirmTitle: `Run the foreman on ${selectedConfiguration?.repositoryKey ?? "this repository"}?`,
-          confirmBody: `Starts a foreman run on ${selectedConfiguration?.repositoryKey ?? "the repository"} now, ignoring the night window and minimum gap. ${providerLine}`,
+          confirmTitle: `Run the foreman on ${selectedRepositoryLabel ?? "this repository"}?`,
+          confirmBody: `Starts a foreman run on ${selectedRepositoryLabel ?? "the repository"} now, ignoring the night window and minimum gap. ${providerLine}`,
           onConfirm: () => void submitAction({ kind: "run-now" }, "dispatch", repoKey, snapshot, scopeSection),
         }
       : null,

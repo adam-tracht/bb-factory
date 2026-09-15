@@ -21,6 +21,7 @@ import {
   pickFolderResultSchema,
   providerPreferenceSchema,
   providerStatusSchema,
+  repositoryDisplayNameSchema,
   probeRepositoryInputSchema,
   questionSchema,
   repositoryProbeSchema,
@@ -32,6 +33,7 @@ import {
   repositoryRegistrySchema,
   resolveRepositoryRegistry,
   repositoryActionRequestSchema,
+  updateRepositoryInputSchema,
   scheduleSettingsSchema,
   settingsProjectionSchema,
   staleRevisionErrorVariantSchema,
@@ -183,6 +185,54 @@ describe("Phase 0 wire contracts", () => {
       },
       projectId: "project-monorepo",
     })).toMatchObject({ projectId: "project-monorepo", dispatchPaused: true });
+  });
+
+  it("keeps display names optional, normalized, and outside repository identity", () => {
+    expect(repositoryDisplayNameSchema.parse("x".repeat(64))).toBe("x".repeat(64));
+    expect(repositoryDisplayNameSchema.parse(" \t Friendly name \n")).toBe("Friendly name");
+    expect(() => repositoryDisplayNameSchema.parse(" \t \n")).toThrow();
+    expect(() => repositoryDisplayNameSchema.parse("x".repeat(65))).toThrow();
+    const registry = {
+      repositories: [
+        { ...monorepoRegistryEntry, displayName: "  Core monorepo  " },
+        { ...dataRegistryEntry, displayName: "Core monorepo" },
+      ],
+      defaultRepositoryKey: "monorepo",
+    };
+    const parsed = repositoryRegistrySchema.parse(registry);
+    expect(parsed.repositories.map((entry) => entry.displayName)).toEqual(["Core monorepo", "Core monorepo"]);
+    expect(parsed.repositories[0]?.configuration).not.toHaveProperty("displayName");
+    expect(addRepositoryInputSchema.parse({
+      configuration: {
+        repositoryKey: monorepoRegistryEntry.configuration.repositoryKey,
+        repositoryRoot: monorepoRegistryEntry.configuration.repositoryRoot,
+        connectedHostId: monorepoRegistryEntry.configuration.connectedHostId,
+        checkoutPath: monorepoRegistryEntry.configuration.checkoutPath,
+        mainRef: monorepoRegistryEntry.configuration.mainRef,
+      },
+      projectId: monorepoRegistryEntry.projectId,
+      displayName: "  Friendly name  ",
+    }).displayName).toBe("Friendly name");
+    expect(updateRepositoryInputSchema.parse({
+      repositoryKey: "monorepo",
+      displayName: "  Updated name  ",
+    })).toEqual({ repositoryKey: "monorepo", displayName: "Updated name" });
+    expect(updateRepositoryInputSchema.parse({ repositoryKey: "monorepo", displayName: null })).toEqual({
+      repositoryKey: "monorepo",
+      displayName: null,
+    });
+    expect(() => updateRepositoryInputSchema.parse({ repositoryKey: "monorepo" })).toThrow();
+    expect(() => addRepositoryInputSchema.parse({
+      configuration: {
+        repositoryKey: monorepoRegistryEntry.configuration.repositoryKey,
+        repositoryRoot: monorepoRegistryEntry.configuration.repositoryRoot,
+        connectedHostId: monorepoRegistryEntry.configuration.connectedHostId,
+        checkoutPath: monorepoRegistryEntry.configuration.checkoutPath,
+        mainRef: monorepoRegistryEntry.configuration.mainRef,
+      },
+      projectId: monorepoRegistryEntry.projectId,
+      displayName: "x".repeat(65),
+    })).toThrow();
   });
 
   it("rejects duplicate repository keys and invalid selected keys", () => {

@@ -707,6 +707,25 @@ describe("BB interaction action executor", () => {
     expect(harness.spawn).toHaveBeenCalledTimes(1);
   });
 
+  it("uses the display name only for a recommendation thread title", async () => {
+    const harness = makeInteractionHarness([]);
+    harness.entry.displayName = "Core repo";
+    const request = bbRequest({
+      kind: "recommend-question",
+      questionId: "Q6",
+      providerId: "codex",
+      model: "gpt-5",
+      reasoningLevel: "medium",
+    });
+
+    const result = await harness.executor.execute(request);
+    expect(result.ok).toBe(true);
+    const spawned = vi.mocked(harness.spawn).mock.calls[0]![0];
+    expect(spawned.title).toBe("factory recommend: Core repo Q6");
+    expect(spawned.prompt).toContain('repository "monorepo"');
+    expect(spawned.prompt).not.toContain('repository "Core repo"');
+  });
+
   it("spawns an advisory approval-drafting thread scoped to a queue item", async () => {
     const harness = makeInteractionHarness([]);
     const action = {

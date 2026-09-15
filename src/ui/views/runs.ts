@@ -7,6 +7,7 @@ import type {
   OperationalRunSummary,
 } from "../../contracts.js";
 import type { ViewContext } from "../context.js";
+import { repositoryLabel } from "../../repository-label.js";
 import {
   ActionButton,
   Badge,
@@ -174,7 +175,7 @@ export function RunsView(props: { runs: OperationalRunListProjection; ctx: ViewC
     return h("div", { className: "space-y-4" },
       h(FeedbackNotice, { feedback: ctx.feedback }),
       h(EmptyNotice, {
-        title: `No BB-tracked runs yet for ${ctx.repository.repositoryKey}`,
+        title: `No BB-tracked runs yet for ${repositoryLabel(ctx.repository.repositoryKey, ctx.displayName)}`,
         detail: "Runs recorded directly by the protocol live in plans/factory/runs/.",
         // The target uses the normalized path without a trailing slash; the
         // normalizer rejects empty segments.

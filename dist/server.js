@@ -19688,6 +19688,7 @@ var isoTimestamp = external_exports.string().datetime({ offset: true });
 var sha256 = external_exports.string().regex(/^[a-f0-9]{64}$/, "must be a lowercase SHA-256 digest");
 var absolutePath = external_exports.string().regex(/^(?:\/|[A-Za-z]:[\\/])/, "must be an absolute path");
 var repositoryKeySchema = external_exports.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/, "must be a lowercase repository key");
+var repositoryDisplayNameSchema = external_exports.string().trim().min(1).max(64);
 var providerIdSchema = nonEmptyString.regex(
   /^[a-z0-9][a-z0-9._-]{0,63}$/,
   "must be a lowercase provider id"
@@ -19722,7 +19723,8 @@ var repositoryRegistryEntrySchema = external_exports.object({
   // Optional: when absent, dispatch spawns against the checkout path and bb
   // registers an unmanaged environment record for it.
   environmentId: nonEmptyString.optional(),
-  dispatchPaused: external_exports.boolean().optional()
+  dispatchPaused: external_exports.boolean().optional(),
+  displayName: repositoryDisplayNameSchema.optional()
 }).strict();
 var repositoryRegistrySchema = external_exports.object({
   repositories: external_exports.array(repositoryRegistryEntrySchema),
@@ -20416,6 +20418,7 @@ var repositorySelectionSchema = external_exports.object({
   projectId: nonEmptyString,
   environmentId: nonEmptyString.nullable(),
   dispatchPaused: external_exports.boolean(),
+  displayName: repositoryDisplayNameSchema.optional(),
   selected: external_exports.boolean(),
   available: external_exports.boolean(),
   reasons: external_exports.array(nonEmptyString)
@@ -20574,7 +20577,14 @@ var settingsMutationResultSchema = external_exports.discriminatedUnion("ok", [
   external_exports.object({ ok: external_exports.literal(false), error: factoryErrorSchema }).strict()
 ]);
 var updateSettingsInputSchema = external_exports.object({ repositoryKey: repositoryKeySchema, patch: factorySettingsPatchSchema }).strict();
-var updateRepositoryInputSchema = external_exports.object({ repositoryKey: repositoryKeySchema, dispatchPaused: external_exports.boolean() }).strict();
+var updateRepositoryInputSchema = external_exports.object({
+  repositoryKey: repositoryKeySchema,
+  dispatchPaused: external_exports.boolean().optional(),
+  displayName: repositoryDisplayNameSchema.nullable().optional()
+}).strict().refine(
+  (input2) => input2.dispatchPaused !== void 0 || input2.displayName !== void 0,
+  "at least one repository setting is required"
+);
 var addRepositoryInputSchema = external_exports.object({
   configuration: external_exports.object({
     repositoryKey: repositoryKeySchema,
@@ -20585,7 +20595,8 @@ var addRepositoryInputSchema = external_exports.object({
   }).strict(),
   projectId: nonEmptyString,
   environmentId: nonEmptyString.optional(),
-  dispatchPaused: external_exports.boolean().default(true)
+  dispatchPaused: external_exports.boolean().default(true),
+  displayName: repositoryDisplayNameSchema.optional()
 }).strict();
 var registryOptionHostSchema = external_exports.object({ hostId: nonEmptyString, label: nonEmptyString.nullable(), status: nonEmptyString }).strict();
 var registryOptionProjectSchema = external_exports.object({ projectId: nonEmptyString, label: nonEmptyString.nullable() }).strict();
@@ -23192,6 +23203,11 @@ async function resolveRepositoryProject(sdk, input2) {
   return { projectId: created.id, label: created.name, created: true };
 }
 
+// src/repository-label.ts
+function repositoryLabel(repositoryKey2, displayName) {
+  return displayName ?? repositoryKey2;
+}
+
 // src/services/settings-mutations.ts
 function failure2(category, message, fieldErrors) {
   return { ok: false, error: { category, message, ...fieldErrors ? { fieldErrors } : {} } };
@@ -23252,16 +23268,38 @@ function createSettingsMutationHandlers(options) {
       return { ok: true, message: "Settings saved. The change applies on the next dispatch cycle; a run in progress is not affected." };
     },
     async factory_update_repository(input2) {
+      if (input2.dispatchPaused === void 0 && input2.displayName === void 0) {
+        return failure2("invalid-input", "At least one repository setting is required.");
+      }
+      let displayNameInput;
+      if (input2.displayName === void 0 || input2.displayName === null) {
+        displayNameInput = input2.displayName;
+      } else {
+        const parsedDisplayName = repositoryDisplayNameSchema.safeParse(input2.displayName);
+        if (!parsedDisplayName.success) return invalidSettings(parsedDisplayName.error);
+        displayNameInput = parsedDisplayName.data;
+      }
       const registry2 = readRegistry(getSettings());
-      if (!registry2 || !getComposition().getRepositoryEntry(input2.repositoryKey)) {
+      const currentEntry = getComposition().getRepositoryEntry(input2.repositoryKey);
+      if (!registry2 || !currentEntry) {
         return failure2("not-found", `Repository '${input2.repositoryKey}' is not configured.`);
       }
-      const repositories = registry2.repositories.map(
-        (entry) => entry.configuration.repositoryKey === input2.repositoryKey ? { ...entry, dispatchPaused: input2.dispatchPaused } : entry
-      );
+      const repositories = registry2.repositories.map((entry) => {
+        if (entry.configuration.repositoryKey !== input2.repositoryKey) return entry;
+        const updated = { ...entry };
+        if (input2.dispatchPaused !== void 0) updated.dispatchPaused = input2.dispatchPaused;
+        if (displayNameInput !== void 0) {
+          if (displayNameInput === null) delete updated.displayName;
+          else updated.displayName = displayNameInput;
+        }
+        return updated;
+      });
+      const displayName = displayNameInput === void 0 ? currentEntry.displayName : displayNameInput ?? void 0;
+      const label = repositoryLabel(input2.repositoryKey, displayName);
+      const message = input2.dispatchPaused === void 0 ? displayNameInput === null ? `Display name cleared for '${label}'.` : `Display name saved as '${label}'.` : input2.dispatchPaused ? `Dispatch paused for '${label}'. Scheduled and manual starts are blocked; running runs continue.` : `Dispatch resumed for '${label}'.`;
       return writeRegistry(
         { repositories, defaultRepositoryKey: registry2.defaultRepositoryKey },
-        input2.dispatchPaused ? `Dispatch paused for '${input2.repositoryKey}'. Scheduled and manual starts are blocked; running runs continue.` : `Dispatch resumed for '${input2.repositoryKey}'.`
+        message
       );
     },
     async factory_add_repository(input2) {
@@ -23273,7 +23311,8 @@ function createSettingsMutationHandlers(options) {
         configuration,
         projectId: input2.projectId,
         environmentId: input2.environmentId,
-        dispatchPaused: input2.dispatchPaused
+        dispatchPaused: input2.dispatchPaused,
+        displayName: input2.displayName
       });
       if (!entry.success) {
         return invalidSettings(entry.error);
@@ -23297,7 +23336,7 @@ function createSettingsMutationHandlers(options) {
       }
       return writeRegistry(
         { repositories, defaultRepositoryKey },
-        `Repository '${key}' added${input2.dispatchPaused ? " with dispatch paused" : ""}.${protocolNote}`
+        `Repository '${repositoryLabel(key, entry.data.displayName)}' added${input2.dispatchPaused ? " with dispatch paused" : ""}.${protocolNote}`
       );
     }
   };
@@ -23335,7 +23374,7 @@ function providerReadFailure(error62) {
     lastError: `Could not read live provider health: ${errorMessage(error62)}`
   };
 }
-function hostReadFailure(repositoryKey2, error62) {
+function hostReadFailure(repositoryLabelText, error62) {
   return {
     hostId: "unknown",
     status: "unknown",
@@ -23345,7 +23384,7 @@ function hostReadFailure(repositoryKey2, error62) {
     browserAvailable: null,
     dbtStudioAvailable: null,
     ok: false,
-    reasons: [`Could not read host preflight for repository '${repositoryKey2}': ${errorMessage(error62)}`]
+    reasons: [`Could not read host preflight for repository '${repositoryLabelText}': ${errorMessage(error62)}`]
   };
 }
 function createFactoryReadRpcHandlers(getComposition) {
@@ -23372,7 +23411,7 @@ function createFactoryReadRpcHandlers(getComposition) {
     },
     async factory_health(input2) {
       const composition = getComposition();
-      requireEntry(composition, input2.repositoryKey);
+      const entry = requireEntry(composition, input2.repositoryKey);
       const [providersResult, hostResult] = await Promise.allSettled([
         composition.healthReader.listProviderStatus(input2.repositoryKey),
         composition.healthReader.getHostPreflight(input2.repositoryKey)
@@ -23380,7 +23419,7 @@ function createFactoryReadRpcHandlers(getComposition) {
       return {
         repositoryKey: input2.repositoryKey,
         providers: providersResult.status === "fulfilled" ? providersResult.value : [providerReadFailure(providersResult.reason)],
-        host: hostResult.status === "fulfilled" ? hostResult.value : hostReadFailure(input2.repositoryKey, hostResult.reason)
+        host: hostResult.status === "fulfilled" ? hostResult.value : hostReadFailure(repositoryLabel(input2.repositoryKey, entry.displayName), hostResult.reason)
       };
     },
     async factory_interactions(input2) {
@@ -24955,8 +24994,8 @@ function disabledAction2(request) {
 function createReadOnlyActionExecutor(options) {
   return {
     async execute(request) {
-      const configuration = options.repositoryLookup(request.repositoryKey);
-      if (!configuration) {
+      const entry = options.repositoryLookup(request.repositoryKey);
+      if (!entry) {
         return factoryActionResultSchema.parse({
           ok: false,
           error: {
@@ -24966,11 +25005,12 @@ function createReadOnlyActionExecutor(options) {
           }
         });
       }
+      const label = repositoryLabel(request.repositoryKey, entry.displayName);
       if (request.action.kind !== "preview" && request.action.kind !== "integration-report") {
         return disabledAction2(request);
       }
       try {
-        const snapshot = await options.protocolReader.loadSnapshot(configuration);
+        const snapshot = await options.protocolReader.loadSnapshot(entry.configuration);
         return factoryActionResultSchema.parse({
           ok: true,
           result: {
@@ -24989,7 +25029,7 @@ function createReadOnlyActionExecutor(options) {
           ok: false,
           error: {
             category: "internal",
-            message: `Could not load the read-only ${request.action.kind} for repository '${request.repositoryKey}': ${error62 instanceof Error ? error62.message : String(error62)}`,
+            message: `Could not load the read-only ${request.action.kind} for repository '${label}': ${error62 instanceof Error ? error62.message : String(error62)}`,
             idempotencyKey: request.idempotencyKey
           }
         });
@@ -25152,7 +25192,7 @@ function createReadComposition(options) {
   });
   const readOnlyActionExecutor = createReadOnlyActionExecutor({
     protocolReader,
-    repositoryLookup: (repositoryKey2) => lookupEntry(repositoryKey2)?.configuration ?? null
+    repositoryLookup: lookupEntry
   });
   return {
     sdk: options.sdk,
@@ -25175,6 +25215,7 @@ function createReadComposition(options) {
           projectId: entry.projectId,
           environmentId: entry.environmentId ?? null,
           dispatchPaused: entry.dispatchPaused === true,
+          ...entry.displayName === void 0 ? {} : { displayName: entry.displayName },
           selected: entry.configuration.repositoryKey === selected,
           available: true,
           reasons: selectionIssue ? [selectionIssue] : []
@@ -25578,7 +25619,7 @@ function createBbInteractionActionExecutor(options) {
           reasoningLevel: action.reasoningLevel,
           ...action.serviceTier === void 0 ? {} : { serviceTier: action.serviceTier },
           permissionMode: "auto",
-          title: `factory recommend: ${entry.configuration.repositoryKey} ${question.id}`,
+          title: `factory recommend: ${repositoryLabel(entry.configuration.repositoryKey, entry.displayName)} ${question.id}`,
           // Marks the picked values caller-explicit so the server does not
           // re-derive the project's stored execution defaults over them.
           executionInputSources: {
@@ -25642,7 +25683,7 @@ function createBbInteractionActionExecutor(options) {
           reasoningLevel: action.reasoningLevel,
           ...action.serviceTier === void 0 ? {} : { serviceTier: action.serviceTier },
           permissionMode: "auto",
-          title: `factory recommend: ${entry.configuration.repositoryKey} ${queueEntry2.id}`,
+          title: `factory recommend: ${repositoryLabel(entry.configuration.repositoryKey, entry.displayName)} ${queueEntry2.id}`,
           executionInputSources: {
             providerId: "explicit",
             model: "explicit",
@@ -26866,8 +26907,8 @@ function selectProvider(providers, state, preference, nightKey, nowS) {
 
 // src/dispatch/start.ts
 var FOREMAN_PROMPT = "Factory run. Read plans/factory/foreman.md first, then plans/factory/repo.md, and execute one run following the protocol. Your thread id is in $BB_THREAD_ID.";
-function runTitle(repositoryKey2, providerId) {
-  return `factory foreman: ${repositoryKey2} ${providerId}`;
+function runTitle(repositoryKey2, displayName, providerId) {
+  return `factory foreman: ${repositoryLabel(repositoryKey2, displayName)} ${providerId}`;
 }
 function noSpawn(result) {
   return { result, runId: null, leaseId: null };
@@ -27049,7 +27090,7 @@ async function startRun(ctx, input2) {
       model: provider.model,
       reasoningLevel: provider.reasoningLevel,
       permissionMode: "full",
-      title: runTitle(input2.repositoryKey, provider.providerId)
+      title: runTitle(input2.repositoryKey, entry.displayName, provider.providerId)
     });
     threadId = spawned.id;
     environmentId = entry.environmentId ?? spawned.environmentId;

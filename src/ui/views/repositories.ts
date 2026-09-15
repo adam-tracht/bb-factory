@@ -9,6 +9,7 @@ import {
   type SettingsMutationResult,
 } from "../../contracts.js";
 import type { ViewContext } from "../context.js";
+import { repositoryLabel } from "../../repository-label.js";
 import {
   ActionButton,
   Badge,
@@ -49,6 +50,7 @@ function RepositoryRow(props: {
 }) {
   const { repository, onSelect, loadSummary } = props;
   const repositoryKey = repository.configuration.repositoryKey;
+  const label = repositoryLabel(repositoryKey, repository.displayName);
   const [summary, setSummary] = useState<SummaryState>({ status: "loading" });
 
   useEffect(() => {
@@ -92,7 +94,7 @@ function RepositoryRow(props: {
   },
     h("div", { className: "min-w-0 flex-1" },
       h("div", { className: "flex items-center gap-2" },
-        h("span", { className: "truncate text-sm font-semibold text-foreground" }, repositoryKey),
+        h("span", { className: "truncate text-sm font-semibold text-foreground" }, label),
         repository.selected ? h(Badge, { label: "current", tone: "primary" }) : null),
       h("div", { className: "mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground" },
         h("span", { className: "font-mono" }, repository.configuration.connectedHostId),
@@ -155,6 +157,7 @@ export interface RegistrationPlan {
   readonly hostId: string;
   readonly root: string;
   readonly repositoryKey: string;
+  readonly displayName: string;
   readonly mainRef: string;
   readonly mode: CheckoutMode;
   /** "existing" mode target: the worktree already holding the factory branch. */
@@ -331,6 +334,7 @@ export async function runRegistration(
         },
         projectId,
         dispatchPaused: true,
+        ...(plan.displayName ? { displayName: plan.displayName } : {}),
       });
     } catch (error) {
       return failStep("register", error);
@@ -341,7 +345,7 @@ export async function runRegistration(
         return failStep("register", registration.error.message);
       }
       session.result.registered = true;
-      setStep("register", "done", `Repository '${plan.repositoryKey}' is already registered; resuming.`);
+      setStep("register", "done", `Repository '${repositoryLabel(plan.repositoryKey, plan.displayName || undefined)}' is already registered; resuming.`);
     } else {
       session.result.registered = true;
       setStep("register", "done", registration.message);
@@ -463,9 +467,10 @@ export function AddRepositoryView(props: {
   const [probeState, setProbeState] = useState<ProbeState>({ status: "idle" });
   const [probe, setProbe] = useState<RepositoryProbe | null>(null);
   const [repositoryKey, setRepositoryKey] = useState("");
+  const [displayName, setDisplayName] = useState("");
   const [mainRef, setMainRef] = useState("origin/main");
   const [mode, setMode] = useState<CheckoutMode>("worktree");
-  const [errors, setErrors] = useState<{ repositoryKey?: string; mainRef?: string }>({});
+  const [errors, setErrors] = useState<{ repositoryKey?: string; displayName?: string; mainRef?: string }>({});
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [running, setRunning] = useState(false);
   const [fatalError, setFatalError] = useState<string | null>(null);
@@ -503,6 +508,7 @@ export function AddRepositoryView(props: {
         setProbe(result);
         setProbeState({ status: "idle" });
         setRepositoryKey(result.suggestedKey);
+        setDisplayName(folderName(result.path));
         setMainRef(result.mainRef);
         setMode(defaultCheckoutMode(result));
         setErrors({});
@@ -556,6 +562,7 @@ export function AddRepositoryView(props: {
       hostId: probe.hostId,
       root: probe.path,
       repositoryKey: repositoryKey.trim(),
+      displayName: displayName.trim(),
       mainRef: mainRef.trim(),
       mode,
       existingCheckoutPath: mode === "existing" ? probe.factoryBranchState.checkedOutPath : null,
@@ -569,10 +576,11 @@ export function AddRepositoryView(props: {
   };
 
   const submit = () => {
-    const found: { repositoryKey?: string; mainRef?: string } = {};
+    const found: { repositoryKey?: string; displayName?: string; mainRef?: string } = {};
     if (!REPOSITORY_KEY_RE.test(repositoryKey.trim())) {
       found.repositoryKey = "Lowercase letters, digits, dots, dashes, or underscores; start with a letter or digit.";
     }
+    if (displayName.trim().length > 64) found.displayName = "Use 64 characters or fewer.";
     if (!mainRef.trim()) found.mainRef = "Enter the main ref.";
     setErrors(found);
     if (Object.keys(found).length === 0) setConfirmOpen(true);
@@ -606,7 +614,7 @@ export function AddRepositoryView(props: {
     return h("div", { className: "space-y-4" },
       header,
       h(Card, {
-        title: `Registering '${session.plan.repositoryKey}'`,
+        title: `Registering '${repositoryLabel(session.plan.repositoryKey, session.plan.displayName || undefined)}'`,
         children: [
           h("ol", { key: "steps", className: "space-y-2" },
             session.steps.map((step) =>
@@ -767,6 +775,7 @@ export function AddRepositoryView(props: {
     },
   ];
 
+  const visibleLabel = repositoryLabel(repositoryKey.trim(), displayName.trim() || undefined);
   const confirmLines: string[] = [
     mode === "worktree"
       ? `Creates the worktree '${probe.checkoutSuggestion}' on '${FACTORY_BRANCH}' (the branch is created from '${mainRef.trim()}' when missing).`
@@ -776,7 +785,7 @@ export function AddRepositoryView(props: {
     probe.projectMatch !== null
       ? `Uses the existing project '${probe.projectMatch.label ?? probe.projectMatch.projectId}'.`
       : `Creates a BB project named '${folderName(probe.path)}'.`,
-    `Registers '${repositoryKey.trim()}' with dispatch paused.`,
+    `Registers '${visibleLabel}' with dispatch paused.`,
     probe.hasProtocol
       ? "Keeps the existing plans/factory protocol files."
       : `Writes the plans/factory protocol files and commits them on '${FACTORY_BRANCH}'.`,
@@ -813,6 +822,22 @@ export function AddRepositoryView(props: {
               onChange: (event: { target: { value: string } }) => {
                 setRepositoryKey(event.target.value);
                 setErrors((current) => ({ ...current, repositoryKey: undefined }));
+              },
+            })),
+          h(FormRow, {
+            label: "Display name",
+            error: errors.displayName,
+            hint: "Optional friendly name shown in the Factory UI, up to 64 characters.",
+          },
+            h("input", {
+              type: "text",
+              "aria-label": "Display name",
+              maxLength: 64,
+              className: inputClass,
+              value: displayName,
+              onChange: (event: { target: { value: string } }) => {
+                setDisplayName(event.target.value);
+                setErrors((current) => ({ ...current, displayName: undefined }));
               },
             })),
           h(FormRow, { label: "Main ref", error: errors.mainRef },
@@ -864,7 +889,7 @@ export function AddRepositoryView(props: {
         h(ConfirmDialog, {
           key: "confirm",
           open: confirmOpen,
-          title: `Register '${repositoryKey.trim()}'?`,
+          title: `Register '${visibleLabel}'?`,
           body: h("ul", { className: "list-disc space-y-1 pl-4" },
             confirmLines.map((line) => h("li", { key: line }, line))),
           confirmLabel: "Register repository",

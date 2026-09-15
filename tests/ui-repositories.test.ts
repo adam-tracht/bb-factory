@@ -127,6 +127,7 @@ function makePlan(overrides: Partial<RegistrationPlan> = {}): RegistrationPlan {
     hostId: "host-1",
     root: REPO,
     repositoryKey: "newrepo",
+    displayName: "",
     mainRef: "origin/main",
     mode: "worktree",
     existingCheckoutPath: null,
@@ -321,6 +322,9 @@ describe("AddRepositoryView", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Choose repository folder" }));
     const keyInput = (await screen.findByLabelText("Repository key")) as HTMLInputElement;
     expect(keyInput.value).toBe("newrepo");
+    const displayNameInput = screen.getByLabelText("Display name") as HTMLInputElement;
+    expect(displayNameInput.value).toBe("newrepo");
+    fireEvent.change(displayNameInput, { target: { value: "Friendly repo" } });
     expect((screen.getByLabelText("Main ref") as HTMLInputElement).value).toBe("origin/main");
     expect((screen.getByLabelText("Dedicated factory worktree") as HTMLInputElement).checked).toBe(true);
     expect(screen.getByText(/initialized on 'factory'/)).toBeTruthy();
@@ -330,14 +334,41 @@ describe("AddRepositoryView", () => {
     fireEvent.click(screen.getByRole("button", { name: "Register repository" }));
     const dialog = screen.getByRole("alertdialog");
     expect(dialog.textContent).toContain(WORKTREE);
+    expect(dialog.textContent).toContain("Friendly repo");
     expect(dialog.textContent).toContain("paused");
     fireEvent.click(within(dialog).getByRole("button", { name: "Register repository" }));
 
     await waitFor(() => expect(onDone).toHaveBeenCalledWith("newrepo"));
     expect(calls).toEqual(["provision-checkout", "resolve", "register", "scaffold-protocol"]);
     expect(ctx.addRepository).toHaveBeenCalledWith(
-      expect.objectContaining({ dispatchPaused: true }),
+      expect.objectContaining({ dispatchPaused: true, displayName: "Friendly repo" }),
     );
+  });
+
+  it("falls back to the raw repository key when Add repository display name is blank", async () => {
+    const ctx = makeCtx();
+    render(h(AddRepositoryView, { ctx, onDone: vi.fn(), onCancel: vi.fn() }));
+    fireEvent.click(await screen.findByRole("button", { name: "Choose repository folder" }));
+    const displayNameInput = (await screen.findByLabelText("Display name")) as HTMLInputElement;
+    fireEvent.change(displayNameInput, { target: { value: "   " } });
+    fireEvent.click(screen.getByRole("button", { name: "Register repository" }));
+
+    const dialog = screen.getByRole("alertdialog");
+    expect(dialog.textContent).toContain("Registers 'newrepo' with dispatch paused.");
+    expect(dialog.textContent).not.toContain("Registers '' with dispatch paused.");
+  });
+
+  it("blocks Add repository submission when the display name exceeds 64 characters", async () => {
+    const ctx = makeCtx();
+    render(h(AddRepositoryView, { ctx, onDone: vi.fn(), onCancel: vi.fn() }));
+    fireEvent.click(await screen.findByRole("button", { name: "Choose repository folder" }));
+    const displayNameInput = (await screen.findByLabelText("Display name")) as HTMLInputElement;
+    fireEvent.change(displayNameInput, { target: { value: "x".repeat(65) } });
+    fireEvent.click(screen.getByRole("button", { name: "Register repository" }));
+
+    expect(await screen.findByText("Use 64 characters or fewer.")).toBeTruthy();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(ctx.runAction).not.toHaveBeenCalled();
   });
 
   it("shows a readable error for a non-git folder and stays on the pick stage", async () => {

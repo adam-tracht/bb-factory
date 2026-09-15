@@ -17,6 +17,7 @@ import {
   type Tone,
 } from "./primitives.js";
 import type { FactorySection } from "./context.js";
+import { repositoryLabel } from "../repository-label.js";
 
 const h = createElement;
 
@@ -137,7 +138,7 @@ function RepositorySwitcher(props: Pick<FactoryShellProps,
         : null,
       repositories.map((repo) =>
         h("option", { key: repo.configuration.repositoryKey, value: repo.configuration.repositoryKey },
-          repo.configuration.repositoryKey))),
+          repositoryLabel(repo.configuration.repositoryKey, repo.displayName)))),
     h("button", {
       type: "button",
       className: "inline-flex min-h-8 min-w-8 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-state-hover hover:text-foreground active:translate-y-px sm:min-h-6 sm:min-w-6",
@@ -168,6 +169,7 @@ function RepositorySwitcher(props: Pick<FactoryShellProps,
       }, "All"),
       repositories.map((repo) => {
         const key = repo.configuration.repositoryKey;
+        const label = repositoryLabel(key, repo.displayName);
         const active = !repositoriesActive && !wizard && key === selectedRepositoryKey;
         return h("button", {
           key,
@@ -176,11 +178,11 @@ function RepositorySwitcher(props: Pick<FactoryShellProps,
           className: `inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
             active ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
           }`,
-          title: repo.dispatchPaused ? `${key} (dispatch paused)` : key,
+          title: repo.dispatchPaused ? `${label} (dispatch paused)` : label,
           onClick: () => onSelectRepository(key),
         },
           repo.dispatchPaused ? h(StatusDot, { tone: "warning" }) : null,
-          key);
+          label);
       }),
       h("button", {
         type: "button",

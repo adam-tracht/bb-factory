@@ -7,6 +7,7 @@ import {
   type RepositoryKey,
 } from "../contracts.js";
 import { errorMessage } from "../errors.js";
+import { repositoryLabel } from "../repository-label.js";
 import { factoryRpcContract, type FactoryRpcContract } from "../rpc.js";
 import type { ReadComposition } from "../services/read-composition.js";
 import { pickRepositoryFolder, probeRepository } from "../services/repository-quickstart.js";
@@ -62,7 +63,7 @@ function providerReadFailure(error: unknown): ProviderStatus {
   };
 }
 
-function hostReadFailure(repositoryKey: RepositoryKey, error: unknown): HostPreflight {
+function hostReadFailure(repositoryLabelText: string, error: unknown): HostPreflight {
   return {
     hostId: "unknown",
     status: "unknown",
@@ -72,7 +73,7 @@ function hostReadFailure(repositoryKey: RepositoryKey, error: unknown): HostPref
     browserAvailable: null,
     dbtStudioAvailable: null,
     ok: false,
-    reasons: [`Could not read host preflight for repository '${repositoryKey}': ${errorMessage(error)}`],
+    reasons: [`Could not read host preflight for repository '${repositoryLabelText}': ${errorMessage(error)}`],
   };
 }
 
@@ -106,7 +107,7 @@ export function createFactoryReadRpcHandlers(
 
     async factory_health(input) {
       const composition = getComposition();
-      requireEntry(composition, input.repositoryKey);
+      const entry = requireEntry(composition, input.repositoryKey);
       const [providersResult, hostResult] = await Promise.allSettled([
         composition.healthReader.listProviderStatus(input.repositoryKey),
         composition.healthReader.getHostPreflight(input.repositoryKey),
@@ -118,7 +119,7 @@ export function createFactoryReadRpcHandlers(
           : [providerReadFailure(providersResult.reason)],
         host: hostResult.status === "fulfilled"
           ? hostResult.value
-          : hostReadFailure(input.repositoryKey, hostResult.reason),
+          : hostReadFailure(repositoryLabel(input.repositoryKey, entry.displayName), hostResult.reason),
       };
     },
 

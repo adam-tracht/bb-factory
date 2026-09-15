@@ -22,16 +22,16 @@ class FakeThreads {
   public stopped: string[] = [];
   public retried: string[] = [];
   public spawnError: Error | null = null;
-  public spawnCalls: Array<{ environment?: unknown; prompt: string }> = [];
+  public spawnCalls: Array<{ environment?: unknown; prompt: string; title?: string }> = [];
   /** Returned on spawn results, mirroring bb's auto-registered environment id. */
   public spawnedEnvironmentId: string | null = null;
   private counter = 0;
 
-  async spawn(input: { prompt: string; providerId?: string; environment?: unknown }) {
+  async spawn(input: { prompt: string; providerId?: string; environment?: unknown; title?: string }) {
     if (this.spawnError) throw this.spawnError;
     this.counter += 1;
     const id = `thread-${this.counter}`;
-    this.spawnCalls.push({ environment: input.environment, prompt: input.prompt });
+    this.spawnCalls.push({ environment: input.environment, prompt: input.prompt, title: input.title });
     this.threads.set(id, { id, status: "active", prompt: input.prompt, providerId: input.providerId });
     return { id, environmentId: this.spawnedEnvironmentId };
   }
@@ -145,6 +145,19 @@ describe("dispatch engine", () => {
     expect(detail.run?.attempts).toHaveLength(1);
     expect(threads.threads.get("thread-1")?.prompt).toContain("foreman.md");
     expect(store.getDispatcherState("monorepo").lastStartProvider).toBe("codex");
+  });
+
+  it("uses the display name only for the worker thread title", async () => {
+    const { engine, threads, store } = makeHarness({
+      entry: { ...makeRegistryEntry(), displayName: "Core repo" },
+    });
+    const result = await engine.requestRun(MANUAL_REQUEST);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+
+    const detail = await store.getRun({ repositoryKey: "monorepo", runId: result.result.runId! });
+    expect(threads.spawnCalls[0]?.title).toBe(`factory foreman: Core repo ${detail.run?.summary.providerId}`);
+    expect(detail.run?.summary.repositoryKey).toBe("monorepo");
   });
 
   it("starts a run on a pinned non-factory provider", async () => {

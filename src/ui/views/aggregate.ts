@@ -49,9 +49,14 @@ import { bucketRuns, RunGroupSection, RUN_GROUPS, useRunsNow } from "./runs.js";
 import { bucketWorkEntries, WorkGroupSection, WORK_GROUPS } from "./work.js";
 import { nextCronTimes } from "../../schedule/cron.js";
 import { describeSchedule } from "../../schedule/describe.js";
+import { repositoryLabel } from "../../repository-label.js";
 
 const h = createElement;
 const AGGREGATE_REPOSITORY_KEY = "@aggregate";
+
+function entryLabel(entry: RepositorySelection): string {
+  return repositoryLabel(entry.configuration.repositoryKey, entry.displayName);
+}
 
 export type Loadable<T> =
   | { status: "idle" | "loading" }
@@ -101,7 +106,7 @@ function RepositoryStatusGroup(props: {
   children: ReactNode;
 }): ReactNode {
   return h(Section, {
-    title: props.group.entry.configuration.repositoryKey,
+    title: entryLabel(props.group.entry),
     collapsible: true,
     defaultOpen: true,
     storageKey: sectionStorageKey(props.group.entry.configuration.repositoryKey, props.tab, props.section),
@@ -177,17 +182,21 @@ function overviewRepositorySection(props: {
   count?: number;
   defaultOpen: boolean;
   section: string;
+  actions?: ReactNode;
+  collapsible?: boolean;
   children: ReactNode;
   testId?: string;
 }): ReactNode {
   const repositoryKey = props.state.group.entry.configuration.repositoryKey;
   return h(Section, {
     key: props.key,
-    title: props.title ?? repositoryKey,
+    title: props.title ?? entryLabel(props.state.group.entry),
     count: props.count,
-    collapsible: true,
+    collapsible: props.collapsible ?? true,
     defaultOpen: props.defaultOpen,
     storageKey: sectionStorageKey(repositoryKey, "overview", props.section),
+    titleClassName: "text-sm font-normal text-foreground",
+    actions: props.actions,
     testId: props.testId,
     children: props.children,
   });
@@ -248,22 +257,17 @@ function OverviewAttentionRow(props: { item: AttentionItem; ctx: ViewContext }):
   const action = overviewAttentionAction(item, ctx);
   const mutating = action?.pendingTarget !== undefined;
   return h("div", {
-    className: "flex min-w-0 flex-wrap items-start gap-3 py-2 sm:flex-nowrap sm:items-center",
+    className: "flex min-w-0 flex-wrap items-start gap-3 py-2 sm:flex-nowrap",
     "data-attention-id": item.id,
   },
-    h("span", { className: "mt-1.5 shrink-0 sm:mt-0" }, h(StatusDot, { tone })),
+    h("span", { className: "mt-1.5 shrink-0" }, h(StatusDot, { tone })),
     h("div", { className: "min-w-0 flex-1" },
       h(Disclosure, {
-        summary: h("span", null,
-          h("span", { className: "text-sm font-normal text-foreground" }, item.title),
-          h("span", {
-            className: "mt-0.5 line-clamp-2 break-words text-xs font-normal text-muted-foreground sm:line-clamp-1",
-            title: item.detail,
-          }, item.detail)),
+        summary: h("span", { className: "text-sm font-normal text-foreground" }, item.title),
         children: h("p", { className: "break-words text-xs text-muted-foreground" }, item.detail),
       })),
     action
-      ? h("div", { className: "flex basis-full justify-end sm:basis-auto" },
+      ? h("div", { className: "ml-auto flex h-5 items-center justify-end" },
           h(ActionButton, {
             label: action.label,
             variant: "ghost",
@@ -340,23 +344,26 @@ function OverviewWorkSummary(props: { state: OverviewState; phone: boolean }): R
   const queue = state.snapshot?.queue ?? [];
   const buckets = bucketWorkEntries(queue);
   const groups = WORK_GROUPS.filter((section) => buckets[section.key].length > 0);
+  const chips = h("div", { className: "flex min-w-0 flex-wrap items-center gap-2" },
+    groups.map((section) => h(Badge, {
+      key: section.key,
+      label: `${buckets[section.key].length} ${section.title}`,
+      tone: OVERVIEW_WORK_TONE[section.key] ?? "neutral",
+    })),
+    h(ActionButton, {
+      label: "Open work",
+      variant: "ghost",
+      size: "xs",
+      onClick: () => state.group.ctx.onOpenSection("work"),
+    }));
   return overviewRepositorySection({
     state,
     count: queue.length,
     defaultOpen: !props.phone,
+    collapsible: props.phone,
     section: "work-queue",
-    children: h("div", { className: "flex min-w-0 flex-wrap items-center gap-2 px-1 py-2" },
-      groups.map((section) => h(Badge, {
-        key: section.key,
-        label: `${buckets[section.key].length} ${section.title}`,
-        tone: OVERVIEW_WORK_TONE[section.key] ?? "neutral",
-      })),
-      h(ActionButton, {
-        label: "Open work",
-        variant: "ghost",
-        size: "xs",
-        onClick: () => state.group.ctx.onOpenSection("work"),
-      })),
+    actions: props.phone ? undefined : chips,
+    children: props.phone ? h("div", { className: "px-1 py-2" }, chips) : null,
   });
 }
 
@@ -862,7 +869,7 @@ function AggregateWorkView(props: {
             return [h(WorkGroupSection, {
               key: item.group.entry.configuration.repositoryKey,
               group: section.key,
-              title: item.group.entry.configuration.repositoryKey,
+              title: entryLabel(item.group.entry),
               entries,
               ctx: item.group.ctx,
               focusItemId: (focus.repositoryKey === null || focus.repositoryKey === item.group.entry.configuration.repositoryKey)
@@ -1091,7 +1098,7 @@ function AggregateQuestionsView(props: {
     children: [
       ...buckets.flatMap((bucket) => bucket.open.length === 0 ? [] : [h(Section, {
         key: bucket.group.entry.configuration.repositoryKey,
-        title: bucket.group.entry.configuration.repositoryKey,
+        title: entryLabel(bucket.group.entry),
         count: bucket.open.length,
         collapsible: true,
         defaultOpen: !phone,
@@ -1124,7 +1131,7 @@ function AggregateQuestionsView(props: {
         testId: "answered-questions",
         children: buckets.flatMap((bucket) => bucket.answered.length === 0 ? [] : [h(Section, {
           key: bucket.group.entry.configuration.repositoryKey,
-          title: bucket.group.entry.configuration.repositoryKey,
+          title: entryLabel(bucket.group.entry),
           count: bucket.answered.length,
           collapsible: true,
           defaultOpen: !phone,
@@ -1146,7 +1153,7 @@ function AggregateQuestionsView(props: {
           if (group.bundle.interactions.status === "ready" && group.bundle.interactions.data.interactions.length > 0) {
             return [h(Section, {
               key: group.entry.configuration.repositoryKey,
-              title: group.entry.configuration.repositoryKey,
+              title: entryLabel(group.entry),
               count: group.bundle.interactions.data.interactions.length,
               collapsible: true,
               defaultOpen: !phone,
@@ -1221,7 +1228,7 @@ function AggregateRunsView(props: {
             return [h(RunGroupSection, {
               key: item.group.entry.configuration.repositoryKey,
               group: section.key,
-              title: item.group.entry.configuration.repositoryKey,
+              title: entryLabel(item.group.entry),
               runs,
               now,
               ctx: item.group.ctx,

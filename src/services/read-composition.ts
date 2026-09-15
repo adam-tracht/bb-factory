@@ -253,7 +253,7 @@ export function createReadComposition(options: ReadCompositionOptions): ReadComp
   });
   const readOnlyActionExecutor = createReadOnlyActionExecutor({
     protocolReader,
-    repositoryLookup: (repositoryKey) => lookupEntry(repositoryKey)?.configuration ?? null,
+    repositoryLookup: lookupEntry,
   });
 
   return {
@@ -285,6 +285,7 @@ export function createReadComposition(options: ReadCompositionOptions): ReadComp
           projectId: entry.projectId,
           environmentId: entry.environmentId ?? null,
           dispatchPaused: entry.dispatchPaused === true,
+          ...(entry.displayName === undefined ? {} : { displayName: entry.displayName }),
           selected: entry.configuration.repositoryKey === selected,
           available: true,
           reasons: selectionIssue ? [selectionIssue] : [],
