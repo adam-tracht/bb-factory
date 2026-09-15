@@ -4,18 +4,22 @@ import { createSettingsMutationHandlers } from "../src/services/settings-mutatio
 import type { ReadComposition } from "../src/services/read-composition.js";
 import { makeConfiguration, makeRegistryEntry, makeSettings } from "./fakes.js";
 
-function harness(settingsOverrides: Partial<FactorySettings> = {}) {
+function harness(
+  settingsOverrides: Partial<FactorySettings> = {},
+  persist?: (values: Record<string, string | number | boolean | null>) => Promise<void>,
+) {
   const settings = makeSettings(settingsOverrides);
   const applied: Array<Record<string, string | number | boolean | null>> = [];
   const composition = {
     getRepositoryEntry: (repositoryKey: string) =>
-      repositoryKey === "monorepo" ? makeRegistryEntry() : null,
+      settings.repositoryRegistry?.repositories.find((entry) => entry.configuration.repositoryKey === repositoryKey) ?? null,
   } as unknown as ReadComposition;
   const handlers = createSettingsMutationHandlers({
     getSettings: () => settings,
     getComposition: () => composition,
     applySettings: async (values) => {
       applied.push(values);
+      await persist?.(values);
     },
     sdk: {
       files: {
@@ -101,6 +105,92 @@ describe("settings mutation handlers", () => {
     if (!missing.ok) expect(missing.error.category).toBe("not-found");
   });
 
+  it("sets and clears a display name without changing repository identity or metadata", async () => {
+    const entry = { ...makeRegistryEntry(), displayName: "Old name", dispatchPaused: true };
+    const other = {
+      ...makeRegistryEntry(),
+      configuration: {
+        ...makeConfiguration(),
+        repositoryKey: "other",
+        repositoryRoot: "/work/other",
+        checkoutPath: "/work/other-factory",
+      },
+    };
+    const { applied, handlers } = harness({
+      repositoryRegistry: { repositories: [entry, other], defaultRepositoryKey: "other" },
+    });
+
+    const saved = await handlers.factory_update_repository({
+      repositoryKey: "monorepo",
+      displayName: "  New name  ",
+    });
+    expect(saved).toMatchObject({ ok: true, message: "Display name saved as 'New name'." });
+    const updated = JSON.parse(String(applied[0]?.repositoryRegistry)) as NonNullable<FactorySettings["repositoryRegistry"]>;
+    expect(updated).toEqual({
+      repositories: [{ ...entry, displayName: "New name" }, other],
+      defaultRepositoryKey: "other",
+    });
+
+    const cleared = await handlers.factory_update_repository({ repositoryKey: "monorepo", displayName: null });
+    expect(cleared).toMatchObject({ ok: true, message: "Display name cleared for 'monorepo'." });
+    const clearedRegistry = JSON.parse(String(applied[1]?.repositoryRegistry)) as {
+      repositories: Array<{ displayName?: string; dispatchPaused?: boolean; configuration: { repositoryKey: string } }>;
+    };
+    expect(clearedRegistry.repositories[0]).toMatchObject({ dispatchPaused: true, configuration: { repositoryKey: "monorepo" } });
+    expect(clearedRegistry.repositories[0]?.displayName).toBeUndefined();
+    expect(clearedRegistry.repositories[1]).toEqual(other);
+  });
+
+  it("persists identical display names for different repository keys", async () => {
+    const first = makeRegistryEntry();
+    const second = {
+      ...makeRegistryEntry(),
+      configuration: {
+        ...makeConfiguration(),
+        repositoryKey: "other",
+        repositoryRoot: "/work/other",
+        checkoutPath: "/work/other-factory",
+      },
+    };
+    const { settings, applied, handlers } = harness({
+      repositoryRegistry: { repositories: [first, second], defaultRepositoryKey: "monorepo" },
+    });
+
+    expect(await handlers.factory_update_repository({
+      repositoryKey: "monorepo",
+      displayName: "Shared name",
+    })).toMatchObject({ ok: true });
+    settings.repositoryRegistry = JSON.parse(String(applied[0]?.repositoryRegistry)) as FactorySettings["repositoryRegistry"];
+
+    expect(await handlers.factory_update_repository({
+      repositoryKey: "other",
+      displayName: "Shared name",
+    })).toMatchObject({ ok: true });
+    const updated = JSON.parse(String(applied[1]?.repositoryRegistry)) as NonNullable<FactorySettings["repositoryRegistry"]>;
+    expect(updated.repositories.map((entry) => ({
+      repositoryKey: entry.configuration.repositoryKey,
+      displayName: entry.displayName,
+    }))).toEqual([
+      { repositoryKey: "monorepo", displayName: "Shared name" },
+      { repositoryKey: "other", displayName: "Shared name" },
+    ]);
+  });
+
+  it("reports a display-name persistence failure without claiming success", async () => {
+    const { applied, handlers } = harness({}, async () => {
+      throw new Error("disk full");
+    });
+    const result = await handlers.factory_update_repository({
+      repositoryKey: "monorepo",
+      displayName: "Friendly repo",
+    });
+    expect(result).toEqual({
+      ok: false,
+      error: { category: "internal", message: "Could not persist the repository registry: disk full" },
+    });
+    expect(applied).toHaveLength(1);
+  });
+
   it("adds a repository entry paused by default and reports missing protocol files", async () => {
     const { applied, handlers } = harness();
     const result = await handlers.factory_add_repository({
@@ -114,16 +204,19 @@ describe("settings mutation handlers", () => {
       projectId: "project-9",
       environmentId: "env-9",
       dispatchPaused: true,
+      displayName: "  Data platform  ",
     });
     expect(result).toMatchObject({ ok: true });
+    expect(result.ok && result.message).toContain("Data platform");
     expect(result.ok && result.message).toContain("paused");
     expect(result.ok && result.message).toContain("No plans/factory/ protocol files");
     const registry = JSON.parse(String(applied[0]?.repositoryRegistry)) as {
-      repositories: Array<{ dispatchPaused?: boolean; configuration: { repositoryKey: string; factoryBranch: string } }>;
+      repositories: Array<{ displayName?: string; dispatchPaused?: boolean; configuration: { repositoryKey: string; factoryBranch: string } }>;
     };
     expect(registry.repositories).toHaveLength(2);
     expect(registry.repositories[1]?.configuration.factoryBranch).toBe("factory");
     expect(registry.repositories[1]?.dispatchPaused).toBe(true);
+    expect(registry.repositories[1]?.displayName).toBe("Data platform");
   });
 
   it("adds a repository entry without an environment id", async () => {

@@ -8,6 +8,7 @@ import type {
 } from "../contracts.js";
 import { actionError, actionSuccess, errorMessage, sameRevision, staleRevisionError } from "../actions/results.js";
 import { PROTOCOL_PATHS } from "../protocol/paths.js";
+import { repositoryLabel } from "../repository-label.js";
 import { IdempotencyConflictError } from "../storage/index.js";
 import { OwnershipHeldError } from "./ownership.js";
 import { hostPreflight, selectProvider, type ProviderSelection } from "./preflight.js";
@@ -34,8 +35,8 @@ export interface StartRunResult {
 export const FOREMAN_PROMPT =
   "Factory run. Read plans/factory/foreman.md first, then plans/factory/repo.md, and execute one run following the protocol. Your thread id is in $BB_THREAD_ID.";
 
-function runTitle(repositoryKey: string, providerId: string): string {
-  return `factory foreman: ${repositoryKey} ${providerId}`;
+function runTitle(repositoryKey: string, displayName: string | undefined, providerId: string): string {
+  return `factory foreman: ${repositoryLabel(repositoryKey, displayName)} ${providerId}`;
 }
 
 function noSpawn(
@@ -248,7 +249,7 @@ export async function startRun(ctx: DispatchContext, input: StartRunInput): Prom
       model: provider.model,
       reasoningLevel: provider.reasoningLevel,
       permissionMode: "full",
-      title: runTitle(input.repositoryKey, provider.providerId),
+      title: runTitle(input.repositoryKey, entry.displayName, provider.providerId),
     });
     threadId = spawned.id;
     environmentId = entry.environmentId ?? spawned.environmentId;

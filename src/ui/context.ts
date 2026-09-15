@@ -36,6 +36,8 @@ export interface ViewContext {
   /** Prefix for row DOM ids when multiple repositories share a view. */
   readonly idPrefix?: string;
   readonly repository: RepositoryConfiguration;
+  /** Optional presentation name; repository.repositoryKey remains identity. */
+  readonly displayName?: string;
   readonly environmentId: string | null;
   readonly projectId: string | null;
   readonly dispatchPaused: boolean;

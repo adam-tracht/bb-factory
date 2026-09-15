@@ -1,14 +1,15 @@
 import {
   factoryActionResultSchema,
   type FactoryActionResult,
-  type RepositoryConfiguration,
+  type RepositoryRegistryEntry,
   type RevisionFreeActionRequest,
 } from "../contracts.js";
+import { repositoryLabel } from "../repository-label.js";
 import type { ProtocolReader, ReadOnlyActionExecutor } from "../ports.js";
 
 export interface ReadOnlyActionCompositionOptions {
   readonly protocolReader: ProtocolReader;
-  readonly repositoryLookup: (repositoryKey: string) => RepositoryConfiguration | null;
+  readonly repositoryLookup: (repositoryKey: string) => RepositoryRegistryEntry | null;
 }
 
 function disabledAction(request: RevisionFreeActionRequest): FactoryActionResult {
@@ -28,8 +29,8 @@ export function createReadOnlyActionExecutor(
 ): ReadOnlyActionExecutor {
   return {
     async execute(request) {
-      const configuration = options.repositoryLookup(request.repositoryKey);
-      if (!configuration) {
+      const entry = options.repositoryLookup(request.repositoryKey);
+      if (!entry) {
         return factoryActionResultSchema.parse({
           ok: false,
           error: {
@@ -39,13 +40,14 @@ export function createReadOnlyActionExecutor(
           },
         });
       }
+      const label = repositoryLabel(request.repositoryKey, entry.displayName);
 
       if (request.action.kind !== "preview" && request.action.kind !== "integration-report") {
         return disabledAction(request);
       }
 
       try {
-        const snapshot = await options.protocolReader.loadSnapshot(configuration);
+        const snapshot = await options.protocolReader.loadSnapshot(entry.configuration);
         return factoryActionResultSchema.parse({
           ok: true,
           result: {
@@ -67,7 +69,7 @@ export function createReadOnlyActionExecutor(
           ok: false,
           error: {
             category: "internal",
-            message: `Could not load the read-only ${request.action.kind} for repository '${request.repositoryKey}': ${error instanceof Error ? error.message : String(error)}`,
+            message: `Could not load the read-only ${request.action.kind} for repository '${label}': ${error instanceof Error ? error.message : String(error)}`,
             idempotencyKey: request.idempotencyKey,
           },
         });

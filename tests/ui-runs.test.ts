@@ -247,6 +247,14 @@ describe("RunsView", () => {
     expect(target).toEqual({ kind: "workspace", environmentId: "env-ctx", path: "plans/factory/runs" });
   });
 
+  it("uses the display name in the repository-specific empty state", () => {
+    render(h(RunsView, {
+      runs: { runs: [], nextCursor: null },
+      ctx: makeCtx({ displayName: "Demo app" }),
+    }));
+    expect(screen.getByText("No BB-tracked runs yet for Demo app")).toBeTruthy();
+  });
+
   it("lets the active run row wrap so the Thread action stays inside the row", () => {
     const ctx = makeCtx();
     render(h(RunsView, {

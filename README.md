@@ -65,7 +65,9 @@ bb plugin install git:github.com/adam-tracht/bb-factory@v0.1.4
    foreman never works in your main working copy. Registering the selected
    checkout directly stays available as the advanced path, and when the
    `factory` branch is already checked out elsewhere the wizard offers that
-   checkout instead. Registration ends paused.
+   checkout instead. Optionally edit the friendly display name shown in the
+   Factory UI; the repository key remains the technical identity. Registration
+   ends paused.
 3. If the checkout has no `plans/factory/` protocol, the wizard offers to
    scaffold it (`foreman.md`, `repo.md`, `queue.md`, `current.md`,
    `questions.md`, `runs/`), committed on the `factory` branch. Existing

@@ -8,6 +8,7 @@ import {
 } from "../../contracts.js";
 import { cronValid, nextCronTimes } from "../../schedule/cron.js";
 import { describeSchedule } from "../../schedule/describe.js";
+import { repositoryLabel } from "../../repository-label.js";
 import type { ViewContext } from "../context.js";
 import {
   ActionButton,
@@ -194,9 +195,25 @@ function RepositoryCard(props: {
   const [result, setResult] = useState<{ pending: boolean; message: string | null; error: string | null }>(
     { pending: false, message: null, error: null },
   );
+  const [displayNameDraft, setDisplayNameDraft] = useState(ctx.displayName ?? "");
+  const [savedDisplayName, setSavedDisplayName] = useState(ctx.displayName ?? "");
+  const [displayNameResult, setDisplayNameResult] = useState<{
+    pending: boolean;
+    message: string | null;
+    error: string | null;
+  }>({ pending: false, message: null, error: null });
   const repoPaused = ctx.dispatchPaused || projection.dispatch.repositoryPaused;
   const projectId = ctx.projectId ?? projection.settings.projectId ?? null;
   const environmentId = ctx.environmentId ?? projection.settings.environmentId ?? null;
+
+  useEffect(() => {
+    setDisplayNameDraft(ctx.displayName ?? "");
+    setSavedDisplayName(ctx.displayName ?? "");
+  }, [ctx.displayName, repository.repositoryKey]);
+
+  const displayNameValidationError = displayNameDraft.trim().length > 64
+    ? "Use 64 characters or fewer"
+    : null;
 
   const toggle = () => {
     setResult({ pending: true, message: null, error: null });
@@ -207,6 +224,34 @@ function RepositoryCard(props: {
           : { pending: false, message: null, error: mutation.error.message }),
       (error: unknown) =>
         setResult({ pending: false, message: null, error: error instanceof Error ? error.message : String(error) }),
+    );
+  };
+
+  const saveDisplayName = () => {
+    const normalized = displayNameDraft.trim();
+    if (displayNameValidationError) {
+      setDisplayNameResult({ pending: false, message: null, error: displayNameValidationError });
+      return;
+    }
+    setDisplayNameResult({ pending: true, message: null, error: null });
+    void ctx.updateRepository({
+      repositoryKey: repository.repositoryKey,
+      displayName: normalized === "" ? null : normalized,
+    }).then(
+      (mutation) => {
+        if (mutation.ok) {
+          setDisplayNameDraft(normalized);
+          setSavedDisplayName(normalized);
+          setDisplayNameResult({ pending: false, message: mutation.message, error: null });
+        } else {
+          setDisplayNameResult({ pending: false, message: null, error: mutation.error.message });
+        }
+      },
+      (error: unknown) => setDisplayNameResult({
+        pending: false,
+        message: null,
+        error: error instanceof Error ? error.message : String(error),
+      }),
     );
   };
 
@@ -252,6 +297,38 @@ function RepositoryCard(props: {
         }),
         result.message ? h("span", { className: "text-xs text-success-foreground", role: "status" }, result.message) : null,
         result.error ? h("span", { className: "text-xs text-destructive" }, result.error) : null),
+      h("div", { key: "display-name", className: "mt-3 border-t border-border pt-3" },
+        h("label", { className: labelClass, htmlFor: "repository-display-name" }, "Display name"),
+        h("div", { className: "mt-1 flex flex-wrap items-center gap-2" },
+          h("input", {
+            id: "repository-display-name",
+            type: "text",
+            maxLength: 64,
+            className: `${inputClass} min-w-[12rem] flex-1`,
+            value: displayNameDraft,
+            onChange: (event: { target: { value: string } }) => {
+              setDisplayNameDraft(event.target.value);
+              setDisplayNameResult((current) => ({ ...current, message: null, error: null }));
+            },
+          }),
+          h(ActionButton, {
+            label: "Save display name",
+            variant: "secondary",
+            size: "xs",
+            busy: displayNameResult.pending,
+            disabled: displayNameDraft === savedDisplayName || displayNameValidationError !== null,
+            onClick: saveDisplayName,
+          })),
+        h("p", { className: "mt-1 text-xs text-muted-foreground" }, "Optional friendly name shown in the Factory UI. The repository key remains the technical identity."),
+        displayNameValidationError
+          ? h("p", { className: "mt-1 text-xs text-destructive", role: "alert" }, displayNameValidationError)
+          : null,
+        displayNameResult.message
+          ? h("p", { className: "mt-1 text-xs text-success-foreground", role: "status" }, displayNameResult.message)
+          : null,
+        displayNameResult.error
+          ? h("p", { className: "mt-1 text-xs text-destructive" }, displayNameResult.error)
+          : null),
       h(Disclosure, {
         key: "details",
         summary: "Repository details",
@@ -579,7 +656,7 @@ function DispatchCard(props: {
         key: "confirm",
         open: confirmOpen,
         title: "Save settings",
-        body: `Applies to ${ctx.repository.repositoryKey} on the next dispatch cycle. A run in progress is not affected.`,
+        body: `Applies to ${repositoryLabel(ctx.repository.repositoryKey, ctx.displayName)} on the next dispatch cycle. A run in progress is not affected.`,
         confirmLabel: "Save",
         busy: saveState.pending,
         onConfirm: () => {

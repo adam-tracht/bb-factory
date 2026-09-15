@@ -874,6 +874,32 @@ describe("Factory aggregate scope", () => {
     }
   });
 
+  it("uses the display name for aggregate repository headings without changing scoped identity", async () => {
+    const { FactoryView } = await import("../src/ui/FactoryView.js");
+    const rpc = aggregateRpc();
+    vi.mocked(rpc.factory_repositories).mockImplementation((input: { selectedRepositoryKey?: string | null }) => {
+      const selection = repositorySelectionForSwitch(input.selectedRepositoryKey);
+      return {
+        ...selection,
+        repositories: selection.repositories.map((entry) => entry.configuration.repositoryKey === "monorepo"
+          ? { ...entry, displayName: "Core repo" }
+          : entry),
+      };
+    });
+    const slot = mountAggregate(FactoryView, "all/work", rpc);
+    try {
+      expect(await slot.findByRole("heading", { name: "Core repo" })).toBeTruthy();
+      expect(slot.getByRole("heading", { name: "data" })).toBeTruthy();
+      expect(slot.container.querySelector('[id="monorepo:work-ready-item"]')).not.toBeNull();
+      expect(slot.container.querySelector('[id="Core repo:work-ready-item"]')).toBeNull();
+      expect(slot.container.textContent).not.toContain("Repository 'Core repo'");
+      expect((rpc.factory_snapshot as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toMatchObject({ repositoryKey: "monorepo" });
+    } finally {
+      slot.lifecycle.unmount();
+      controlledSettingsState = { values: { repositoryKey: "demo" }, isLoading: false };
+    }
+  });
+
   it("keeps aggregate disclosure storage separate from a repository named all", async () => {
     const { FactoryView } = await import("../src/ui/FactoryView.js");
     const repositoryNamedAll = { ...monorepoRepository, repositoryKey: "all" };
@@ -892,6 +918,7 @@ describe("Factory aggregate scope", () => {
           selected: true,
           available: true,
           reasons: [],
+          displayName: "All source",
         }],
         selectedRepositoryKey: "all",
       })),
@@ -920,7 +947,7 @@ describe("Factory aggregate scope", () => {
     try {
       const aggregate = await slot.findByRole("heading", { name: "Needs attention" });
       const aggregateDetails = aggregate.closest("details") as HTMLDetailsElement;
-      const repository = within(aggregateDetails).getByRole("heading", { name: "all" }).closest("details") as HTMLDetailsElement;
+      const repository = within(aggregateDetails).getByRole("heading", { name: "All source" }).closest("details") as HTMLDetailsElement;
       fireEvent.click(repository.querySelector("summary") as HTMLElement);
       expect(repository.open).toBe(false);
       expect(window.sessionStorage.getItem(repositoryStorageKey)).toBe("0");
@@ -932,7 +959,7 @@ describe("Factory aggregate scope", () => {
       try {
         const reloadedAggregate = await reloaded.findByRole("heading", { name: "Needs attention" });
         const reloadedDetails = reloadedAggregate.closest("details") as HTMLDetailsElement;
-        const reloadedRepository = within(reloadedDetails).getByRole("heading", { name: "all" }).closest("details") as HTMLDetailsElement;
+        const reloadedRepository = within(reloadedDetails).getByRole("heading", { name: "All source" }).closest("details") as HTMLDetailsElement;
         expect(reloadedDetails.open).toBe(true);
         expect(reloadedRepository.open).toBe(false);
       } finally {
@@ -1430,10 +1457,21 @@ describe("Factory aggregate scope", () => {
   it("pins aggregate run detail to its repository and returns to the aggregate runs list", async () => {
     const { FactoryView } = await import("../src/ui/FactoryView.js");
     const rpc = aggregateRpc();
+    vi.mocked(rpc.factory_repositories).mockImplementation((input: { selectedRepositoryKey?: string | null }) => {
+      const selection = repositorySelectionForSwitch(input.selectedRepositoryKey);
+      return {
+        ...selection,
+        repositories: selection.repositories.map((entry) => entry.configuration.repositoryKey === "data"
+          ? { ...entry, displayName: "Data platform" }
+          : entry),
+      };
+    });
     const slot = mountAggregate(FactoryView, "all/runs", rpc);
     try {
-      await slot.findByRole("heading", { name: "data" });
-      const dataGroup = groupFor(slot, "data");
+      await slot.findByRole("heading", { name: "Data platform" });
+      const dataGroup = Array.from(slot.container.querySelectorAll("section, details")).find(
+        (section) => section.querySelector("h2")?.textContent === "Data platform",
+      ) as HTMLElement;
       // The history row is a button keyed by its queue-item chip.
       const row = (await within(dataGroup).findByText("ready-item")).closest("button") as HTMLElement;
       fireEvent.click(row);
@@ -1456,6 +1494,67 @@ describe("Factory aggregate scope", () => {
         options: { subPath: "all/runs" },
       });
     } finally {
+      slot.lifecycle.unmount();
+      controlledSettingsState = { values: { repositoryKey: "demo" }, isLoading: false };
+    }
+  });
+
+  it("keeps aggregate pending state scoped by raw repository key when labels differ", async () => {
+    const { FactoryView } = await import("../src/ui/FactoryView.js");
+    const actionResolver = { current: null as ((value: unknown) => void) | null };
+    const rpc = {
+      ...aggregateRpc(),
+      factory_repositories: vi.fn((input: { selectedRepositoryKey?: string | null }) => {
+        const selection = repositorySelectionForSwitch(input.selectedRepositoryKey);
+        return {
+          ...selection,
+          repositories: selection.repositories.map((entry) => entry.configuration.repositoryKey === "data"
+            ? { ...entry, displayName: "Data platform" }
+            : entry),
+        };
+      }),
+      factory_settings: vi.fn(({ repositoryKey }: { repositoryKey: string }) => ({
+        ...settingsForSwitch(repositoryKey),
+        dispatch: { ...settingsForSwitch(repositoryKey).dispatch, mode: "paused" as const },
+      })),
+      factory_action: vi.fn(() => new Promise((resolve) => { actionResolver.current = resolve; })),
+    } as unknown as PluginRpcTestHandlers<FactoryRpcContract> & {
+      factory_action: ReturnType<typeof vi.fn>;
+    };
+    const slot = mountAggregate(FactoryView, "all/overview", rpc);
+    try {
+      const needsAttention = (await slot.findByRole("heading", { name: "Needs attention" })).closest("details") as HTMLElement;
+      const dataGroup = within(needsAttention).getByRole("heading", { name: "Data platform" }).closest("details") as HTMLElement;
+      const dataResume = within(dataGroup).getByRole("button", { name: "Resume" });
+      fireEvent.click(dataResume);
+      await vi.waitFor(() => expect(rpc.factory_action).toHaveBeenCalledWith(expect.objectContaining({
+        repositoryKey: "data",
+        action: { kind: "resume" },
+      })));
+      await vi.waitFor(() => {
+        const currentAttention = slot.getByRole("heading", { name: "Needs attention" }).closest("details") as HTMLElement;
+        const currentDataGroup = within(currentAttention).getByRole("heading", { name: "Data platform" }).closest("details") as HTMLElement;
+        expect(within(currentDataGroup).getByRole("button", { name: "Working..." })).toHaveProperty("disabled", true);
+      });
+      const currentAttention = slot.getByRole("heading", { name: "Needs attention" }).closest("details") as HTMLElement;
+      const currentMonoGroup = within(currentAttention).getByRole("heading", { name: "monorepo" }).closest("details") as HTMLElement;
+      expect(within(currentMonoGroup).getByRole("button", { name: "Resume" })).toHaveProperty("disabled", false);
+    } finally {
+      actionResolver.current?.({
+        ok: true,
+        revision,
+        result: {
+          status: "accepted",
+          message: "resumed",
+          revision,
+          runId: null,
+          leaseId: null,
+          queueItemId: null,
+          action: "resume",
+          questionId: null,
+          interactionId: null,
+        },
+      });
       slot.lifecycle.unmount();
       controlledSettingsState = { values: { repositoryKey: "demo" }, isLoading: false };
     }

@@ -642,6 +642,27 @@ validate:
 - pnpm lint
 notes: Phase E (disclosure). User-reported. Depends on the Phase C row fixes so the collapsed defaults are set against final row heights. The implementation uses native details elements, repository-scoped session preferences, phone-first defaults, and bounded deep-link reveal retries. Both Sol reviews passed, including focus lifecycle, interactive summary descendants, and regrouping behavior. Final validation passed with 437 tests, typecheck, lint, build, SDK freshness, whitespace, and responsive visual acceptance. Committed in 4217a73.
 
+## BBF-0039 Repository display names
+status: done (interactive session 2026-09-14)
+priority: 2
+depends_on: BBF-0038
+risk: medium
+plan: /Users/adamtracht/.claude/plans/eager-foraging-rabbit.md
+approved: direct human request and approved plan authorize this customer-facing change
+acceptance:
+- An optional presentation-only displayName is stored on each registry entry, never inside RepositoryConfiguration; repositoryKey remains the sole operational identity.
+- Existing add and update repository mutations persist trimmed displayName values, enforce the 64-character limit, allow duplicate display names, and clear the alias without dropping unrelated registry fields.
+- Add repository and Settings expose the display name, while switcher, landing, aggregate headings, repository-specific empty states, and confirmation copy use the resolved display label; routes, DOM ids, storage keys, action payloads, RPC inputs, and technical details retain repositoryKey.
+- Focused regression coverage protects the contract, mutation semantics, UI labels, and raw-key identity boundaries; README and control-surface documentation describe the distinction.
+validate:
+- pnpm test
+- pnpm typecheck
+- pnpm lint
+- pnpm build
+- bb plugin types --check .
+- git diff --check
+notes: Direct human authorization is recorded above. Implemented without a new RPC or migration. Compliance corrections and focused and full automated validation pass. Code-quality review and live visual validation are explicitly deferred by the user. No commit or push per the request.
+
 ## BBF-0040 Overview attention duplication and work-queue row layout
 status: done (interactive session 2026-09-14)
 priority: 2

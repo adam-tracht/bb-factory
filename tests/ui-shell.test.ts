@@ -114,6 +114,18 @@ describe("FactoryShell", () => {
     expect(group).not.toMatch(/aria-pressed="false"[^>]*class="[^"]*shadow-sm/);
   });
 
+  it("renders display names while keeping the repository key as the picker value", () => {
+    const repository = switcherRepositories("demo")[0]!;
+    const markup = renderToStaticMarkup(h(FactoryShell, shellProps({
+      repositories: [{ ...repository, displayName: "Demo app" }],
+      selectedRepositoryKey: "demo",
+      children: "body",
+    })));
+    expect(markup).toContain('value="demo"');
+    expect(markup).toContain(">Demo app</button>");
+    expect(markup).toContain(">Demo app</option>");
+  });
+
   it("hides repo-scoped chrome on the repositories landing but keeps the switcher and aggregate tabs", () => {
     const markup = renderToStaticMarkup(h(FactoryShell, shellProps({
       repositories: switcherRepositories("alpha", "beta"),

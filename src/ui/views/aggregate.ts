@@ -49,9 +49,14 @@ import { bucketRuns, RunGroupSection, RUN_GROUPS, useRunsNow } from "./runs.js";
 import { bucketWorkEntries, WorkGroupSection, WORK_GROUPS } from "./work.js";
 import { nextCronTimes } from "../../schedule/cron.js";
 import { describeSchedule } from "../../schedule/describe.js";
+import { repositoryLabel } from "../../repository-label.js";
 
 const h = createElement;
 const AGGREGATE_REPOSITORY_KEY = "@aggregate";
+
+function entryLabel(entry: RepositorySelection): string {
+  return repositoryLabel(entry.configuration.repositoryKey, entry.displayName);
+}
 
 export type Loadable<T> =
   | { status: "idle" | "loading" }
@@ -101,7 +106,7 @@ function RepositoryStatusGroup(props: {
   children: ReactNode;
 }): ReactNode {
   return h(Section, {
-    title: props.group.entry.configuration.repositoryKey,
+    title: entryLabel(props.group.entry),
     collapsible: true,
     defaultOpen: true,
     storageKey: sectionStorageKey(props.group.entry.configuration.repositoryKey, props.tab, props.section),
@@ -185,7 +190,7 @@ function overviewRepositorySection(props: {
   const repositoryKey = props.state.group.entry.configuration.repositoryKey;
   return h(Section, {
     key: props.key,
-    title: props.title ?? repositoryKey,
+    title: props.title ?? entryLabel(props.state.group.entry),
     count: props.count,
     collapsible: props.collapsible ?? true,
     defaultOpen: props.defaultOpen,
@@ -864,7 +869,7 @@ function AggregateWorkView(props: {
             return [h(WorkGroupSection, {
               key: item.group.entry.configuration.repositoryKey,
               group: section.key,
-              title: item.group.entry.configuration.repositoryKey,
+              title: entryLabel(item.group.entry),
               entries,
               ctx: item.group.ctx,
               focusItemId: (focus.repositoryKey === null || focus.repositoryKey === item.group.entry.configuration.repositoryKey)
@@ -1093,7 +1098,7 @@ function AggregateQuestionsView(props: {
     children: [
       ...buckets.flatMap((bucket) => bucket.open.length === 0 ? [] : [h(Section, {
         key: bucket.group.entry.configuration.repositoryKey,
-        title: bucket.group.entry.configuration.repositoryKey,
+        title: entryLabel(bucket.group.entry),
         count: bucket.open.length,
         collapsible: true,
         defaultOpen: !phone,
@@ -1126,7 +1131,7 @@ function AggregateQuestionsView(props: {
         testId: "answered-questions",
         children: buckets.flatMap((bucket) => bucket.answered.length === 0 ? [] : [h(Section, {
           key: bucket.group.entry.configuration.repositoryKey,
-          title: bucket.group.entry.configuration.repositoryKey,
+          title: entryLabel(bucket.group.entry),
           count: bucket.answered.length,
           collapsible: true,
           defaultOpen: !phone,
@@ -1148,7 +1153,7 @@ function AggregateQuestionsView(props: {
           if (group.bundle.interactions.status === "ready" && group.bundle.interactions.data.interactions.length > 0) {
             return [h(Section, {
               key: group.entry.configuration.repositoryKey,
-              title: group.entry.configuration.repositoryKey,
+              title: entryLabel(group.entry),
               count: group.bundle.interactions.data.interactions.length,
               collapsible: true,
               defaultOpen: !phone,
@@ -1223,7 +1228,7 @@ function AggregateRunsView(props: {
             return [h(RunGroupSection, {
               key: item.group.entry.configuration.repositoryKey,
               group: section.key,
-              title: item.group.entry.configuration.repositoryKey,
+              title: entryLabel(item.group.entry),
               runs,
               now,
               ctx: item.group.ctx,

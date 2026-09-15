@@ -23,6 +23,13 @@ any repository policy. Action-layer guards live in
   owning repository as `<repositoryKey>/<inner>` so a focused row resolves to
   one group; a bare inner anchor focuses every group that contains the item.
 
+Registry entries may include an optional `displayName` for presentation. The
+resolved display label appears in the repository switcher, landing cards,
+aggregate repository headings, repository-specific empty states, and
+confirmation copy. `repositoryKey` remains the operational identity in routes,
+DOM ids, storage keys, action scopes, RPC inputs, callbacks, and technical
+details.
+
 ## Aggregate composition
 
 The "All" tabs are a pure view-layer union (`src/ui/views/aggregate.ts`):
@@ -151,8 +158,10 @@ Save behind a confirm dialog. A same-repository refresh keeps the Saved
 marks and untouched concurrent edits; a different repository resets the
 form. Dispatch mode is a segmented Enabled/Paused control, the Repository
 card pairs host status with a labeled "Pause dispatch"/"Resume dispatch"
-button, and read-only identity fields collapse into a "Repository details"
-disclosure. `describeSchedule` (`src/schedule/describe.ts`) renders a
+button. It also provides an optional editable "Display name" field; clearing
+it restores the repository key as the visible fallback. The repository key
+remains read-only technical identity, and the other read-only identity fields
+collapse into a "Repository details" disclosure. `describeSchedule` (`src/schedule/describe.ts`) renders a
 five-field cron as a sentence ("Every 10 minutes between 01:00 and 05:59,
 every day") on the Settings preview, which also lists the next three fire
 times, and on the repository Overview dispatch card; All Overview shows at

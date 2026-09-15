@@ -14,6 +14,7 @@ import {
 import type { BbInteractionActionExecutor, PendingInteractionReader, ProtocolReader } from "../ports.js";
 import type { DispatchEngine } from "../dispatch/index.js";
 import { spawnEnvironment } from "../dispatch/types.js";
+import { repositoryLabel } from "../repository-label.js";
 import {
   type OperationalStateStore,
   type PendingActionIntentRecord,
@@ -430,7 +431,7 @@ export function createBbInteractionActionExecutor(options: BbInteractionActionEx
           reasoningLevel: action.reasoningLevel,
           ...(action.serviceTier === undefined ? {} : { serviceTier: action.serviceTier }),
           permissionMode: "auto",
-          title: `factory recommend: ${entry.configuration.repositoryKey} ${question.id}`,
+          title: `factory recommend: ${repositoryLabel(entry.configuration.repositoryKey, entry.displayName)} ${question.id}`,
           // Marks the picked values caller-explicit so the server does not
           // re-derive the project's stored execution defaults over them.
           executionInputSources: {
@@ -498,7 +499,7 @@ export function createBbInteractionActionExecutor(options: BbInteractionActionEx
           reasoningLevel: action.reasoningLevel,
           ...(action.serviceTier === undefined ? {} : { serviceTier: action.serviceTier }),
           permissionMode: "auto",
-          title: `factory recommend: ${entry.configuration.repositoryKey} ${queueEntry.id}`,
+          title: `factory recommend: ${repositoryLabel(entry.configuration.repositoryKey, entry.displayName)} ${queueEntry.id}`,
           executionInputSources: {
             providerId: "explicit",
             model: "explicit",

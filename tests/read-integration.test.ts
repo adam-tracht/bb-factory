@@ -34,6 +34,7 @@ const entries: RepositoryRegistryEntry[] = [
     },
     projectId: "project-data-platform",
     environmentId: "environment-data-platform",
+    displayName: "Data platform",
   },
 ];
 
@@ -79,6 +80,8 @@ describe("P1 read integration", () => {
       "data-platform",
     ]);
     expect(selection.selectedRepositoryKey).toBe("data-platform");
+    expect(selection.repositories[1]).toMatchObject({ displayName: "Data platform" });
+    expect(selection.repositories[1]?.configuration).not.toHaveProperty("displayName");
     const dataSettings = await composition.getSettingsProjection("data-platform");
     expect(dataSettings).toMatchObject({
       settings: {
