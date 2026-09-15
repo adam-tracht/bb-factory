@@ -756,7 +756,7 @@ validate:
 notes: Additive optional keys on factorySettingsSchema and factorySettingsPatchSchema plus a settings descriptor; no action-schema or key-shape change. Today model and reasoning come straight from ProviderStatus (host-reported default model and its defaultReasoningEffort, src/services/live-health.ts:65-74,109); this adds a configured override layer at selection time. "Thinking" maps to reasoningLevel (low|medium|high|xhigh|max); validate a configured level is one the chosen model supports if the catalog reports that, else pass through.
 
 ## BBF-0045 User-configured alternate rotation of up to 5 providers
-status: ready
+status: in-progress (thread thr_fcb53czy7e, 2026-09-15T04:39Z)
 priority: 3
 depends_on: BBF-0044
 risk: low
