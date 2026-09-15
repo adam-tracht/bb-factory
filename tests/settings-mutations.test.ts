@@ -82,6 +82,57 @@ describe("settings mutation handlers", () => {
     expect(applied).toEqual([]);
   });
 
+  it("persists provider model defaults as a JSON string and clears them with null", async () => {
+    const { settings, applied, handlers } = harness();
+    const result = await handlers.factory_update_settings({
+      repositoryKey: "monorepo",
+      patch: { providerModelDefaults: { codex: { model: "gpt-5-codex", reasoningLevel: "high" } } },
+    });
+    expect(result).toMatchObject({ ok: true });
+    expect(applied).toEqual([
+      { providerModelDefaults: JSON.stringify({ codex: { model: "gpt-5-codex", reasoningLevel: "high" } }) },
+    ]);
+
+    // A provided map replaces the stored map wholesale.
+    settings.providerModelDefaults = { codex: { model: "gpt-5-codex", reasoningLevel: "high" }, "claude-code": { model: "opus", reasoningLevel: "medium" } };
+    expect(await handlers.factory_update_settings({
+      repositoryKey: "monorepo",
+      patch: { providerModelDefaults: { codex: { model: "gpt-5.1-codex", reasoningLevel: "xhigh" } } },
+    })).toMatchObject({ ok: true });
+    expect(applied[1]).toEqual({
+      providerModelDefaults: JSON.stringify({ codex: { model: "gpt-5.1-codex", reasoningLevel: "xhigh" } }),
+    });
+
+    expect(await handlers.factory_update_settings({
+      repositoryKey: "monorepo",
+      patch: { providerModelDefaults: null },
+    })).toMatchObject({ ok: true });
+    expect(applied[2]).toEqual({ providerModelDefaults: null });
+  });
+
+  it("persists the post-parse value, not the raw patch value", async () => {
+    const { applied, handlers } = harness();
+    const result = await handlers.factory_update_settings({
+      repositoryKey: "monorepo",
+      patch: { providerModelDefaults: { codex: { model: "  gpt-5-codex  ", reasoningLevel: "high" } } },
+    });
+    expect(result).toMatchObject({ ok: true });
+    expect(applied).toEqual([
+      { providerModelDefaults: JSON.stringify({ codex: { model: "gpt-5-codex", reasoningLevel: "high" } }) },
+    ]);
+  });
+
+  it("rejects an invalid provider model default without persisting", async () => {
+    const { applied, handlers } = harness();
+    const result = await handlers.factory_update_settings({
+      repositoryKey: "monorepo",
+      patch: { providerModelDefaults: { codex: { model: "gpt-5-codex", reasoningLevel: "ludicrous" as never } } },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.category).toBe("invalid-input");
+    expect(applied).toEqual([]);
+  });
+
   it("toggles per-repository dispatch pause inside the registry JSON", async () => {
     const { applied, handlers } = harness();
     const result = await handlers.factory_update_repository({

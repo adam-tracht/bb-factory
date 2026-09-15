@@ -45,6 +45,7 @@ import {
   type KindFilter,
   type StateFilter,
 } from "./questions.js";
+import { pickerRoutingFor } from "../providerPicker.js";
 import { bucketRuns, RunGroupSection, RUN_GROUPS, useRunsNow } from "./runs.js";
 import { bucketWorkEntries, WorkGroupSection, WORK_GROUPS } from "./work.js";
 import { nextCronTimes } from "../../schedule/cron.js";
@@ -1039,9 +1040,7 @@ function AggregateQuestionsView(props: {
       pending: ctx.pendingTarget === `question:${question.id}`,
       providers: group.bundle.health.status === "ready" ? group.bundle.health.data.providers : [],
       preferredProviderId: preferredProvider(group.bundle),
-      pickerRouting: ctx.environmentId
-        ? { kind: "environment", environmentId: ctx.environmentId }
-        : { kind: "host", hostId: ctx.repository.connectedHostId },
+      pickerRouting: pickerRoutingFor(ctx),
       onRecord: (questionId, answer) => {
         ctx.onAction({ kind: "answer-question", source: "repository-question", questionId, answer });
         markAnswered(group.entry.configuration.repositoryKey, questionId);

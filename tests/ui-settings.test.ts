@@ -516,6 +516,154 @@ describe("SettingsView", () => {
     });
     expect(screen.getByRole("option", { name: "acp-devin (not reported)" })).toBeTruthy();
   });
+
+  it("exposes a model and thinking control for the pinned provider and saves the configured default", async () => {
+    const ctx = makeCtx();
+    renderSettings({ ctx });
+    // The host picker is unbound in tests, so the fallback model input +
+    // thinking select render, seeded from the host-reported values.
+    const modelInput = screen.getByLabelText("Default model") as HTMLInputElement;
+    const thinkingSelect = screen.getByLabelText("Default thinking level") as HTMLSelectElement;
+    expect(modelInput.placeholder).toBe("gpt-5");
+    expect(modelInput.value).toBe("");
+    expect(thinkingSelect.value).toBe("medium");
+
+    fireEvent.change(modelInput, { target: { value: "gpt-5-codex" } });
+    fireEvent.change(thinkingSelect, { target: { value: "xhigh" } });
+    expect(screen.getByText("Unsaved changes")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Save" }));
+
+    expect(ctx.updateSettings).toHaveBeenCalledWith({
+      providerModelDefaults: { codex: { model: "gpt-5-codex", reasoningLevel: "xhigh" } },
+    });
+    expect(await screen.findByText("saved")).toBeTruthy();
+    expect(await screen.findByText("Saved")).toBeTruthy();
+  });
+
+  it("hides the model default controls while the preference rotates", () => {
+    renderSettings({
+      projection: {
+        ...settingsProjection,
+        settings: { ...settingsProjection.settings, providerPreference: undefined },
+      },
+    });
+    expect((screen.getByLabelText("Provider preference") as HTMLSelectElement).value).toBe("alternate");
+    expect(screen.queryByLabelText("Default model")).toBeNull();
+    expect(screen.queryByLabelText("Default thinking level")).toBeNull();
+    expect(screen.queryByText("Default model + thinking")).toBeNull();
+  });
+
+  it("preserves stored defaults for other providers in the wholesale patch", async () => {
+    const ctx = makeCtx();
+    renderSettings({
+      ctx,
+      projection: {
+        ...settingsProjection,
+        settings: {
+          ...settingsProjection.settings,
+          providerModelDefaults: { "acp-devin": { model: "devin-large", reasoningLevel: "high" as const } },
+        },
+      },
+    });
+    fireEvent.change(screen.getByLabelText("Default model"), { target: { value: "gpt-5-codex" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Save" }));
+    expect(ctx.updateSettings).toHaveBeenCalledWith({
+      providerModelDefaults: {
+        "acp-devin": { model: "devin-large", reasoningLevel: "high" },
+        codex: { model: "gpt-5-codex", reasoningLevel: "medium" },
+      },
+    });
+  });
+
+  it("clears a stored default with Use host default and patches null when the map empties", async () => {
+    const ctx = makeCtx();
+    renderSettings({
+      ctx,
+      projection: {
+        ...settingsProjection,
+        settings: {
+          ...settingsProjection.settings,
+          providerModelDefaults: { codex: { model: "gpt-5-codex", reasoningLevel: "low" as const } },
+        },
+      },
+    });
+    expect((screen.getByLabelText("Default model") as HTMLInputElement).value).toBe("gpt-5-codex");
+    fireEvent.click(screen.getByRole("button", { name: "Use host default" }));
+    expect((screen.getByLabelText("Default model") as HTMLInputElement).value).toBe("");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Save" }));
+    expect(ctx.updateSettings).toHaveBeenCalledWith({ providerModelDefaults: null });
+  });
+
+  it("blocks saving a provider default with an empty model name", () => {
+    renderSettings();
+    const modelInput = screen.getByLabelText("Default model");
+    fireEvent.change(modelInput, { target: { value: "gpt-5-codex" } });
+    fireEvent.change(modelInput, { target: { value: "  " } });
+    expect(screen.getByText("Enter a model name.")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("releases the save block when the invalid entry is no longer editable", () => {
+    const ctx = makeCtx();
+    renderSettings({ ctx });
+    fireEvent.change(screen.getByLabelText("Default model"), { target: { value: "  " } });
+    expect(screen.getByText("Enter a model name.")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.change(screen.getByLabelText("Provider preference"), { target: { value: "alternate" } });
+    expect(screen.queryByText("Enter a model name.")).toBeNull();
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("maps nested server fieldErrors onto the provider default row", async () => {
+    const ctx = makeCtx({
+      updateSettings: vi.fn(async () => ({
+        ok: false as const,
+        error: {
+          category: "invalid-input" as const,
+          message: "The updated settings are invalid",
+          fieldErrors: { "providerModelDefaults.codex.model": ["model rejected by server"] },
+        },
+      })),
+    });
+    renderSettings({ ctx });
+    fireEvent.change(screen.getByLabelText("Default model"), { target: { value: "gpt-5-codex" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("model rejected by server")).toBeTruthy();
+  });
+
+  it("renders a stored default tolerantly when the host no longer reports the pinned provider", () => {
+    renderSettings({
+      projection: {
+        ...settingsProjection,
+        settings: {
+          ...settingsProjection.settings,
+          providerPreference: "acp-devin",
+          providerModelDefaults: { "acp-devin": { model: "devin-large", reasoningLevel: "high" as const } },
+        },
+      },
+    });
+    expect(screen.getByRole("option", { name: "acp-devin (not reported)" })).toBeTruthy();
+    expect(screen.getByText("devin-large · high")).toBeTruthy();
+    expect(screen.getByText("(provider not reported)")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Use host default" })).toBeTruthy();
+    expect(screen.queryByLabelText("Default model")).toBeNull();
+  });
+
+  it("explains that an unreported pinned provider has no catalog without a stored default", () => {
+    renderSettings({
+      projection: {
+        ...settingsProjection,
+        settings: { ...settingsProjection.settings, providerPreference: "acp-devin" },
+      },
+    });
+    expect(screen.getByText(/does not report this provider/)).toBeTruthy();
+    expect(screen.queryByLabelText("Default model")).toBeNull();
+  });
 });
 
 describe("RepositoryLandingView", () => {

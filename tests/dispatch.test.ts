@@ -381,6 +381,107 @@ describe("dispatch engine", () => {
     expect(picked?.reason).toBe("alternate after codex");
   });
 
+  it("applies a configured model default to the pinned provider and notes it in the reason", () => {
+    const providers = [provider("codex"), provider("claude-code")];
+    const state = {
+      repositoryKey: "monorepo" as const,
+      nightKey: "2026-09-10",
+      lastState: "",
+      failedCount: 0,
+      noopCount: 0,
+      lastStartAt: 0,
+      lastStartProvider: "",
+      limits: {},
+    };
+    const picked = selectProvider(providers, state, "codex", state.nightKey, 0, {
+      codex: { model: "gpt-5-codex", reasoningLevel: "low" },
+    });
+    expect(picked).toEqual({
+      providerId: "codex",
+      model: "gpt-5-codex",
+      reasoningLevel: "low",
+      reason: "providerPreference=codex + configured default",
+    });
+  });
+
+  it("applies a configured default during alternate rotation", () => {
+    const providers = [provider("codex"), provider("acp-opencode")];
+    const state = {
+      repositoryKey: "monorepo" as const,
+      nightKey: "2026-09-10",
+      lastState: "",
+      failedCount: 0,
+      noopCount: 0,
+      lastStartAt: 0,
+      lastStartProvider: "codex",
+      limits: {},
+    };
+    const picked = selectProvider(providers, state, "alternate", state.nightKey, 0, {
+      "acp-opencode": { model: "opencode-big", reasoningLevel: "max" },
+    });
+    expect(picked?.providerId).toBe("acp-opencode");
+    expect(picked?.model).toBe("opencode-big");
+    expect(picked?.reasoningLevel).toBe("max");
+    expect(picked?.reason).toBe("alternate after codex + configured default");
+  });
+
+  it("never resurrects an unusable provider through a configured default", () => {
+    const providers = [provider("codex", "unavailable"), provider("claude-code")];
+    const state = {
+      repositoryKey: "monorepo" as const,
+      nightKey: "2026-09-10",
+      lastState: "",
+      failedCount: 0,
+      noopCount: 0,
+      lastStartAt: 0,
+      lastStartProvider: "",
+      limits: {},
+    };
+    const picked = selectProvider(providers, state, "codex", state.nightKey, 0, {
+      codex: { model: "gpt-5-codex", reasoningLevel: "high" },
+    });
+    expect(picked?.providerId).toBe("claude-code");
+    expect(picked?.model).toBe("claude-code-model");
+    expect(picked?.reason).toBe("fallback, codex unusable");
+  });
+
+  it("persists the configured model and thinking level on the dispatch attempt", async () => {
+    const { engine, threads, store } = makeHarness({
+      settings: {
+        providerPreference: "codex",
+        providerModelDefaults: { codex: { model: "gpt-5-codex", reasoningLevel: "xhigh" } },
+      },
+    });
+    const result = await engine.requestRun(MANUAL_REQUEST);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.result.message).toContain("codex (providerPreference=codex + configured default)");
+    const spawn = threads.spawnCalls[0]!;
+    expect(spawn).toMatchObject({ providerId: "codex", model: "gpt-5-codex", reasoningLevel: "xhigh" });
+    // A configured default is not a caller-explicit input; bb may still derive.
+    expect("executionInputSources" in spawn).toBe(false);
+    const detail = await store.getRun({ repositoryKey: "monorepo", runId: result.result.runId! });
+    expect(detail.run?.attempts[0]).toMatchObject({
+      providerId: "codex",
+      model: "gpt-5-codex",
+      reasoningLevel: "xhigh",
+    });
+  });
+
+  it("leaves the manual run-now override untouched by configured defaults", async () => {
+    const { engine, threads } = makeHarness({
+      settings: {
+        providerModelDefaults: { "claude-code": { model: "claude-haiku", reasoningLevel: "low" } },
+      },
+    });
+    const result = await engine.requestRun({
+      ...MANUAL_REQUEST,
+      providerOverride: { providerId: "claude-code", model: "claude-opus-5", reasoningLevel: "xhigh" },
+    });
+    expect(result.ok).toBe(true);
+    expect(threads.spawnCalls[0]).toMatchObject({ model: "claude-opus-5", reasoningLevel: "xhigh" });
+  });
+
   it("skips a provider without full permission support", async () => {
     const { engine, store } = makeHarness({
       settings: { providerPreference: "acp-opencode" },

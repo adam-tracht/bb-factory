@@ -1,4 +1,4 @@
-import type { HostPreflight, ProviderId, ProviderStatus, ProviderPreference, RepositoryKey } from "../contracts.js";
+import type { HostPreflight, ProviderId, ProviderModelDefaults, ProviderStatus, ProviderPreference, RepositoryKey } from "../contracts.js";
 import { errorMessage } from "../errors.js";
 import type { DispatcherState } from "../storage/index.js";
 import type { DispatchContext } from "./types.js";
@@ -43,16 +43,30 @@ export function selectProvider(
   preference: ProviderPreference | undefined,
   nightKey: string,
   nowS: number,
+  modelDefaults?: ProviderModelDefaults,
 ): ProviderSelection | null {
   const usable = providers.filter((provider) => providerUsable(provider, state, nowS));
   if (usable.length === 0) return null;
 
-  const selection = (picked: ProviderStatus, reason: string): ProviderSelection => ({
-    providerId: picked.providerId,
-    model: picked.model,
-    reasoningLevel: picked.reasoningLevel,
-    reason,
-  });
+  // Configured defaults apply only after the usability check: a stored model
+  // can never resurrect a provider the host reports unusable.
+  const selection = (picked: ProviderStatus, reason: string): ProviderSelection => {
+    const configured = modelDefaults?.[picked.providerId];
+    if (configured === undefined) {
+      return {
+        providerId: picked.providerId,
+        model: picked.model,
+        reasoningLevel: picked.reasoningLevel,
+        reason,
+      };
+    }
+    return {
+      providerId: picked.providerId,
+      model: configured.model,
+      reasoningLevel: configured.reasoningLevel,
+      reason: `${reason} + configured default`,
+    };
+  };
 
   if (preference !== undefined && preference !== "alternate") {
     const picked = usable.find((provider) => provider.providerId === preference) ?? usable[0]!;

@@ -162,7 +162,7 @@ export async function startRun(ctx: DispatchContext, input: StartRunInput): Prom
   const dispatcherState = nightState(ctx.store.getDispatcherState(input.repositoryKey), nightKey);
   const nowS = dispatcherNowSeconds(ctx.now);
   const provider = input.providerOverride === undefined
-    ? selectProvider(providers, dispatcherState, ctx.settings.providerPreference, nightKey, nowS)
+    ? selectProvider(providers, dispatcherState, ctx.settings.providerPreference, nightKey, nowS, ctx.settings.providerModelDefaults)
     : selectExplicitProvider(providers, dispatcherState, input.providerOverride, nowS);
   if (!provider) {
     return noSpawn(actionError(

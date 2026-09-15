@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { PluginSettingDescriptors } from "@get-bb/plugin-sdk";
-import { providerPreferenceSchema, repositoryRegistrySchema } from "./contracts.js";
+import { providerModelDefaultsSchema, providerPreferenceSchema, repositoryRegistrySchema } from "./contracts.js";
 
 const repositoryKey = z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/);
 const absolutePath = z.string().regex(/^(?:\/|[A-Za-z]:[\\/])/);
@@ -18,6 +18,23 @@ export const repositoryRegistrySettingSchema = z.string().superRefine((value, co
     context.addIssue({
       code: "custom",
       message: `invalid repository registry: ${result.error.issues[0]?.message ?? "schema mismatch"}`,
+    });
+  }
+});
+
+export const providerModelDefaultsSettingSchema = z.string().superRefine((value, context) => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    context.addIssue({ code: "custom", message: "must be valid provider model defaults JSON" });
+    return;
+  }
+  const result = providerModelDefaultsSchema.safeParse(parsed);
+  if (!result.success) {
+    context.addIssue({
+      code: "custom",
+      message: `invalid provider model defaults: ${result.error.issues[0]?.message ?? "schema mismatch"}`,
     });
   }
 });
@@ -99,6 +116,14 @@ export const factorySettingDescriptors = {
     label: "Provider preference",
     description: "Provider id to lead dispatch (any id the host reports), or alternate to rotate.",
     experimental_schema: providerPreferenceSchema,
+  },
+  providerModelDefaults: {
+    type: "string",
+    label: "Provider model defaults",
+    description:
+      "Validated JSON map of provider id to the model and thinking level dispatch uses instead of the host-reported default. The Factory Settings tab edits this per provider.",
+    experimental_multiline: true,
+    experimental_schema: providerModelDefaultsSettingSchema,
   },
   minimumStartGapSeconds: {
     type: "number",

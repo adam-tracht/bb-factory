@@ -12,6 +12,7 @@ import type {
 import type { ViewContext } from "../context.js";
 import {
   ProviderModelPicker,
+  pickerRoutingFor,
   seedPickerValue,
   type PickerRouting,
   type PickerValue,
@@ -661,9 +662,7 @@ export function QuestionsView(props: {
     });
   };
 
-  const pickerRouting: PickerRouting = ctx.environmentId
-    ? { kind: "environment", environmentId: ctx.environmentId }
-    : { kind: "host", hostId: ctx.repository.connectedHostId };
+  const pickerRouting = pickerRoutingFor(ctx);
 
   const pendingInteractions = interactions?.interactions ?? [];
   const filtersActive = query.trim() !== "" || kindFilter !== "all" || stateFilter !== "all";

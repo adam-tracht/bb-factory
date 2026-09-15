@@ -35,6 +35,18 @@ export const reasoningLevelSchema = z.enum([
 ]);
 export type ReasoningLevel = z.infer<typeof reasoningLevelSchema>;
 
+export const providerModelDefaultSchema = z
+  .object({
+    model: nonEmptyString,
+    reasoningLevel: reasoningLevelSchema,
+  })
+  .strict();
+export type ProviderModelDefault = z.infer<typeof providerModelDefaultSchema>;
+
+/** Model names are provider-local, so configured defaults key on the provider id. */
+export const providerModelDefaultsSchema = z.record(providerIdSchema, providerModelDefaultSchema);
+export type ProviderModelDefaults = z.infer<typeof providerModelDefaultsSchema>;
+
 export const repositoryRevisionSchema = z
   .object({
     gitCommit: z.string().regex(/^[0-9a-f]{7,64}$/).nullable(),
@@ -147,6 +159,21 @@ const repositoryRegistrySettingValueSchema = z.preprocess(
   repositoryRegistrySchema,
 );
 
+/** Plugin settings store scalars only; the map persists as a JSON string. */
+const providerModelDefaultsSettingValueSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") {
+      return value;
+    }
+    try {
+      return JSON.parse(value) as unknown;
+    } catch {
+      return value;
+    }
+  },
+  providerModelDefaultsSchema,
+);
+
 export const scheduleSettingsSchema = z
   .object({
     cron: nonEmptyString,
@@ -171,6 +198,7 @@ export const factorySettingsSchema = z
     nightWindowEndHour: z.number().int().min(0).max(23).default(6),
     runtimeCapSeconds: z.number().int().positive().default(10_800),
     providerPreference: providerPreferenceSchema.optional(),
+    providerModelDefaults: providerModelDefaultsSettingValueSchema.optional(),
     minimumStartGapSeconds: z.number().int().min(3600).default(3600),
     concurrencyLimit: z.number().int().positive().default(1),
     dispatchMode: z.enum(["enabled", "paused"]).default("paused"),
@@ -1318,6 +1346,7 @@ export const factorySettingsPatchSchema = z
     nightWindowEndHour: z.number().int().min(0).max(23).optional(),
     runtimeCapSeconds: z.number().int().positive().optional(),
     providerPreference: providerPreferenceSchema.nullable().optional(),
+    providerModelDefaults: providerModelDefaultsSchema.nullable().optional(),
     minimumStartGapSeconds: z.number().int().min(3600).optional(),
     concurrencyLimit: z.number().int().positive().optional(),
   })

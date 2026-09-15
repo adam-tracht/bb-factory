@@ -3,8 +3,8 @@ import type { ProtocolSnapshot, ProviderStatus, QueueEntry } from "../../contrac
 import type { ViewContext } from "../context.js";
 import {
   ProviderModelPicker,
+  pickerRoutingFor,
   seedPickerValue,
-  type PickerRouting,
   type PickerValue,
 } from "../providerPicker.js";
 import {
@@ -251,9 +251,7 @@ function ApproveComposer(props: {
   const trimmed = text.trim();
   const draftSeed = seedPickerValue(props.providers, props.preferredProviderId);
   const canDraft = ProviderModelPicker !== undefined && draftSeed !== null;
-  const pickerRouting: PickerRouting = ctx.environmentId
-    ? { kind: "environment", environmentId: ctx.environmentId }
-    : { kind: "host", hostId: ctx.repository.connectedHostId };
+  const pickerRouting = pickerRoutingFor(ctx);
   return h("div", { className: "space-y-1.5" },
     h("div", { className: "space-y-1 text-xs text-muted-foreground" },
       h("p", null, `Risk: ${entry.risk}. Approval is required before this item can run.`),

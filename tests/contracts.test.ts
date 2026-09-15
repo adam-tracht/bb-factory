@@ -8,6 +8,7 @@ import {
   factoryActionResultSchema,
   factoryErrorSchema,
   factorySettingsSchema,
+  factorySettingsPatchSchema,
   healthProjectionSchema,
   invalidationEventSchema,
   idempotencyKeySchema,
@@ -105,6 +106,37 @@ describe("Phase 0 wire contracts", () => {
   it("describes provider preference as a host-reported string", () => {
     expect(factorySettingDescriptors.providerPreference.type).toBe("string");
     expect("options" in factorySettingDescriptors.providerPreference).toBe(false);
+  });
+
+  it("parses stored provider model defaults from the JSON settings string", () => {
+    const defaults = { codex: { model: "gpt-5-codex", reasoningLevel: "high" } };
+    const encoded = JSON.stringify(defaults);
+
+    expect(factorySettingsSchema.parse({ providerModelDefaults: encoded }).providerModelDefaults).toEqual(defaults);
+    // The already-parsed projection form round-trips through the same field.
+    expect(factorySettingsSchema.parse({ providerModelDefaults: defaults }).providerModelDefaults).toEqual(defaults);
+    expect(factorySettingDescriptors.providerModelDefaults.experimental_schema.parse(encoded)).toBe(encoded);
+    expect(() => factorySettingsSchema.parse({
+      providerModelDefaults: JSON.stringify({ codex: { model: "gpt-5-codex", reasoningLevel: "ludicrous" } }),
+    })).toThrow();
+    expect(() => factorySettingsSchema.parse({
+      providerModelDefaults: JSON.stringify({ codex: { model: "", reasoningLevel: "high" } }),
+    })).toThrow();
+    expect(() => factorySettingDescriptors.providerModelDefaults.experimental_schema.parse("not json")).toThrow();
+    expect(factorySettingsSchema.parse({}).providerModelDefaults).toBeUndefined();
+  });
+
+  it("takes a full provider model defaults map or null in a settings patch", () => {
+    const defaults = { codex: { model: "gpt-5-codex", reasoningLevel: "high" } };
+    expect(factorySettingsPatchSchema.parse({ providerModelDefaults: defaults }).providerModelDefaults).toEqual(defaults);
+    expect(factorySettingsPatchSchema.parse({ providerModelDefaults: null }).providerModelDefaults).toBeNull();
+    expect(factorySettingsPatchSchema.parse({ providerModelDefaults: {} }).providerModelDefaults).toEqual({});
+    expect(() => factorySettingsPatchSchema.parse({
+      providerModelDefaults: { codex: { model: "gpt-5-codex", reasoningLevel: "ludicrous" } },
+    })).toThrow();
+    expect(() => factorySettingsPatchSchema.parse({
+      providerModelDefaults: { "Bad Provider": { model: "gpt-5-codex", reasoningLevel: "high" } },
+    })).toThrow();
   });
 
   it("preserves live queue status detail and omitted question recommendations", () => {
