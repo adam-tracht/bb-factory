@@ -133,6 +133,45 @@ describe("settings mutation handlers", () => {
     expect(applied).toEqual([]);
   });
 
+  it("persists a provider rotation as a JSON string and clears it with null", async () => {
+    const { settings, applied, handlers } = harness();
+    const result = await handlers.factory_update_settings({
+      repositoryKey: "monorepo",
+      patch: { providerRotation: ["codex", "claude-code", "acp-devin"] },
+    });
+    expect(result).toMatchObject({ ok: true });
+    expect(applied).toEqual([
+      { providerRotation: JSON.stringify(["codex", "claude-code", "acp-devin"]) },
+    ]);
+
+    // A provided list replaces the stored list wholesale.
+    settings.providerRotation = ["codex", "claude-code", "acp-devin"];
+    expect(await handlers.factory_update_settings({
+      repositoryKey: "monorepo",
+      patch: { providerRotation: ["acp-devin", "codex"] },
+    })).toMatchObject({ ok: true });
+    expect(applied[1]).toEqual({ providerRotation: JSON.stringify(["acp-devin", "codex"]) });
+
+    expect(await handlers.factory_update_settings({
+      repositoryKey: "monorepo",
+      patch: { providerRotation: null },
+    })).toMatchObject({ ok: true });
+    expect(applied[2]).toEqual({ providerRotation: null });
+  });
+
+  it("rejects an invalid provider rotation without persisting", async () => {
+    const { applied, handlers } = harness();
+    for (const providerRotation of [["codex"], ["codex", "codex"], ["codex", "claude-code", "acp-devin", "acp-opencode", "pi", "amp"]]) {
+      const result = await handlers.factory_update_settings({
+        repositoryKey: "monorepo",
+        patch: { providerRotation },
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error.category).toBe("invalid-input");
+    }
+    expect(applied).toEqual([]);
+  });
+
   it("toggles per-repository dispatch pause inside the registry JSON", async () => {
     const { applied, handlers } = harness();
     const result = await handlers.factory_update_repository({

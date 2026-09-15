@@ -425,6 +425,121 @@ describe("dispatch engine", () => {
     expect(picked?.reason).toBe("alternate after codex + configured default");
   });
 
+  it("advances through a configured rotation in list order and wraps around", () => {
+    const providers = [provider("codex"), provider("acp-opencode"), provider("acp-devin")];
+    const state = {
+      repositoryKey: "monorepo" as const,
+      nightKey: "2026-09-10",
+      lastState: "",
+      failedCount: 0,
+      noopCount: 0,
+      lastStartAt: 0,
+      lastStartProvider: "codex",
+      limits: {},
+    };
+    const rotation = ["codex", "acp-devin"];
+    // acp-opencode sits between them in the catalog but is outside the list.
+    const first = selectProvider(providers, state, "alternate", state.nightKey, 0, undefined, rotation);
+    const second = selectProvider(providers, { ...state, lastStartProvider: first!.providerId }, "alternate", state.nightKey, 0, undefined, rotation);
+    expect([first?.providerId, second?.providerId]).toEqual(["acp-devin", "codex"]);
+    expect(first?.reason).toBe("rotation after codex");
+  });
+
+  it("starts a configured rotation at the head when the last provider is not a member", () => {
+    const providers = [provider("codex"), provider("acp-devin")];
+    const state = {
+      repositoryKey: "monorepo" as const,
+      nightKey: "2026-09-10",
+      lastState: "",
+      failedCount: 0,
+      noopCount: 0,
+      lastStartAt: 0,
+      lastStartProvider: "acp-opencode",
+      limits: {},
+    };
+    const picked = selectProvider(providers, state, "alternate", state.nightKey, 0, undefined, ["codex", "acp-devin"]);
+    expect(picked?.providerId).toBe("codex");
+  });
+
+  it("skips unusable and unreported members while holding their slots", () => {
+    const providers = [provider("codex"), provider("acp-devin", "unavailable"), provider("acp-opencode")];
+    const state = {
+      repositoryKey: "monorepo" as const,
+      nightKey: "2026-09-10",
+      lastState: "",
+      failedCount: 0,
+      noopCount: 0,
+      lastStartAt: 0,
+      lastStartProvider: "codex",
+      limits: {},
+    };
+    // acp-devin unusable and ghost-provider unreported: both are skipped.
+    const picked = selectProvider(
+      providers,
+      state,
+      "alternate",
+      state.nightKey,
+      0,
+      undefined,
+      ["codex", "acp-devin", "ghost-provider", "acp-opencode"],
+    );
+    expect(picked?.providerId).toBe("acp-opencode");
+    expect(picked?.reason).toBe("rotation after codex");
+  });
+
+  it("falls back to a usable provider outside the list when every rotation member is unusable", () => {
+    const providers = [provider("codex", "unavailable"), provider("acp-devin", "unavailable"), provider("acp-opencode")];
+    const state = {
+      repositoryKey: "monorepo" as const,
+      nightKey: "2026-09-10",
+      lastState: "",
+      failedCount: 0,
+      noopCount: 0,
+      lastStartAt: 0,
+      lastStartProvider: "codex",
+      limits: {},
+    };
+    const picked = selectProvider(providers, state, "alternate", state.nightKey, 0, undefined, ["codex", "acp-devin"]);
+    expect(picked?.providerId).toBe("acp-opencode");
+    expect(picked?.reason).toBe("rotation exhausted, fallback");
+  });
+
+  it("applies a configured default to a rotation member and notes it in the reason", () => {
+    const providers = [provider("codex"), provider("acp-devin")];
+    const state = {
+      repositoryKey: "monorepo" as const,
+      nightKey: "2026-09-10",
+      lastState: "",
+      failedCount: 0,
+      noopCount: 0,
+      lastStartAt: 0,
+      lastStartProvider: "codex",
+      limits: {},
+    };
+    const picked = selectProvider(providers, state, "alternate", state.nightKey, 0, {
+      "acp-devin": { model: "devin-large", reasoningLevel: "max" },
+    }, ["codex", "acp-devin"]);
+    expect(picked).toEqual({
+      providerId: "acp-devin",
+      model: "devin-large",
+      reasoningLevel: "max",
+      reason: "rotation after codex + configured default",
+    });
+  });
+
+  it("dispatches through the configured rotation from settings", async () => {
+    const { engine, threads } = makeHarness({
+      settings: { providerPreference: "alternate", providerRotation: ["claude-code", "codex"] },
+      providers: [provider("codex"), provider("claude-code")],
+    });
+    const result = await engine.requestRun(MANUAL_REQUEST);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    // No last start on record: the run takes the list head, not the catalog head.
+    expect(result.result.message).toContain("claude-code");
+    expect(threads.spawnCalls[0]).toMatchObject({ providerId: "claude-code" });
+  });
+
   it("never resurrects an unusable provider through a configured default", () => {
     const providers = [provider("codex", "unavailable"), provider("claude-code")];
     const state = {

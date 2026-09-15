@@ -664,6 +664,138 @@ describe("SettingsView", () => {
     expect(screen.getByText(/does not report this provider/)).toBeTruthy();
     expect(screen.queryByLabelText("Default model")).toBeNull();
   });
+
+  it("shows the rotation editor only while the preference alternates", () => {
+    renderSettings();
+    expect(screen.queryByLabelText("Add provider to rotation")).toBeNull();
+
+    fireEvent.change(screen.getByLabelText("Provider preference"), { target: { value: "alternate" } });
+    expect(screen.getByLabelText("Add provider to rotation")).toBeTruthy();
+    expect(screen.getByText("No rotation set: dispatch rotates across every reported provider.")).toBeTruthy();
+  });
+
+  it("adds, reorders, and saves a provider rotation in list order", async () => {
+    const ctx = makeCtx();
+    renderSettings({
+      ctx,
+      projection: {
+        ...settingsProjection,
+        settings: { ...settingsProjection.settings, providerPreference: "alternate" },
+      },
+    });
+    const addSelect = screen.getByLabelText("Add provider to rotation") as HTMLSelectElement;
+    fireEvent.change(addSelect, { target: { value: "codex" } });
+    // A listed member leaves the add options.
+    expect(Array.from(addSelect.options).map((option) => option.value)).not.toContain("codex");
+    fireEvent.change(addSelect, { target: { value: "claude-code" } });
+    expect(screen.getByText("Unsaved changes")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Move claude-code up" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Save" }));
+    expect(ctx.updateSettings).toHaveBeenCalledWith({ providerRotation: ["claude-code", "codex"] });
+    expect(await screen.findByText("saved")).toBeTruthy();
+  });
+
+  it("moves a rotation member down in list order", async () => {
+    const ctx = makeCtx();
+    renderSettings({
+      ctx,
+      projection: {
+        ...settingsProjection,
+        settings: {
+          ...settingsProjection.settings,
+          providerPreference: "alternate",
+          providerRotation: ["codex", "claude-code"],
+        },
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Move codex down" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Save" }));
+    expect(ctx.updateSettings).toHaveBeenCalledWith({ providerRotation: ["claude-code", "codex"] });
+  });
+
+  it("renders a stored rotation id the host no longer reports and stays removable", () => {
+    renderSettings({
+      projection: {
+        ...settingsProjection,
+        settings: {
+          ...settingsProjection.settings,
+          providerPreference: "alternate",
+          providerRotation: ["codex", "acp-devin"],
+        },
+      },
+    });
+    expect(screen.getByText("acp-devin")).toBeTruthy();
+    expect(screen.getByText("(not reported)")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove acp-devin from rotation" }));
+    expect(screen.queryByText("acp-devin")).toBeNull();
+    // One remaining member cannot form a rotation: the row explains and Save blocks.
+    expect(screen.getByText(/at least 2 providers/)).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("clears a stored rotation back to unset with a null patch", async () => {
+    const ctx = makeCtx();
+    renderSettings({
+      ctx,
+      projection: {
+        ...settingsProjection,
+        settings: {
+          ...settingsProjection.settings,
+          providerPreference: "alternate",
+          providerRotation: ["codex", "claude-code"],
+        },
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Clear rotation" }));
+    expect(screen.getByText(/No rotation set/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Save" }));
+    expect(ctx.updateSettings).toHaveBeenCalledWith({ providerRotation: null });
+  });
+
+  it("shows a member's configured model default in the rotation list", () => {
+    renderSettings({
+      projection: {
+        ...settingsProjection,
+        settings: {
+          ...settingsProjection.settings,
+          providerPreference: "alternate",
+          providerRotation: ["codex", "claude-code"],
+          providerModelDefaults: { codex: { model: "gpt-5-codex", reasoningLevel: "xhigh" } },
+        },
+      },
+    });
+    expect(screen.getByText("gpt-5-codex · xhigh")).toBeTruthy();
+  });
+
+  it("maps nested server fieldErrors onto the rotation row", async () => {
+    const ctx = makeCtx({
+      updateSettings: vi.fn(async () => ({
+        ok: false as const,
+        error: {
+          category: "invalid-input" as const,
+          message: "The updated settings are invalid",
+          fieldErrors: { "providerRotation.1": ["rotation rejected by server"] },
+        },
+      })),
+    });
+    renderSettings({
+      ctx,
+      projection: {
+        ...settingsProjection,
+        settings: { ...settingsProjection.settings, providerPreference: "alternate" },
+      },
+    });
+    fireEvent.change(screen.getByLabelText("Add provider to rotation"), { target: { value: "codex" } });
+    fireEvent.change(screen.getByLabelText("Add provider to rotation"), { target: { value: "claude-code" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("rotation rejected by server")).toBeTruthy();
+  });
 });
 
 describe("RepositoryLandingView", () => {

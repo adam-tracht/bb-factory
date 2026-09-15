@@ -139,6 +139,33 @@ describe("Phase 0 wire contracts", () => {
     })).toThrow();
   });
 
+  it("parses a stored provider rotation from the JSON settings string", () => {
+    const rotation = ["codex", "claude-code", "acp-devin"];
+    const encoded = JSON.stringify(rotation);
+
+    expect(factorySettingsSchema.parse({ providerRotation: encoded }).providerRotation).toEqual(rotation);
+    // The already-parsed projection form round-trips through the same field.
+    expect(factorySettingsSchema.parse({ providerRotation: rotation }).providerRotation).toEqual(rotation);
+    expect(factorySettingDescriptors.providerRotation.experimental_schema.parse(encoded)).toBe(encoded);
+    expect(() => factorySettingsSchema.parse({ providerRotation: JSON.stringify(["codex"]) })).toThrow();
+    expect(() => factorySettingsSchema.parse({ providerRotation: JSON.stringify(["codex", "codex"]) })).toThrow();
+    expect(() => factorySettingsSchema.parse({
+      providerRotation: JSON.stringify(["codex", "claude-code", "acp-devin", "acp-opencode", "pi", "amp"]),
+    })).toThrow();
+    expect(() => factorySettingsSchema.parse({ providerRotation: JSON.stringify(["codex", "Bad Id"]) })).toThrow();
+    expect(() => factorySettingDescriptors.providerRotation.experimental_schema.parse("not json")).toThrow();
+    expect(factorySettingsSchema.parse({}).providerRotation).toBeUndefined();
+  });
+
+  it("takes a provider rotation list or null in a settings patch", () => {
+    expect(factorySettingsPatchSchema.parse({ providerRotation: ["codex", "claude-code"] }).providerRotation)
+      .toEqual(["codex", "claude-code"]);
+    expect(factorySettingsPatchSchema.parse({ providerRotation: null }).providerRotation).toBeNull();
+    expect(() => factorySettingsPatchSchema.parse({ providerRotation: ["codex"] })).toThrow();
+    expect(() => factorySettingsPatchSchema.parse({ providerRotation: ["codex", "codex"] })).toThrow();
+    expect(() => factorySettingsPatchSchema.parse({ providerRotation: ["codex", "Bad Id"] })).toThrow();
+  });
+
   it("preserves live queue status detail and omitted question recommendations", () => {
     expect(queueStatusSchema.parse({ kind: "done" })).toEqual({ kind: "done" });
     expect(

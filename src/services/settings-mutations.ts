@@ -18,7 +18,7 @@ type BbSdk = BbPluginApi["sdk"];
 type SettingValue = string | number | boolean;
 
 /** Patch keys whose structured values persist as JSON strings. */
-const JSON_PATCH_KEYS: ReadonlySet<string> = new Set(["providerModelDefaults"]);
+const JSON_PATCH_KEYS: ReadonlySet<string> = new Set(["providerModelDefaults", "providerRotation"]);
 
 export interface SettingsMutationHandlers {
   factory_update_settings(input: { repositoryKey: string; patch: FactorySettingsPatch }): Promise<SettingsMutationResult>;

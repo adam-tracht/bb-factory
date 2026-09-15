@@ -47,6 +47,14 @@ export type ProviderModelDefault = z.infer<typeof providerModelDefaultSchema>;
 export const providerModelDefaultsSchema = z.record(providerIdSchema, providerModelDefaultSchema);
 export type ProviderModelDefaults = z.infer<typeof providerModelDefaultsSchema>;
 
+/** Ordered provider ids the alternate preference rotates through: 2 to 5 unique ids. */
+export const providerRotationSchema = z
+  .array(providerIdSchema)
+  .min(2)
+  .max(5)
+  .refine((ids) => new Set(ids).size === ids.length, "provider ids must be unique");
+export type ProviderRotation = z.infer<typeof providerRotationSchema>;
+
 export const repositoryRevisionSchema = z
   .object({
     gitCommit: z.string().regex(/^[0-9a-f]{7,64}$/).nullable(),
@@ -145,34 +153,26 @@ export const repositoryRegistryResolutionSchema = z.discriminatedUnion("status",
 ]);
 export type RepositoryRegistryResolution = z.infer<typeof repositoryRegistryResolutionSchema>;
 
-const repositoryRegistrySettingValueSchema = z.preprocess(
-  (value) => {
-    if (typeof value !== "string") {
-      return value;
-    }
-    try {
-      return JSON.parse(value) as unknown;
-    } catch {
-      return value;
-    }
-  },
-  repositoryRegistrySchema,
-);
+/** Plugin settings store scalars only; structured values persist as JSON strings. */
+function jsonSettingValueSchema<S extends z.ZodTypeAny>(inner: S) {
+  return z.preprocess(
+    (value) => {
+      if (typeof value !== "string") {
+        return value;
+      }
+      try {
+        return JSON.parse(value) as unknown;
+      } catch {
+        return value;
+      }
+    },
+    inner,
+  );
+}
 
-/** Plugin settings store scalars only; the map persists as a JSON string. */
-const providerModelDefaultsSettingValueSchema = z.preprocess(
-  (value) => {
-    if (typeof value !== "string") {
-      return value;
-    }
-    try {
-      return JSON.parse(value) as unknown;
-    } catch {
-      return value;
-    }
-  },
-  providerModelDefaultsSchema,
-);
+const repositoryRegistrySettingValueSchema = jsonSettingValueSchema(repositoryRegistrySchema);
+const providerModelDefaultsSettingValueSchema = jsonSettingValueSchema(providerModelDefaultsSchema);
+const providerRotationSettingValueSchema = jsonSettingValueSchema(providerRotationSchema);
 
 export const scheduleSettingsSchema = z
   .object({
@@ -199,6 +199,7 @@ export const factorySettingsSchema = z
     runtimeCapSeconds: z.number().int().positive().default(10_800),
     providerPreference: providerPreferenceSchema.optional(),
     providerModelDefaults: providerModelDefaultsSettingValueSchema.optional(),
+    providerRotation: providerRotationSettingValueSchema.optional(),
     minimumStartGapSeconds: z.number().int().min(3600).default(3600),
     concurrencyLimit: z.number().int().positive().default(1),
     dispatchMode: z.enum(["enabled", "paused"]).default("paused"),
@@ -1347,6 +1348,7 @@ export const factorySettingsPatchSchema = z
     runtimeCapSeconds: z.number().int().positive().optional(),
     providerPreference: providerPreferenceSchema.nullable().optional(),
     providerModelDefaults: providerModelDefaultsSchema.nullable().optional(),
+    providerRotation: providerRotationSchema.nullable().optional(),
     minimumStartGapSeconds: z.number().int().min(3600).optional(),
     concurrencyLimit: z.number().int().positive().optional(),
   })

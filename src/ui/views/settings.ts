@@ -4,6 +4,7 @@ import {
   type FactorySettings,
   type FactorySettingsPatch,
   type HealthProjection,
+  type ProviderId,
   type ProviderModelDefault,
   type ProviderModelDefaults,
   type ProviderPreference,
@@ -12,6 +13,7 @@ import {
 } from "../../contracts.js";
 import { cronValid, nextCronTimes } from "../../schedule/cron.js";
 import { describeSchedule } from "../../schedule/describe.js";
+import { hasFullPermission } from "../../provider-status.js";
 import { repositoryLabel } from "../../repository-label.js";
 import { ProviderModelPicker, pickerRoutingFor, type PickerValue } from "../providerPicker.js";
 import type { ViewContext } from "../context.js";
@@ -39,6 +41,7 @@ type DispatchMode = "enabled" | "paused";
  * coerced. `scheduleCron` uses "" for unset (patch maps it to null).
  * `providerModelDefaults` carries the whole stored map so the wholesale-replace
  * patch preserves entries for providers other than the pinned one.
+ * `providerRotation` carries the ordered list; an empty list patches null.
  */
 interface DraftShape {
   dispatchMode: DispatchMode;
@@ -50,6 +53,7 @@ interface DraftShape {
   concurrencyLimit: string;
   providerPreference: string;
   providerModelDefaults: ProviderModelDefaults;
+  providerRotation: ProviderId[];
 }
 
 type DraftKey = keyof DraftShape;
@@ -65,6 +69,7 @@ const PATCH_KEY_TO_FIELD: Record<string, DraftKey> = {
   concurrencyLimit: "concurrencyLimit",
   providerPreference: "providerPreference",
   providerModelDefaults: "providerModelDefaults",
+  providerRotation: "providerRotation",
 };
 
 /** Shared empty map keeps untouched drafts at the stored reference. */
@@ -80,6 +85,11 @@ function sameProviderModelDefaults(a: ProviderModelDefaults, b: ProviderModelDef
     && keys.every((key) => a[key]!.model === b[key]?.model && a[key]!.reasoningLevel === b[key]?.reasoningLevel);
 }
 
+/** Ordered list: position matters, so compare element by element. */
+function sameProviderRotation(a: readonly ProviderId[], b: readonly ProviderId[]): boolean {
+  return a.length === b.length && a.every((id, index) => id === b[index]);
+}
+
 function seedDraft(settings: FactorySettings): DraftShape {
   return {
     dispatchMode: settings.dispatchMode,
@@ -91,6 +101,7 @@ function seedDraft(settings: FactorySettings): DraftShape {
     concurrencyLimit: String(settings.concurrencyLimit),
     providerPreference: settings.providerPreference ?? "alternate",
     providerModelDefaults: settings.providerModelDefaults ?? NO_PROVIDER_DEFAULTS,
+    providerRotation: settings.providerRotation ?? [],
   };
 }
 
@@ -126,7 +137,9 @@ function analyzeDraft(draft: DraftShape, settings: FactorySettings): DraftAnalys
   for (const key of Object.keys(draft) as DraftKey[]) {
     const unchanged = key === "providerModelDefaults"
       ? sameProviderModelDefaults(draft.providerModelDefaults, baseline.providerModelDefaults)
-      : draft[key] === baseline[key];
+      : key === "providerRotation"
+        ? sameProviderRotation(draft.providerRotation, baseline.providerRotation)
+        : draft[key] === baseline[key];
     if (!unchanged) dirty.add(key);
   }
 
@@ -185,6 +198,21 @@ function analyzeDraft(draft: DraftShape, settings: FactorySettings): DraftAnalys
     patch.providerModelDefaults = Object.keys(draft.providerModelDefaults).length === 0
       ? null
       : draft.providerModelDefaults;
+  }
+
+  // An empty list is the cleared state (patch null); a single member cannot
+  // form a rotation, and the schema caps the list at five.
+  if (dirty.has("providerRotation")) {
+    if (draft.providerRotation.length === 0) {
+      patch.providerRotation = null;
+    } else if (draft.providerRotation.length < 2) {
+      errors.providerRotation = "Use at least 2 providers, or remove the last one to clear the rotation.";
+    } else if (draft.providerRotation.length > 5) {
+      // Defensive: stored lists are schema-capped at 5 and the editor never adds past it.
+      errors.providerRotation = "Use at most 5 providers.";
+    } else {
+      patch.providerRotation = [...draft.providerRotation];
+    }
   }
 
   if (dirty.has("dispatchMode")) {
@@ -433,7 +461,9 @@ function DispatchCard(props: {
       if (lastSaved === null) return true;
       return key === "providerModelDefaults"
         ? !sameProviderModelDefaults(lastSaved.providerModelDefaults, draft.providerModelDefaults)
-        : lastSaved[key] !== draft[key];
+        : key === "providerRotation"
+          ? !sameProviderRotation(lastSaved.providerRotation, draft.providerRotation)
+          : lastSaved[key] !== draft[key];
     })),
     [analysis, lastSaved, draft],
   );
@@ -543,7 +573,7 @@ function DispatchCard(props: {
     for (const provider of providers) {
       if (seen.has(provider.providerId)) continue;
       seen.add(provider.providerId);
-      const full = provider.permissionModes === undefined || provider.permissionModes.includes("full");
+      const full = hasFullPermission(provider);
       options.push({
         value: provider.providerId,
         label: `${provider.providerId} (${provider.availability}${full ? "" : ", lacks full permission"})`,
@@ -641,6 +671,104 @@ function DispatchCard(props: {
           h("option", { key: level, value: level }, level))),
       storedDefault === undefined ? null : resetToHostDefault);
   })();
+
+  // The rotation editor only exists while the preference alternates. The draft
+  // holds the ordered id list; stored ids the catalog no longer reports stay
+  // listed (and removable) with a "(not reported)" marker.
+  const rotationSaving = savingFields.has("providerRotation");
+  const rotationIds = draft.providerRotation;
+  const moveRotation = (from: number, to: number) =>
+    setField("providerRotation", (current) => {
+      const next = [...current];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved!);
+      return next;
+    });
+  const rotationAddable = (() => {
+    const seen = new Set<string>(rotationIds);
+    return providers.filter((provider) => {
+      if (seen.has(provider.providerId)) return false;
+      seen.add(provider.providerId);
+      return true;
+    });
+  })();
+  const rotationEditor = h("div", null,
+    rotationIds.length === 0
+      ? h("p", { className: "text-xs text-muted-foreground" },
+          "No rotation set: dispatch rotates across every reported provider.")
+      : h("ul", { className: "space-y-1.5" },
+          rotationIds.map((id, index) => {
+            const reported = providers.find((provider) => provider.providerId === id);
+            const memberDefault = draft.providerModelDefaults[id];
+            return h("li", { key: id, className: "flex flex-wrap items-center gap-x-2 gap-y-1" },
+              h("span", { className: "w-4 text-xs text-muted-foreground" }, `${index + 1}.`),
+              h("code", { className: "text-sm" }, id),
+              reported === undefined
+                ? h("span", { className: "text-xs text-muted-foreground" }, "(not reported)")
+                : h("span", { className: "text-xs text-muted-foreground" }, reported.availability),
+              memberDefault === undefined
+                ? null
+                : h("span", { className: "text-xs text-muted-foreground" },
+                    `${memberDefault.model} · ${memberDefault.reasoningLevel}`),
+              h("span", { className: "ml-auto flex items-center gap-1" },
+                h(ActionButton, {
+                  label: "Up",
+                  ariaLabel: `Move ${id} up`,
+                  variant: "ghost",
+                  size: "xs",
+                  disabled: rotationSaving || index === 0,
+                  onClick: () => moveRotation(index, index - 1),
+                }),
+                h(ActionButton, {
+                  label: "Down",
+                  ariaLabel: `Move ${id} down`,
+                  variant: "ghost",
+                  size: "xs",
+                  disabled: rotationSaving || index === rotationIds.length - 1,
+                  onClick: () => moveRotation(index, index + 1),
+                }),
+                h(ActionButton, {
+                  label: "Remove",
+                  ariaLabel: `Remove ${id} from rotation`,
+                  variant: "ghost",
+                  size: "xs",
+                  disabled: rotationSaving,
+                  onClick: () =>
+                    setField("providerRotation", (current) => current.filter((member) => member !== id)),
+                })));
+          })),
+    h("div", { className: "mt-2 flex flex-wrap items-center gap-2" },
+      h("select", {
+        "aria-label": "Add provider to rotation",
+        className: `${inputClass} w-auto`,
+        value: "",
+        disabled: rotationSaving || rotationIds.length >= 5 || rotationAddable.length === 0,
+        onChange: (event: { target: { value: string } }) => {
+          const id = event.target.value;
+          if (id === "") return;
+          setField("providerRotation", (current) =>
+            current.includes(id) || current.length >= 5 ? current : [...current, id]);
+        },
+      },
+        h("option", { value: "" },
+          rotationIds.length >= 5
+            ? "Rotation is full (5)"
+            : rotationAddable.length === 0
+              ? "No more reported providers"
+              : "Add provider..."),
+        rotationAddable.map((provider) =>
+          h("option", { key: provider.providerId, value: provider.providerId },
+            `${provider.providerId} (${provider.availability}${hasFullPermission(provider) ? "" : ", lacks full permission"})`))),
+      rotationIds.length === 0
+        ? null
+        : h(ActionButton, {
+            label: "Clear rotation",
+            variant: "ghost",
+            size: "xs",
+            disabled: rotationSaving,
+            title: "Removes every member; saving clears the stored rotation.",
+            onClick: () => setField("providerRotation", []),
+          })));
 
   const previewBlock = schedulePreview.kind === "manual"
     ? h("p", { className: "mt-1.5 text-xs text-muted-foreground" }, "Manual only: no scheduled runs.")
@@ -776,7 +904,13 @@ function DispatchCard(props: {
             : storedDefault === undefined
               ? `Dispatch uses the model and thinking level the host reports for ${pinnedProviderId}.`
               : `Dispatch on ${pinnedProviderId} uses this instead of the host's defaults.`,
-        }, providerDefaultControl)),
+        }, providerDefaultControl),
+        draft.providerPreference !== "alternate" ? null : h(FormRow, {
+          label: "Provider rotation",
+          error: fieldError("providerRotation"),
+          status: fieldStatus("providerRotation"),
+          hint: "Dispatch rotates through this list in order; a usable provider outside it is the fallback.",
+        }, rotationEditor)),
       saveState.message
         ? h("p", { key: "saved", className: "mt-3 text-sm text-success-foreground", role: "status" }, saveState.message)
         : null,
