@@ -271,7 +271,7 @@ export function Disclosure(props: { summary: ReactNode; children: ReactNode; cla
     className: props.className,
     summaryClassName: "cursor-pointer list-none select-none text-xs font-medium text-muted-foreground transition-colors hover:text-foreground",
     summaryPrefix: h("span", { className: "inline-block transition-transform group-open:rotate-90" }, "▸"),
-    bodyClassName: "mt-2",
+    bodyClassName: "mt-2 pl-3",
     heading: props.summary,
     children: props.children,
   });

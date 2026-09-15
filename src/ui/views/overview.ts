@@ -154,7 +154,7 @@ function NeedsAttention(props: { attention: readonly AttentionItem[]; settings: 
             children: h("p", { className: "break-words text-xs text-muted-foreground" }, item.detail),
           })),
         action
-          ? h("div", { className: "flex basis-full justify-end sm:basis-auto" },
+          ? h("div", { className: "ml-auto flex justify-end" },
               h(ActionButton, {
                 label: action.label,
                 variant: "ghost",

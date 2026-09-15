@@ -679,3 +679,19 @@ validate:
 - pnpm typecheck
 - pnpm lint
 notes: Direct human request with overview screenshots. Single-repo NeedsAttention and aggregate OverviewAttentionRow share the same title-only summary fix. Work queue repository rows are non-collapsible on desktop (no body to disclose); unresolved loading and error subgroups keep the collapsible treatment. Section gained an optional titleClassName used only by overviewRepositorySection; every other consumer keeps the semibold default. BBF-0039's uncommitted display-name work was excluded from this task's commit and remains in the working tree per the earlier request.
+
+## BBF-0041 Overview attention rows stack awkwardly on phone
+status: done (interactive session 2026-09-14)
+priority: 2
+depends_on: BBF-0040
+risk: low
+plan: src/ui/primitives.ts, src/ui/views/overview.ts, src/ui/views/aggregate.ts, tests/ui-overview.test.ts
+approved: user direction 2026-09-14 (follow-up review of BBF-0040)
+acceptance:
+- Collapsed Needs attention rows keep the severity dot, title, and action on one line; the action never takes a dedicated full-width row on phone widths.
+- An expanded row's detail line indents to sit under the title text, past the disclosure caret, instead of starting at the row's left edge.
+validate:
+- pnpm test
+- pnpm typecheck
+- pnpm lint
+notes: Follow-up from live review of BBF-0040 on the aggregate overview. The basis-full action wrapper forced a second line per item; it now shares the title line with ml-auto fallback for extreme widths. Disclosure's body gains pl-3 so expanded content aligns under the summary text at every call site. BBF-0039's uncommitted display-name work remains excluded from commits.

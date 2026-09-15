@@ -353,6 +353,11 @@ describe("OverviewView phone layout", () => {
     const action = within(row).getByRole("button", { name: "Review" });
     expect(summary.contains(action)).toBe(false);
     expect(details!.contains(action)).toBe(false);
+    // The action stays on the title line; it never takes a dedicated full-width row.
+    expect((action.parentElement as HTMLElement).className).not.toContain("basis-full");
+    // The expanded detail indents under the title text, past the disclosure caret.
+    const body = details!.querySelector("summary")!.nextElementSibling as HTMLElement;
+    expect(body.className).toContain("pl-3");
   });
 
   it("wraps long current-run task ids instead of overflowing", () => {
