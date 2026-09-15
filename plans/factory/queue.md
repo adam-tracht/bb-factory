@@ -641,3 +641,20 @@ validate:
 - pnpm typecheck
 - pnpm lint
 notes: Phase E (disclosure). User-reported. Depends on the Phase C row fixes so the collapsed defaults are set against final row heights. The implementation uses native details elements, repository-scoped session preferences, phone-first defaults, and bounded deep-link reveal retries. Both Sol reviews passed, including focus lifecycle, interactive summary descendants, and regrouping behavior. Final validation passed with 437 tests, typecheck, lint, build, SDK freshness, whitespace, and responsive visual acceptance. Committed in 4217a73.
+
+## BBF-0040 Overview attention duplication and work-queue row layout
+status: done (interactive session 2026-09-14)
+priority: 2
+depends_on: none
+risk: low
+plan: src/ui/primitives.ts, src/ui/views/overview.ts, src/ui/views/aggregate.ts, tests/ui-overview.test.ts, tests/ui.test.ts
+approved: user direction 2026-09-14 ("let's do it")
+acceptance:
+- Needs attention rows render only the item title in the disclosure summary; the detail line mounts only while the row is expanded, so the detail never displays twice.
+- On desktop widths, each aggregate Work queue repository row carries its status chips and the Open work action inline in the section header; on phone widths they stay inside the collapsible body.
+- Repository subgroup headings across the aggregate overview render at normal weight while category titles keep the semibold treatment.
+validate:
+- pnpm test
+- pnpm typecheck
+- pnpm lint
+notes: Direct human request with overview screenshots. Single-repo NeedsAttention and aggregate OverviewAttentionRow share the same title-only summary fix. Work queue repository rows are non-collapsible on desktop (no body to disclose); unresolved loading and error subgroups keep the collapsible treatment. Section gained an optional titleClassName used only by overviewRepositorySection; every other consumer keeps the semibold default. BBF-0039's uncommitted display-name work was excluded from this task's commit and remains in the working tree per the earlier request.

@@ -150,12 +150,7 @@ function NeedsAttention(props: { attention: readonly AttentionItem[]; settings: 
           h(StatusDot, { tone: SEVERITY_TONE[item.severity] })),
         h("div", { className: "min-w-0 flex-1" },
           h(Disclosure, {
-            summary: h("span", null,
-              h("span", { className: "text-sm font-normal text-foreground" }, item.title),
-              h("span", {
-                className: "mt-0.5 line-clamp-2 break-words text-xs font-normal text-muted-foreground sm:line-clamp-1",
-                title: item.detail,
-              }, item.detail)),
+            summary: h("span", { className: "text-sm font-normal text-foreground" }, item.title),
             children: h("p", { className: "break-words text-xs text-muted-foreground" }, item.detail),
           })),
         action

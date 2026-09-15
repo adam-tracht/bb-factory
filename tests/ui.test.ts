@@ -826,7 +826,7 @@ describe("Factory aggregate scope", () => {
     slot.getByRole("heading", { name: title }).closest("details") as HTMLElement;
 
   const overviewRepositoryFor = (slot: ReturnType<typeof renderSlot>, category: string, repositoryKey: string) =>
-    within(categoryFor(slot, category)).getByRole("heading", { name: repositoryKey }).closest("details") as HTMLElement;
+    within(categoryFor(slot, category)).getByRole("heading", { name: repositoryKey }).closest("details,section") as HTMLElement;
 
   it("renders a category-first compact overview with scoped rows and actions", async () => {
     const { FactoryView } = await import("../src/ui/FactoryView.js");

@@ -37,7 +37,12 @@ in-flight fetches with the landing cards' `loadSummary`, so no new RPC or
 storage seam exists and the wire contract is unchanged. The aggregate
 overview is category-first: Needs attention, Work queue, Questions, Current
 run when present, Last run, Dispatch, and a conditional Repository section.
-Each category nests only contributing repositories under a scoped context. The
+Each category nests only contributing repositories under a scoped context.
+Repository subgroup headings render at normal weight under the semibold
+category titles, Needs attention rows show only the item title in the summary
+and reveal the detail line on expand, and on desktop the Work queue subgroup
+carries its status chips and Open work action inline on the repository row
+(on phone they stay inside the collapsible body). The
 Last run category always has one row per repository, including repositories
 whose latest completed run succeeded; its View action keeps the existing
 aggregate run-detail route. Work and question content is summarized with

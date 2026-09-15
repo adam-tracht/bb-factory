@@ -177,6 +177,8 @@ function overviewRepositorySection(props: {
   count?: number;
   defaultOpen: boolean;
   section: string;
+  actions?: ReactNode;
+  collapsible?: boolean;
   children: ReactNode;
   testId?: string;
 }): ReactNode {
@@ -185,9 +187,11 @@ function overviewRepositorySection(props: {
     key: props.key,
     title: props.title ?? repositoryKey,
     count: props.count,
-    collapsible: true,
+    collapsible: props.collapsible ?? true,
     defaultOpen: props.defaultOpen,
     storageKey: sectionStorageKey(repositoryKey, "overview", props.section),
+    titleClassName: "text-sm font-normal text-foreground",
+    actions: props.actions,
     testId: props.testId,
     children: props.children,
   });
@@ -254,12 +258,7 @@ function OverviewAttentionRow(props: { item: AttentionItem; ctx: ViewContext }):
     h("span", { className: "mt-1.5 shrink-0 sm:mt-0" }, h(StatusDot, { tone })),
     h("div", { className: "min-w-0 flex-1" },
       h(Disclosure, {
-        summary: h("span", null,
-          h("span", { className: "text-sm font-normal text-foreground" }, item.title),
-          h("span", {
-            className: "mt-0.5 line-clamp-2 break-words text-xs font-normal text-muted-foreground sm:line-clamp-1",
-            title: item.detail,
-          }, item.detail)),
+        summary: h("span", { className: "text-sm font-normal text-foreground" }, item.title),
         children: h("p", { className: "break-words text-xs text-muted-foreground" }, item.detail),
       })),
     action
@@ -340,23 +339,26 @@ function OverviewWorkSummary(props: { state: OverviewState; phone: boolean }): R
   const queue = state.snapshot?.queue ?? [];
   const buckets = bucketWorkEntries(queue);
   const groups = WORK_GROUPS.filter((section) => buckets[section.key].length > 0);
+  const chips = h("div", { className: "flex min-w-0 flex-wrap items-center gap-2" },
+    groups.map((section) => h(Badge, {
+      key: section.key,
+      label: `${buckets[section.key].length} ${section.title}`,
+      tone: OVERVIEW_WORK_TONE[section.key] ?? "neutral",
+    })),
+    h(ActionButton, {
+      label: "Open work",
+      variant: "ghost",
+      size: "xs",
+      onClick: () => state.group.ctx.onOpenSection("work"),
+    }));
   return overviewRepositorySection({
     state,
     count: queue.length,
     defaultOpen: !props.phone,
+    collapsible: props.phone,
     section: "work-queue",
-    children: h("div", { className: "flex min-w-0 flex-wrap items-center gap-2 px-1 py-2" },
-      groups.map((section) => h(Badge, {
-        key: section.key,
-        label: `${buckets[section.key].length} ${section.title}`,
-        tone: OVERVIEW_WORK_TONE[section.key] ?? "neutral",
-      })),
-      h(ActionButton, {
-        label: "Open work",
-        variant: "ghost",
-        size: "xs",
-        onClick: () => state.group.ctx.onOpenSection("work"),
-      })),
+    actions: props.phone ? undefined : chips,
+    children: props.phone ? h("div", { className: "px-1 py-2" }, chips) : null,
   });
 }
 
