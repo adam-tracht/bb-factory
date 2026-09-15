@@ -10,4 +10,10 @@ tests, typecheck, lint, build, SDK freshness, and whitespace pass.
 One assumption question filed: Q3 documents skipping the preflight rebase
 onto origin/main, which is a synthetic release branch in this repository.
 
+A later interactive session completed BBF-0046 (attention-row severity dot
+baseline drift: the dot's span wrapper is now display:flex so mt-1.5 pins a
+true top offset instead of the dot floating inside the wrapper's line box).
+Committed on `factory` and pushed to origin/factory. Validation: 524 tests,
+typecheck, and lint pass.
+
 state: success

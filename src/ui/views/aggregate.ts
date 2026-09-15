@@ -261,7 +261,7 @@ function OverviewAttentionRow(props: { item: AttentionItem; ctx: ViewContext }):
     className: "flex min-w-0 flex-wrap items-start gap-3 py-2 sm:flex-nowrap",
     "data-attention-id": item.id,
   },
-    h("span", { className: "mt-1.5 shrink-0" }, h(StatusDot, { tone })),
+    h("span", { className: "mt-1.5 flex shrink-0" }, h(StatusDot, { tone })),
     h("div", { className: "min-w-0 flex-1" },
       h(Disclosure, {
         summary: h("span", { className: "text-sm font-normal text-foreground" }, item.title),

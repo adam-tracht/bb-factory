@@ -146,7 +146,7 @@ function NeedsAttention(props: { attention: readonly AttentionItem[]; settings: 
       const action = attentionAction(item, ctx);
       const mutating = action?.pendingTarget !== undefined;
       return h("div", { key: item.id, className: "flex min-w-0 flex-wrap items-start gap-3 py-2 sm:flex-nowrap", "data-attention-id": item.id },
-        h("span", { className: "mt-1.5 shrink-0" },
+        h("span", { className: "mt-1.5 flex shrink-0" },
           h(StatusDot, { tone: SEVERITY_TONE[item.severity] })),
         h("div", { className: "min-w-0 flex-1" },
           h(Disclosure, {

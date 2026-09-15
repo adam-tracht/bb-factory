@@ -776,3 +776,18 @@ validate:
 - bb plugin types --check .
 - git diff --check
 notes: Additive optional settings key only; selectProvider's signature gains the list internally, wire key shape untouched. depends_on BBF-0044 because both extend the settings provider section and selectProvider in the same places; land sequentially to avoid churn. Rotation semantics mirror the existing catalog rotation (preflight.ts:63-73): advance from lastStartProvider, first usable member wins.
+
+## BBF-0046 Attention row severity dot still drifts below the title line
+status: done (interactive session 2026-09-15)
+priority: 2
+depends_on: BBF-0042
+risk: low
+plan: src/ui/views/overview.ts, src/ui/views/aggregate.ts
+approved: user direction 2026-09-15 (follow-up review of BBF-0042)
+acceptance:
+- The severity dot sits vertically centered on the disclosure caret and title line whether the row is collapsed or expanded, at every viewport width.
+validate:
+- pnpm test
+- pnpm typecheck
+- pnpm lint
+notes: BBF-0042's alignment fix was verified insufficient by live measurement. The real cause: the dot is an inline-block inside a plain span wrapper, so it baseline-aligns inside the wrapper's inherited line box and lands near the baseline, below the title line's center. The wrapper is now display:flex, making the dot a flex item pinned to the wrapper's top so mt-1.5 sets a true top offset. Verified by rendering the exact markup plus compiled app.css in a browser: dot center matches caret center within ~0.5px.
