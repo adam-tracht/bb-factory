@@ -735,7 +735,7 @@ validate:
 notes: Widens the strict `{ kind: "run-now" }` variant (src/contracts.ts:719) with optional fields; additive and wire-compatible (old senders omit, new readers default), but it is a v1.2 contract touch and returns to review before landing per the interface-change rule. The idempotency key shape, action kind set, and storage CHECK lists are unchanged. UI reuse: work.ts:299-336 shows the ConfirmDialog + ProviderModelPicker + routing pattern; the run-now dialog already computes provider context copy at src/ui/FactoryView.ts:766-775 which the picker supersedes.
 
 ## BBF-0044 Default model and thinking per provider
-status: ready
+status: in-progress (thread thr_fcb53czy7e, 2026-09-15T04:39Z)
 priority: 2
 depends_on: none
 risk: medium
