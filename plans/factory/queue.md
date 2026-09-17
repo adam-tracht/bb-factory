@@ -6,7 +6,7 @@ Entry format (copy the block, one per task):
 
 ```
 ## <DASHBOARD-ID> <short title>
-status: draft | ready | in-progress (...) | done (...) | blocked-by: Q<n>
+status: <exactly one of: draft | ready | in-progress (thread <id>, <timestamp>) | done (run <timestamp>) | blocked-by: Q<n>>
 priority: 1 (highest) to 5
 depends_on: <IDs, or none>
 risk: low | medium | high
@@ -22,6 +22,8 @@ notes: <anything the foreman should know>
 ```
 
 Rules:
+- `status:` accepts only the five forms above, spelled exactly. There is no status for waiting on a human (approval, review, decision): that is always a question in `questions.md` plus `blocked-by: Q<n>`. Any other value renders as "Unrecognized status" and the entry is skipped by every run.
+- Extra notes about an entry (`failed:`, `recovered:`) go on their own line under `status:`; a bare line of text under `status:` is read as part of the status and breaks it.
 - Acceptance criteria are things a script or a reviewer can check, not intentions.
 - Validation commands must run to completion inside this worktree without a human.
 - `risk: high` entries need at least one `approved:` item or they will be skipped.
