@@ -7,6 +7,8 @@ Implementation evidence is separate from rollout, cutover, production acceptance
 
 Unattended factory runs work on the `factory` branch and take tasks only from `plans/factory/queue.md`. Each run records results in `plans/factory/current.md` and `plans/factory/runs/`, and files open questions in `plans/factory/questions.md`. The run protocol is in `plans/factory/foreman.md`; repo-specific checks and limits are in `plans/factory/repo.md`.
 
+Completed entries live in [`plans/factory/done.md`](./factory/done.md); older dashboard links to completed queue entries refer to that file.
+
 ## Tracked implementation and review
 
 | ID | Work item | Status | Next action or remaining outcome | Evidence and canonical detail |

@@ -16,7 +16,7 @@ For work in a factory-managed repository:
 6. Claim in dependency order, delegate self-contained worker jobs, review worker output for spec compliance and then code quality, and run every required validation command.
 7. Make one task commit that includes the required dashboard row and queue update, then push to `origin/factory`.
 8. Update the canonical repository dashboard. Do not replace it with a plugin-owned duplicate.
-9. Maintain `plans/factory/queue.md`, `current.md`, immutable `runs/<timestamp>-<thread>.md` records, `questions.md`, and the lock file.
+9. Maintain `plans/factory/queue.md`, `done.md` for completed entries, `current.md`, immutable `runs/<timestamp>-<thread>.md` records, `questions.md`, and the lock file.
 10. End the report with the exact line `state: <success|blocked|failed-safe|no-op>`.
 
 Do not merge, deploy, migrate, change dependencies, touch secrets, delete data, or change customer-facing behavior without an `approved:` line on the queue entry. The foreman never waits for an answer. Record questions in `questions.md` with `blocking` or `assumption` classification.
