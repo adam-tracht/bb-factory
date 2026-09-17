@@ -30,6 +30,11 @@ confirmation copy. `repositoryKey` remains the operational identity in routes,
 DOM ids, storage keys, action scopes, RPC inputs, callbacks, and technical
 details.
 
+The Work tab reads the union of `plans/factory/queue.md` and optional
+`plans/factory/done.md`, with queue entries first. Completed entries remain
+visible and satisfy `depends_on` references after moving to `done.md`. The
+foreman never reads `done.md`; existing status and attention rules still apply.
+
 ## Aggregate composition
 
 The "All" tabs are a pure view-layer union (`src/ui/views/aggregate.ts`):

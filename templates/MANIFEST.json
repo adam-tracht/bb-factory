@@ -4,7 +4,7 @@
     {
       "template": "foreman.md",
       "target": "plans/factory/foreman.md",
-      "sha256": "437c3189db7782bf71f659459a46033e7aebd175b225f25155d049c4c8a65cca"
+      "sha256": "59392e3a889d15c9fb4e55f54ed7c2d77e4abad73b8332d0b2993296dc14c6f6"
     },
     {
       "template": "repo.md",
@@ -14,7 +14,12 @@
     {
       "template": "queue.md",
       "target": "plans/factory/queue.md",
-      "sha256": "798c61445d98251fbd02580d2f522338dd6106e8f1d641385b20c3f22b7cefd4"
+      "sha256": "8082034fc68fe44b934d0a8b3b8973117c10fb4b0f2e2a5b408d2e68ab4862d8"
+    },
+    {
+      "template": "done.md",
+      "target": "plans/factory/done.md",
+      "sha256": "b170be0a9af73519aba16de271b14237af0738428ef4e267b502f58bd6590cbb"
     },
     {
       "template": "questions.md",

@@ -36,7 +36,103 @@ const mergeProjection = {
   safeFastForward: true,
 } as const;
 
+const archiveTask = (id: string, status: string, dependsOn = "none") => `## ${id} Archive test task
+status: ${status}
+priority: 1
+depends_on: ${dependsOn}
+risk: low
+plan: plans/tasks/archive.md
+approved: explicit approval
+acceptance:
+- completed work stays visible
+validate:
+- pnpm test
+`;
+
+const archiveSource = {
+  "plans/factory/foreman.md": "# Foreman\n",
+  "plans/factory/repo.md": "# Repo\n",
+  "plans/factory/queue.md": archiveTask("TASK-ready", "ready"),
+  "plans/factory/questions.md": "# Questions\n",
+  "plans/factory/current.md": "# Current\nstate: no-op\n",
+  "plans/README.md": "| ID | Status |\n| --- | --- |\n",
+};
+
+const archiveReader = (source: Record<string, string>) => new RepositoryProtocolReader(makeFiles(source), {
+  mergeReader: staticMergeReader(mergeProjection),
+  now: () => new Date("2026-09-10T06:00:00Z"),
+});
+
 describe("repository protocol reader", () => {
+  it("preserves the legacy snapshot when done.md is missing", async () => {
+    const snapshot = await archiveReader(archiveSource).loadSnapshot(configuration);
+    const fileDigests = Object.fromEntries(Object.entries(archiveSource).map(([path, content]) => [path, digestText(content)]));
+    const revision = {
+      gitCommit: mergeProjection.gitCommit,
+      protocolDigest: digestText(Object.entries(fileDigests).map(([path, sha256]) => `${path}\0${sha256}`).sort().join("\n")),
+      fileDigests,
+    };
+    expect(snapshot).toEqual({
+      repository: configuration,
+      revision,
+      capturedAt: "2026-09-10T06:00:00.000Z",
+      foremanTemplate: {
+        authority: "repository-protocol",
+        relativePath: "plans/factory/foreman.md",
+        contentSha256: fileDigests["plans/factory/foreman.md"],
+        repositoryRevision: revision,
+      },
+      queue: [{
+        id: "TASK-ready", title: "Archive test task", status: { kind: "ready" },
+        priority: 1, dependsOn: [], risk: "low", planPath: "plans/tasks/archive.md",
+        approved: { kind: "explicit", source: "queue.approved", text: "explicit approval" },
+        acceptance: ["completed work stays visible"], validate: ["pnpm test"], notes: null,
+        blockingQuestionIds: [], staleBlockingQuestionIds: [], blockedBy: [], eligible: true, eligibilityReasons: [],
+      }],
+      questions: [],
+      dashboard: {
+        canonicalPath: "plans/README.md", factoryBranch: "factory", mainRef: configuration.mainRef,
+        factoryAhead: 2, mainBehind: 0, taskCommits: mergeProjection.taskCommits,
+        safeFastForward: true, canonicalDashboardUrl: null,
+      },
+      currentRun: { state: "no-op", lastRunAt: null, currentPath: "plans/factory/current.md", latestRunPath: null },
+    });
+  });
+
+  it("unions archived done tasks after queue tasks and satisfies their dependencies", async () => {
+    const snapshot = await archiveReader({
+      ...archiveSource,
+      "plans/factory/queue.md": archiveTask("TASK-ready", "ready", "TASK-done"),
+      "plans/factory/done.md": archiveTask("TASK-done", "done (run 20260910T053015Z)"),
+    }).loadSnapshot(configuration);
+    expect(snapshot.queue.map((entry) => entry.id)).toEqual(["TASK-ready", "TASK-done"]);
+    expect(snapshot.queue[0]).toMatchObject({ eligible: true, eligibilityReasons: [], dependsOn: ["TASK-done"] });
+    expect(snapshot.queue[1]).toMatchObject({
+      status: { kind: "done", detail: "(run 20260910T053015Z)" },
+      eligible: false, eligibilityReasons: ["not-ready"],
+    });
+  });
+
+  it("rejects duplicate queue ids across queue.md and done.md", async () => {
+    await expect(archiveReader({
+      ...archiveSource,
+      "plans/factory/done.md": archiveTask("TASK-ready", "done (run 20260910T053015Z)"),
+    }).loadSnapshot(configuration)).rejects.toMatchObject({
+      code: "malformed-protocol",
+      message: "Duplicate queue item 'TASK-ready' across queue.md and done.md",
+    });
+  });
+
+  it("includes done.md in file digests and the protocol digest when present", async () => {
+    const done = archiveTask("TASK-done", "done (run 20260910T053015Z)");
+    const snapshot = await archiveReader({ ...archiveSource, "plans/factory/done.md": done }).loadSnapshot(configuration);
+    expect(snapshot.revision.fileDigests["plans/factory/done.md"]).toBe(digestText(done));
+    const expectedDigest = digestText(Object.entries({ ...archiveSource, "plans/factory/done.md": done })
+      .map(([path, content]) => `${path}\0${digestText(content)}`).sort().join("\n"));
+    expect(snapshot.revision.protocolDigest).toBe(expectedDigest);
+    const withoutDone = await archiveReader(archiveSource).loadSnapshot(configuration);
+    expect(snapshot.revision.protocolDigest).not.toBe(withoutDone.revision.protocolDigest);
+  });
   it("discovers the repository protocol without rewriting custom source forms", async () => {
     const files = makeFiles({
       "plans/factory/foreman.md": "# Repository foreman\nUse the repository workflow.\n",

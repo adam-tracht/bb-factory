@@ -25,6 +25,8 @@ Repo-specific rules live in `plans/factory/repo.md`. Read it right after this fi
 | `plans/factory/questions.md` | Questions for the human. Append only. |
 | `plans/factory/lock` | Claim file. Contains your thread id and start time. |
 
+- `done.md`: completed entries, never read by the foreman.
+
 ## Field vocabulary
 
 Every file under `plans/factory/` is parsed by the factory plugin, not just read by people. Field values are closed lists. Write them exactly as listed, character for character. A value that is not on the list is not a softer variant; it is dropped, the entry disappears from the next run's eligible set, and the human sees "Unrecognized status" with no explanation.
@@ -36,7 +38,7 @@ Every file under `plans/factory/` is parsed by the factory plugin, not just read
 | `draft` | Not yet eligible | Human |
 | `ready` | Eligible; the only status the foreman claims | Human first; foreman only when releasing or recovering a claim |
 | `in-progress (thread <id>, <timestamp>)` | Claimed by a live run | Foreman |
-| `done (run <timestamp>)` | Completed with evidence | Foreman |
+| `done (run <timestamp>)` | Completed with evidence; entry then moves to `done.md` | Foreman |
 | `blocked-by: Q<n>` | Waiting on the human's answer to question n | Foreman |
 
 There is no status for "needs approval", "needs review", "waiting on <name>", "paused", or anything else. Every case where a human must act is a question: append it to `questions.md`, then set `blocked-by: Q<n>`. If you are about to write a status value that is not in the table, stop; you are describing a question.
@@ -95,7 +97,7 @@ Run every validation command on the queue entry, plus the repo's standard checks
 
 ### 6. Commit
 
-One commit per completed task: `factory: <ID> <one-line summary>`. Include the dashboard row update and the queue entry update (`status: done (run <timestamp>)`) in the same commit, per the repo's tracking rules. Push: `git push origin factory`.
+One commit per completed task: `factory: <ID> <one-line summary>`. Include the dashboard row update and the queue entry update (`status: done (run <timestamp>)`) in the same commit, per the repo's tracking rules. Then cut the entire entry out of `plans/factory/queue.md` and append it verbatim to `plans/factory/done.md` (create the file with a one-line heading `# Completed factory tasks` if it does not exist). `queue.md` holds open work only; `done.md` is for the plugin and the human, and the foreman never reads it. A `depends_on` that names a task not present in `queue.md` counts as satisfied once that task is in `done.md`. Push: `git push origin factory`.
 
 Repeat from Claim while you have budget (see Hard limits). Before writing the run record, ask: did this run do a night's worth of work? If a task finished in under 20 minutes and eligible work remains, you are not done.
 

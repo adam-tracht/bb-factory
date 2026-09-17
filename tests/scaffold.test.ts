@@ -38,7 +38,7 @@ function makeTerminals(
     lastUserInputAt: null,
     closeReason: null,
   };
-  const outputText = options.output ?? `[factory ${HEAD_SHA.slice(0, 7)}] ${"factory: scaffold protocol"}\n 7 files changed\n${HEAD_SHA}\n`;
+  const outputText = options.output ?? `[factory ${HEAD_SHA.slice(0, 7)}] ${"factory: scaffold protocol"}\n 8 files changed\n${HEAD_SHA}\n`;
   return {
     create: vi.fn<(args: Record<string, unknown>) => Promise<typeof session>>(async (args) => {
       const command = (args.start as { command?: string } | undefined)?.command ?? "";
@@ -77,6 +77,7 @@ const TARGETS = [
   "plans/factory/foreman.md",
   "plans/factory/repo.md",
   "plans/factory/queue.md",
+  "plans/factory/done.md",
   "plans/factory/questions.md",
   "plans/factory/current.md",
   "plans/README.md",
@@ -142,13 +143,14 @@ describe("scaffold protocol executor", () => {
         written: [
           "plans/factory/repo.md",
           "plans/factory/queue.md",
+          "plans/factory/done.md",
           "plans/factory/questions.md",
           "plans/factory/current.md",
           "plans/factory/runs/.gitkeep",
         ],
       });
     }
-    expect(files.writes).toHaveLength(5);
+    expect(files.writes).toHaveLength(6);
     expect(terminals.create).toHaveBeenCalledTimes(1);
   });
 
