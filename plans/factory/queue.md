@@ -52,7 +52,7 @@ priority: 2
 depends_on: none
 risk: low
 plan: docs/control-surface.md (Work tab, wizard), src/actions/interactions.ts (Recommend pattern), templates/foreman.md
-approved: none
+approved: user direction 2026-09-17 (spec approved and marked ready in-thread; no gated actions)
 acceptance:
 - A "Draft tasks" control exists on the Work tab and as the final step of the add-repository wizard (after scaffolding). It takes a free-text goal and an optional plan file path.
 - The control spawns an advisory bb thread on the repository's factory checkout, following the Recommend action's spawn pattern in `src/actions/interactions.ts`. The thread reads `plans/factory/repo.md` and the queue format header, then appends entries to `plans/factory/queue.md` with `status: draft`, observable acceptance criteria, and validate commands, and commits them on `factory`.
