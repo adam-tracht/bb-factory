@@ -45,3 +45,23 @@ acceptance:
 validate:
 - marketplace repo CI validation
 notes: Publishing, tagging, and opening the marketplace PR are protected and need an `approved:` line before a run may do them.
+
+## BBF-0047 Agent-drafted queue entries
+status: draft
+priority: 2
+depends_on: none
+risk: low
+plan: docs/control-surface.md (Work tab, wizard), src/actions/interactions.ts (Recommend pattern), templates/foreman.md
+approved: none
+acceptance:
+- A "Draft tasks" control exists on the Work tab and as the final step of the add-repository wizard (after scaffolding). It takes a free-text goal and an optional plan file path.
+- The control spawns an advisory bb thread on the repository's factory checkout, following the Recommend action's spawn pattern in `src/actions/interactions.ts`. The thread reads `plans/factory/repo.md` and the queue format header, then appends entries to `plans/factory/queue.md` with `status: draft`, observable acceptance criteria, and validate commands, and commits them on `factory`.
+- The thread never writes any status other than `draft` and never edits existing entries. The human-only initial `ready` gate is unchanged.
+- The Work tab surfaces the new drafts in the collapsed Drafts group with the existing Approve control once the file is re-read.
+- `templates/foreman.md` and `plans/factory/foreman.md` gain one rule: the foreman may append `draft` entries for follow-up work it notices, and must mention them in the run report.
+- `README.md` quickstart step 4 and `docs/control-surface.md` describe the flow.
+validate:
+- pnpm test
+- pnpm typecheck
+- pnpm lint
+notes: Motivation: in practice queue entries are never hand-written; an agent drafts them. `draft` status (BBF-0013) already makes agent-authored entries safe, so no new guarded RPC is needed; the thread commits like the foreman does. Keep the spawn advisory and repository-scoped; no All-scope variant.
