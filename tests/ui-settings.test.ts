@@ -157,7 +157,7 @@ describe("SettingsView", () => {
     renderSettings();
     // Live operational pieces stay visible at the top level.
     expect(screen.getByText("online")).toBeTruthy();
-    expect(screen.getByText("Dispatch is active for this repo.")).toBeTruthy();
+    expect(screen.getByText("Repository dispatch is active.")).toBeTruthy();
     // Identity fields mount lazily: absent until the disclosure is expanded.
     expect(screen.queryByText("Repository key")).toBeNull();
     expect(screen.queryByTitle("Copy /work/demo")).toBeNull();
@@ -184,21 +184,55 @@ describe("SettingsView", () => {
     expect(screen.getByText("host is offline")).toBeTruthy();
   });
 
-  it("toggles repository dispatch through a labeled Pause/Resume dispatch button", async () => {
+  it("toggles repository dispatch through an explicitly scoped button", async () => {
     const ctx = makeCtx({ dispatchPaused: true });
     renderSettings({ ctx });
-    expect(screen.getByText("Dispatch is paused for this repo.")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Resume dispatch" }));
+    expect(screen.getByText("Repository dispatch is paused.")).toBeTruthy();
+    const resume = screen.getByRole("button", { name: "Resume repository dispatch" });
+    expect(resume.getAttribute("title")).toBe("Resumes new runs for this repository. Global dispatch pauses still apply.");
+    fireEvent.click(resume);
     expect(ctx.updateRepository).toHaveBeenCalledWith({ repositoryKey: "demo", dispatchPaused: false });
     expect(await screen.findByText("saved")).toBeTruthy();
   });
 
-  it("offers Pause dispatch while repo dispatch is active", async () => {
+  it("offers Pause repository dispatch while repository dispatch is active", async () => {
     const ctx = makeCtx();
     renderSettings({ ctx });
-    fireEvent.click(screen.getByRole("button", { name: "Pause dispatch" }));
+    const pause = screen.getByRole("button", { name: "Pause repository dispatch" });
+    expect(pause.getAttribute("title")).toBe("Stops new runs for this repository. Running runs continue.");
+    fireEvent.click(pause);
     expect(ctx.updateRepository).toHaveBeenCalledWith({ repositoryKey: "demo", dispatchPaused: true });
     expect(await screen.findByText("saved")).toBeTruthy();
+  });
+
+  it.each([
+    ["global enabled, repository enabled", "enabled", false, "Repository dispatch is active.", "Pause repository dispatch"],
+    ["global enabled, repository paused", "enabled", true, "Repository dispatch is paused.", "Resume repository dispatch"],
+    ["global paused, repository enabled", "paused", false, "Repository dispatch is active.", "Pause repository dispatch"],
+    ["global paused, repository paused", "paused", true, "Repository dispatch is paused.", "Resume repository dispatch"],
+  ] as const)("keeps the global and repository Settings controls scoped for %s", async (_name, mode, repositoryPaused, repositoryStatus, repositoryAction) => {
+    const ctx = makeCtx({ dispatchPaused: repositoryPaused });
+    renderSettings({
+      ctx,
+      projection: {
+        ...settingsProjection,
+        settings: { ...settingsProjection.settings, dispatchMode: mode },
+        dispatch: {
+          ...settingsProjection.dispatch,
+          mode,
+          repositoryPaused,
+          acceptingNewRuns: mode === "enabled" && !repositoryPaused,
+        },
+      },
+    });
+
+    expect(screen.getByText("Global dispatch")).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Global dispatch mode" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: mode === "enabled" ? "Enabled" : "Paused" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByText(repositoryStatus)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: repositoryAction }));
+    expect(ctx.updateRepository).toHaveBeenCalledWith({ repositoryKey: "demo", dispatchPaused: !repositoryPaused });
   });
 
   it("sets and clears the optional display name through the existing repository mutation", async () => {
@@ -307,7 +341,7 @@ describe("SettingsView", () => {
       expect(control.className).toContain("box-border");
     }
     // The dispatch toggle stays inline-flex (content-sized), never stretched.
-    const toggle = screen.getByRole("group", { name: "Dispatch mode" });
+    const toggle = screen.getByRole("group", { name: "Global dispatch mode" });
     expect(toggle.className).toContain("inline-flex");
   });
 

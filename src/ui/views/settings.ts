@@ -355,13 +355,15 @@ function RepositoryCard(props: {
             : h("dd", { className: "mt-0.5 text-sm text-muted-foreground" }, "Health not loaded"))),
       h("div", { key: "dispatch", className: "mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border pt-3" },
         h("span", { className: "text-xs text-muted-foreground" },
-          repoPaused ? "Dispatch is paused for this repo." : "Dispatch is active for this repo."),
+          repoPaused ? "Repository dispatch is paused." : "Repository dispatch is active."),
         h(ActionButton, {
-          label: repoPaused ? "Resume dispatch" : "Pause dispatch",
+          label: repoPaused ? "Resume repository dispatch" : "Pause repository dispatch",
           variant: "secondary",
           size: "xs",
           busy: result.pending,
-          title: "Stops new runs for this repository. Running runs continue.",
+          title: repoPaused
+            ? "Resumes new runs for this repository. Global dispatch pauses still apply."
+            : "Stops new runs for this repository. Running runs continue.",
           onClick: toggle,
         }),
         result.message ? h("span", { className: "text-xs text-success-foreground", role: "status" }, result.message) : null,
@@ -785,7 +787,7 @@ function DispatchCard(props: {
   const validationIssues = Object.entries(projection.validation.fieldErrors);
 
   return h(Card, {
-    title: "Dispatch",
+    title: "Global dispatch",
     actions: h(Badge, {
       label: projection.dispatch.mode === "enabled" ? "Enabled" : "Paused",
       tone: projection.dispatch.mode === "enabled" ? "success" : "warning",
@@ -800,11 +802,11 @@ function DispatchCard(props: {
             `Stored settings have validation issues: ${validationIssues.map(([key, messages]) => `${key} (${messages.join("; ")})`).join(", ")}`)
         : null,
       h("div", { key: "form", className: "grid gap-4 sm:grid-cols-2" },
-        h(FormRow, { label: "Dispatch mode", status: fieldStatus("dispatchMode") },
+        h(FormRow, { label: "Global dispatch mode", status: fieldStatus("dispatchMode") },
           h("div", {
             className: "inline-flex items-center gap-1 rounded-lg bg-muted/60 p-1",
             role: "group",
-            "aria-label": "Dispatch mode",
+            "aria-label": "Global dispatch mode",
           },
             (["enabled", "paused"] as const).map((mode) =>
               h("button", {

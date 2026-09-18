@@ -114,9 +114,9 @@ function RefreshIcon() {
 
 function dispatchChip(dispatch: DispatchStatus | null): { label: string; tone: Tone } | null {
   if (!dispatch) return null;
-  if (dispatch.mode !== "enabled") return { label: "Dispatch paused", tone: "warning" };
-  if (dispatch.repositoryPaused) return { label: "Repo paused", tone: "warning" };
-  return { label: "Dispatch on", tone: "success" };
+  if (dispatch.mode !== "enabled") return { label: "Global dispatch paused", tone: "warning" };
+  if (dispatch.repositoryPaused) return { label: "Repository dispatch paused", tone: "warning" };
+  return { label: "Global dispatch active", tone: "success" };
 }
 
 function RepositorySwitcher(props: Pick<FactoryShellProps,
@@ -306,11 +306,13 @@ export function FactoryShell(props: FactoryShellProps) {
     branchChip, dispatchBadge, runBadge);
   const pauseControl = repoChrome && props.dispatch
     ? h(ActionButton, {
-        label: props.dispatch.mode === "enabled" ? "Pause" : "Resume",
+        label: props.dispatch.mode === "enabled" ? "Pause global dispatch" : "Resume global dispatch",
         variant: "secondary",
         size: "xs",
         className: "min-h-8 min-w-8 sm:min-h-0 sm:min-w-0 sm:order-4",
-        title: "Stops new runs. Running runs continue.",
+        title: props.dispatch.mode === "enabled"
+          ? "Stops new runs globally. Running runs continue; repository pauses still apply."
+          : "Resumes new runs globally. Repository pauses still apply.",
         onClick: props.dispatch.mode === "enabled" ? props.onPause : props.onResume,
         disabled: props.actionPending,
       })
@@ -335,10 +337,10 @@ export function FactoryShell(props: FactoryShellProps) {
         },
       })
     : null;
-  const mobileDispatch = repoChrome && props.dispatch
+  const mobileDispatch = repoChrome && chip
     ? h(Badge, {
-        label: props.dispatch.mode === "enabled" && !props.dispatch.repositoryPaused ? "Enabled" : "Paused",
-        tone: props.dispatch.mode === "enabled" && !props.dispatch.repositoryPaused ? "success" : "warning",
+        label: chip.label,
+        tone: chip.tone,
       })
     : null;
   const mobileBranch = repoChrome && props.branch && !expectedBranch
