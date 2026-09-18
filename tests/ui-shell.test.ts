@@ -73,7 +73,7 @@ describe("FactoryShell", () => {
 
   it("shows dispatch state and tab badges in the strip", () => {
     const markup = renderToStaticMarkup(h(FactoryShell, shellProps({ children: "body" })));
-    expect(markup).toContain("Dispatch on");
+    expect(markup).toContain("Global dispatch active");
     expect(markup).toContain(">2</span>");
     expect(markup).toContain(">1</span>");
     expect(markup).toContain("factory");
@@ -82,9 +82,43 @@ describe("FactoryShell", () => {
     expect(markup).toContain("refreshed");
   });
 
+  it.each([
+    ["global enabled, repository enabled", "enabled", false, "Global dispatch active", "Pause global dispatch", "pause"],
+    ["global enabled, repository paused", "enabled", true, "Repository dispatch paused", "Pause global dispatch", "pause"],
+    ["global paused, repository enabled", "paused", false, "Global dispatch paused", "Resume global dispatch", "resume"],
+    ["global paused, repository paused", "paused", true, "Global dispatch paused", "Resume global dispatch", "resume"],
+  ] as const)("keeps the shell dispatch status and action scoped for %s", (_name, mode, repositoryPaused, status, action, expectedHandler) => {
+    const onPause = vi.fn();
+    const onResume = vi.fn();
+    render(h(FactoryShell, shellProps({
+      dispatch: {
+        mode,
+        repositoryPaused,
+        acceptingNewRuns: mode === "enabled" && !repositoryPaused,
+        activeRunCount: 0,
+        reason: null,
+      },
+      onPause,
+      onResume,
+      children: "body",
+    })));
+
+    expect(screen.getAllByText(status)).toHaveLength(2);
+    const control = screen.getByRole("button", { name: action });
+    expect(control.getAttribute("title")).toContain("globally");
+    fireEvent.click(control);
+    if (expectedHandler === "pause") {
+      expect(onPause).toHaveBeenCalledOnce();
+      expect(onResume).not.toHaveBeenCalled();
+    } else {
+      expect(onResume).toHaveBeenCalledOnce();
+      expect(onPause).not.toHaveBeenCalled();
+    }
+  });
+
   it("renders chips and count badges with the small label radius, not round pills", () => {
     const markup = renderToStaticMarkup(h(FactoryShell, shellProps({ children: "body" })));
-    expect(markup).toMatch(/<span[^>]*class="[^"]*rounded px-2 py-0\.5[^"]*bg-\[#dcfce7\][^"]*"[^>]*>Dispatch on<\/span>/);
+    expect(markup).toMatch(/<span[^>]*class="[^"]*rounded px-2 py-0\.5[^"]*bg-\[#dcfce7\][^"]*"[^>]*>Global dispatch active<\/span>/);
     expect(markup).toMatch(/<span[^>]*class="[^"]*rounded bg-\[#fef3c7\][^"]*"[^>]*>2<\/span>/);
     // Tinted chips never carry a larger radius; only geometric circles stay rounded-full.
     expect(markup).not.toMatch(/<span[^>]*class="[^"]*rounded-(?:md|full)[^"]*bg-(?:muted|warning|success|destructive)[^"]*px-/);
@@ -153,7 +187,7 @@ describe("FactoryShell", () => {
     expect(markup).toContain('role="tablist"');
     expect(markup.match(/role="tab"/g)).toHaveLength(4);
     expect(markup).not.toContain(">Settings<");
-    expect(markup).not.toContain("Dispatch on");
+    expect(markup).not.toContain("Global dispatch active");
     expect(markup).not.toContain("@abcdef1");
     expect(markup).not.toContain(">Pause<");
     expect(markup).not.toContain("Running");
@@ -348,7 +382,7 @@ describe("FactoryShell", () => {
       },
       children: "body",
     })));
-    expect(markup).toContain("Repo paused");
+    expect(markup).toContain("Repository dispatch paused");
     expect(markup).toContain("Running");
     expect(markup).toContain("codex");
     expect(markup).not.toContain("Run now");
@@ -441,11 +475,11 @@ describe("FactoryShell", () => {
     expect(operationsIndex).toBeGreaterThan(legendIndex);
     expect(tabsIndex).toBeGreaterThan(operationsIndex);
     const operations = markup.slice(operationsIndex, tabsIndex);
-    expect(operations).toContain(">Enabled<");
-    expect(operations).toContain(">Pause<");
+    expect(operations).toContain(">Global dispatch active<");
+    expect(operations).toContain(">Pause global dispatch<");
     expect(operations).toContain(">Idle<");
     expect(operations).toContain(">Run now<");
-    const pause = /<button[^>]*title="Stops new runs\. Running runs continue\."[^>]*>/.exec(operations)?.[0] ?? "";
+    const pause = /<button[^>]*title="Stops new runs globally\. Running runs continue; repository pauses still apply\."[^>]*>/.exec(operations)?.[0] ?? "";
     expect(pause).toContain("min-h-8");
     expect(pause).toContain("min-w-8");
     const runNow = /<button[^>]*title="Start a run immediately"[^>]*>/.exec(operations)?.[0] ?? "";

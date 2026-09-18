@@ -105,7 +105,7 @@ existing Approve control marks one ready and records its `approved:` line.
 ## Shell chrome
 
 `src/ui/shell.ts` gates per-repository chrome on the rendered scope. The
-branch/commit chip, dispatch chip, running/idle badge, Pause/Resume, and the
+branch/commit chip, dispatch chip, running/idle badge, global Pause/Resume, and the
 confirmed Run now render only on repository-scoped routes. The repositories
 landing and the aggregate scope show the tab strip without that chrome (four
 tabs under aggregate; Settings is omitted). The add-repository wizard
@@ -150,7 +150,7 @@ highlighted.
 Under `sm` (639px): repository scope uses deterministic repository, shared
 controls, operations, and tabs rows. The repository row puts All, the picker,
 and add before a flexible spacer with refresh and the legend; the bounded
-operations bar pairs Enabled or Paused with Pause or Resume, shows Idle or an
+operations bar pairs the scoped dispatch chip with global Pause/Resume, shows Idle or an
 active run when useful, and anchors Run now at the right. Aggregate scope goes
 directly from the repository row to tabs. The duplicate Factory title is
 hidden, the expected `factory` branch is hidden, and an unexpected branch is
@@ -179,10 +179,19 @@ field shows an inline "Saving..." then a "Saved" mark that fades after
 1500ms, and pending edits pin a sticky "Unsaved changes" bar with Discard and
 Save behind a confirm dialog. A same-repository refresh keeps the Saved
 marks and untouched concurrent edits; a different repository resets the
-form. Dispatch mode is a segmented Enabled/Paused control, the Repository
-card pairs host status with a labeled "Pause dispatch"/"Resume dispatch"
-button. It also provides an optional editable "Display name" field; clearing
-it restores the repository key as the visible fallback. The repository key
+form. Global dispatch mode is a segmented Enabled/Paused control, and the
+Repository card pairs host status with a labeled "Pause repository dispatch"/
+"Resume repository dispatch" button. These are independent gates: the global
+`dispatchMode` setting controls whether new runs may start for any repository,
+while each repository's `dispatchPaused` flag controls only that repository.
+The shell chip reports "Global dispatch active", "Global dispatch paused", or
+"Repository dispatch paused"; its "Pause global dispatch"/"Resume global
+dispatch" control always edits the global mode, while the Settings Repository
+card edits only the selected repository's pause flag. New runs require global
+dispatch to be enabled and the repository pause flag to be false. The mobile
+operations bar uses the same scoped chip labels and global button labels. The
+card also provides an optional editable "Display name" field; clearing it
+restores the repository key as the visible fallback. The repository key
 remains read-only technical identity, and the other read-only identity fields
 collapse into a "Repository details" disclosure. `describeSchedule` (`src/schedule/describe.ts`) renders a
 five-field cron as a sentence ("Every 10 minutes between 01:00 and 05:59,

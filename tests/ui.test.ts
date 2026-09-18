@@ -448,9 +448,9 @@ describe("Factory view shell", () => {
         expect(within(tablist).getByRole("tab", { name: new RegExp(`^${name}`) })).toBeTruthy();
       }
       expect(within(tablist).queryByRole("tab", { name: "Settings" })).toBeNull();
-      expect(within(header).queryByText("Dispatch paused")).toBeNull();
+      expect(within(header).queryByText("Global dispatch paused")).toBeNull();
       expect(within(header).queryByText(/@abcdef1/)).toBeNull();
-      expect(within(header).queryByRole("button", { name: "Resume" })).toBeNull();
+      expect(within(header).queryByRole("button", { name: "Resume global dispatch" })).toBeNull();
       expect(within(header).queryByRole("button", { name: "Run now" })).toBeNull();
       // The title and switcher stay; aggregate scope has no status or controls rows.
       expect(within(header).getByText("Factory")).toBeTruthy();
@@ -467,11 +467,11 @@ describe("Factory view shell", () => {
       { rpc: baseRpc(), settings: { repositoryKey: "demo" } },
     );
     try {
-      await overview.findByText("Dispatch paused");
+      await overview.findAllByText("Global dispatch paused");
       const header = overview.container.querySelector("header") as HTMLElement;
       expect(within(header).getByRole("tablist")).toBeTruthy();
       expect(within(header).getByText(/@abcdef1/)).toBeTruthy();
-      expect(within(header).getByRole("button", { name: "Resume" })).toBeTruthy();
+      expect(within(header).getByRole("button", { name: "Resume global dispatch" })).toBeTruthy();
       expect(within(header).getByRole("button", { name: "Run now" })).toBeTruthy();
     } finally {
       overview.lifecycle.unmount();
@@ -1905,7 +1905,7 @@ describe("Factory guarded actions", () => {
       expect((runNow as HTMLButtonElement).disabled).toBe(true);
       expect(runNow.getAttribute("title")).toContain("paused");
       const header = slot.container.querySelector("header")!;
-      fireEvent.click(within(header as HTMLElement).getByRole("button", { name: "Resume" }));
+      fireEvent.click(within(header as HTMLElement).getByRole("button", { name: "Resume global dispatch" }));
       await vi.waitFor(() => {
         expect(rpc.factory_action).toHaveBeenCalledWith(expect.objectContaining({ action: { kind: "resume" } }));
       });
@@ -2006,10 +2006,10 @@ describe("Add-repository wizard chrome", () => {
 
       const header = slot.container.querySelector("header") as HTMLElement;
       expect(header.querySelector('[role="tablist"]')).toBeNull();
-      expect(within(header).queryByText("Dispatch paused")).toBeNull();
+      expect(within(header).queryByText("Global dispatch paused")).toBeNull();
       expect(within(header).queryByText(/@abcdef1/)).toBeNull();
-      expect(within(header).queryByRole("button", { name: "Pause" })).toBeNull();
-      expect(within(header).queryByRole("button", { name: "Resume" })).toBeNull();
+      expect(within(header).queryByRole("button", { name: "Pause global dispatch" })).toBeNull();
+      expect(within(header).queryByRole("button", { name: "Resume global dispatch" })).toBeNull();
       expect(within(header).queryByRole("button", { name: "Run now" })).toBeNull();
       // The title and switcher stay mounted; the wizard has no status or controls rows.
       expect(within(header).getByText("Factory")).toBeTruthy();
