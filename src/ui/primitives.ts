@@ -389,6 +389,7 @@ export function ConfirmDialog(props: {
   confirmLabel: string;
   destructive?: boolean;
   busy?: boolean;
+  confirmDisabled?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -417,6 +418,7 @@ export function ConfirmDialog(props: {
           label: props.confirmLabel,
           variant: props.destructive ? "danger" : "primary",
           onClick: props.onConfirm,
+          disabled: props.confirmDisabled,
           busy: props.busy,
         }))));
 }

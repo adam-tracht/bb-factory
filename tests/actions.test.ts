@@ -660,6 +660,39 @@ describe("BB interaction action executor", () => {
     expect(harness.dispatch.requestStop).toHaveBeenCalledWith("monorepo");
   });
 
+  it("passes an explicit run-now execution triple and service tier to dispatch", async () => {
+    const harness = makeInteractionHarness([]);
+    const result = await harness.executor.execute(bbRequest({
+      kind: "run-now",
+      providerId: "claude-code",
+      model: "claude-opus-5",
+      reasoningLevel: "high",
+      serviceTier: "fast",
+    }));
+    expect(result.ok).toBe(true);
+    expect(harness.dispatch.requestRun).toHaveBeenCalledWith(expect.objectContaining({
+      repositoryKey: "monorepo",
+      trigger: "manual",
+      providerOverride: { providerId: "claude-code", model: "claude-opus-5", reasoningLevel: "high" },
+      serviceTier: "fast",
+    }));
+  });
+
+  it("omits the override keys when run-now carries none", async () => {
+    const harness = makeInteractionHarness([]);
+    await harness.executor.execute(bbRequest({ kind: "run-now" }));
+    const input = vi.mocked(harness.dispatch.requestRun).mock.calls[0]![0];
+    expect("providerOverride" in input).toBe(false);
+    expect("serviceTier" in input).toBe(false);
+  });
+
+  it("rejects a partial run-now provider override at the schema boundary", async () => {
+    const harness = makeInteractionHarness([]);
+    const result = await harness.executor.execute(bbRequest({ kind: "run-now", providerId: "codex" }));
+    expect(result).toMatchObject({ ok: false, error: { category: "invalid-input" } });
+    expect(harness.dispatch.requestRun).not.toHaveBeenCalled();
+  });
+
   it("deduplicates an identical action under the same idempotency key", async () => {
     const harness = makeInteractionHarness([]);
     const request = bbRequest({ kind: "run-now" });
@@ -838,6 +871,98 @@ describe("BB interaction action executor", () => {
       providerId: "codex",
       model: "gpt-5",
       reasoningLevel: "medium",
+    });
+    const result = await harness.executor.execute(request);
+    expect(result).toMatchObject({ ok: false, error: { category: "conflict" } });
+    expect(harness.store.getPendingActionIntent(request.idempotencyKey)?.status).toBe("reconciliation-required");
+    const replay = await harness.executor.execute(request);
+    expect(replay).toMatchObject({ ok: false, error: { category: "conflict" } });
+    expect(harness.spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it("spawns an advisory queue-drafting thread scoped to the repository", async () => {
+    const harness = makeInteractionHarness([]);
+    const request = bbRequest({
+      kind: "draft-tasks",
+      goal: "Break the hosting rollout into tasks",
+      planPath: "docs/hosting-decision.md",
+      providerId: "claude-code",
+      model: "claude-sonnet-4",
+      reasoningLevel: "high",
+      serviceTier: "fast",
+    });
+    const result = await harness.executor.execute(request);
+    expect(result).toMatchObject({
+      ok: true,
+      result: { status: "accepted", action: "draft-tasks", threadId: "thr_recommend" },
+    });
+    expect(harness.spawn).toHaveBeenCalledTimes(1);
+    const spawned = vi.mocked(harness.spawn).mock.calls[0]![0];
+    expect(spawned).toMatchObject({
+      projectId: "project-1",
+      environment: { type: "reuse", environmentId: "environment-1" },
+      providerId: "claude-code",
+      model: "claude-sonnet-4",
+      reasoningLevel: "high",
+      serviceTier: "fast",
+      permissionMode: "auto",
+      title: "factory draft: monorepo",
+      executionInputSources: { providerId: "explicit", model: "explicit", reasoningLevel: "explicit", serviceTier: "explicit" },
+    });
+    const prompt = spawned.prompt as string;
+    expect(prompt).toContain("Break the hosting rollout into tasks");
+    expect(prompt).toContain("Plan file: docs/hosting-decision.md");
+    expect(prompt).toContain("status: draft");
+    expect(prompt).toContain("plans/factory/repo.md");
+    expect(prompt).toContain("plans/factory/queue.md");
+    expect(prompt).toContain("never any other status");
+    expect(prompt).toContain("Never edit, reorder, or delete existing entries");
+    expect(prompt).toContain("git add plans/factory/queue.md && git commit");
+    expect(prompt).toContain('on the "factory" branch');
+
+    const replay = await harness.executor.execute(request);
+    expect(replay).toMatchObject({ ok: true, result: { threadId: "thr_recommend" } });
+    expect(harness.spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it("omits the provider pin keys when draft-tasks carries none", async () => {
+    const harness = makeInteractionHarness([]);
+    const result = await harness.executor.execute(bbRequest({
+      kind: "draft-tasks",
+      goal: "Sketch the rollout",
+    }));
+    expect(result.ok).toBe(true);
+    const spawned = vi.mocked(harness.spawn).mock.calls[0]![0];
+    expect("providerId" in spawned).toBe(false);
+    expect("model" in spawned).toBe(false);
+    expect("reasoningLevel" in spawned).toBe(false);
+    expect("serviceTier" in spawned).toBe(false);
+    expect("executionInputSources" in spawned).toBe(false);
+    expect(spawned.permissionMode).toBe("auto");
+  });
+
+  it("drops a lone serviceTier when draft-tasks carries no provider pin", async () => {
+    const harness = makeInteractionHarness([]);
+    const result = await harness.executor.execute(bbRequest({
+      kind: "draft-tasks",
+      goal: "Sketch the rollout",
+      serviceTier: "fast",
+    }));
+    expect(result.ok).toBe(true);
+    const spawned = vi.mocked(harness.spawn).mock.calls[0]![0];
+    expect("providerId" in spawned).toBe(false);
+    expect("model" in spawned).toBe(false);
+    expect("reasoningLevel" in spawned).toBe(false);
+    expect("serviceTier" in spawned).toBe(false);
+    expect("executionInputSources" in spawned).toBe(false);
+  });
+
+  it("marks an ambiguous draft-tasks spawn for reconciliation without respawning", async () => {
+    const harness = makeInteractionHarness([]);
+    vi.mocked(harness.spawn).mockRejectedValue(new Error("spawn lost"));
+    const request = bbRequest({
+      kind: "draft-tasks",
+      goal: "Sketch the rollout",
     });
     const result = await harness.executor.execute(request);
     expect(result).toMatchObject({ ok: false, error: { category: "conflict" } });

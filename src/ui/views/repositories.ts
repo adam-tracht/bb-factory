@@ -474,6 +474,10 @@ export function AddRepositoryView(props: {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [running, setRunning] = useState(false);
   const [fatalError, setFatalError] = useState<string | null>(null);
+  const [draftGoal, setDraftGoal] = useState("");
+  const [draftPlanPath, setDraftPlanPath] = useState("");
+  const [drafting, setDrafting] = useState(false);
+  const [draftError, setDraftError] = useState<string | null>(null);
   const sessionRef = useRef<RegistrationSession | null>(null);
   const [, setTick] = useState(0);
   const report = () => setTick((tick) => tick + 1);
@@ -546,12 +550,46 @@ export function AddRepositoryView(props: {
       (outcome) => {
         setRunning(false);
         report();
-        if (outcome === "done") onDone(current.plan.repositoryKey);
+        // A registration that lands on 'factory' ends on the draft card; anything else finishes here.
+        if (outcome === "done" && current.result.branch !== FACTORY_BRANCH) {
+          onDone(current.plan.repositoryKey);
+        }
       },
       (error: unknown) => {
         setRunning(false);
         setFatalError(errorText(error));
         report();
+      },
+    );
+  };
+
+  const startDrafting = (current: RegistrationSession) => {
+    const goal = draftGoal.trim();
+    if (goal === "" || drafting) return;
+    setDrafting(true);
+    setDraftError(null);
+    const planPath = draftPlanPath.trim();
+    // No provider triple: the drafting thread uses the project's stored defaults.
+    void ctx.runAction({
+      repositoryKey: current.plan.repositoryKey,
+      action: {
+        kind: "draft-tasks",
+        goal,
+        ...(planPath !== "" ? { planPath } : {}),
+      },
+      idempotencyKey: `bbf:v1:${current.plan.repositoryKey}:draft-tasks:${crypto.randomUUID()}`,
+    }).then(
+      (result) => {
+        setDrafting(false);
+        if (result.ok && result.result.action === "draft-tasks") {
+          ctx.onOpenThread(result.result.threadId);
+          return;
+        }
+        setDraftError(result.ok ? "The draft request returned an unexpected result." : result.error.message);
+      },
+      (error: unknown) => {
+        setDrafting(false);
+        setDraftError(errorText(error));
       },
     );
   };
@@ -587,7 +625,7 @@ export function AddRepositoryView(props: {
   };
 
   const header = h("div", { className: "flex items-center gap-3" },
-    h(ActionButton, { label: "Back", variant: "ghost", size: "sm", onClick: onCancel }),
+    h(ActionButton, { label: "Back", variant: "ghost", size: "sm", disabled: drafting, onClick: onCancel }),
     h("h1", { className: "text-xl font-semibold" }, "Add repository"));
 
   if (optionsState.status === "loading") {
@@ -611,6 +649,8 @@ export function AddRepositoryView(props: {
   if (stage === "submit" && session !== null) {
     const failed = session.steps.some((step) => step.status === "failed");
     const offer = session.offer;
+    const allTerminal = session.steps.every((step) => step.status === "done" || step.status === "skipped");
+    const showDraftCard = allTerminal && !failed && offer === null && session.result.branch === FACTORY_BRANCH;
     return h("div", { className: "space-y-4" },
       header,
       h(Card, {
@@ -667,7 +707,51 @@ export function AddRepositoryView(props: {
                 })
               : null),
         ],
-      }));
+      }),
+      showDraftCard
+        ? h(Card, {
+            title: "Draft tasks",
+            children: [
+              h("p", {
+                key: "copy",
+                className: "text-sm text-muted-foreground",
+              }, `An agent chat on the new checkout can draft the first queue entries from a goal. It writes only 'status: draft' entries and commits them on '${FACTORY_BRANCH}'; approving drafts for a run stays a human step.`),
+              h("div", { key: "fields", className: "mt-3 space-y-3" },
+                h(FormRow, { label: "Goal" },
+                  h("textarea", {
+                    "aria-label": "Goal for drafted tasks",
+                    className: `${inputClass} min-h-20`,
+                    value: draftGoal,
+                    onChange: (event: { target: { value: string } }) => setDraftGoal(event.target.value),
+                  })),
+                h(FormRow, { label: "Plan file (optional)" },
+                  h("input", {
+                    type: "text",
+                    "aria-label": "Plan file (optional)",
+                    className: `${inputClass} font-mono`,
+                    value: draftPlanPath,
+                    onChange: (event: { target: { value: string } }) => setDraftPlanPath(event.target.value),
+                  }))),
+              draftError !== null
+                ? h("p", { key: "draft-error", className: "mt-3 text-sm text-destructive" }, draftError)
+                : null,
+              h("div", { key: "actions", className: "mt-4 flex items-center gap-2" },
+                h(ActionButton, {
+                  label: "Start drafting",
+                  variant: "primary",
+                  onClick: () => startDrafting(session),
+                  busy: drafting,
+                  disabled: draftGoal.trim() === "",
+                }),
+                h(ActionButton, {
+                  label: "Finish",
+                  variant: "secondary",
+                  disabled: drafting,
+                  onClick: () => onDone(session.plan.repositoryKey),
+                })),
+            ],
+          })
+        : null);
   }
 
   /* ---- stage 1: pick the folder on a resolved host ---- */

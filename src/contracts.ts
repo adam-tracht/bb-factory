@@ -35,6 +35,26 @@ export const reasoningLevelSchema = z.enum([
 ]);
 export type ReasoningLevel = z.infer<typeof reasoningLevelSchema>;
 
+export const providerModelDefaultSchema = z
+  .object({
+    model: nonEmptyString,
+    reasoningLevel: reasoningLevelSchema,
+  })
+  .strict();
+export type ProviderModelDefault = z.infer<typeof providerModelDefaultSchema>;
+
+/** Model names are provider-local, so configured defaults key on the provider id. */
+export const providerModelDefaultsSchema = z.record(providerIdSchema, providerModelDefaultSchema);
+export type ProviderModelDefaults = z.infer<typeof providerModelDefaultsSchema>;
+
+/** Ordered provider ids the alternate preference rotates through: 2 to 5 unique ids. */
+export const providerRotationSchema = z
+  .array(providerIdSchema)
+  .min(2)
+  .max(5)
+  .refine((ids) => new Set(ids).size === ids.length, "provider ids must be unique");
+export type ProviderRotation = z.infer<typeof providerRotationSchema>;
+
 export const repositoryRevisionSchema = z
   .object({
     gitCommit: z.string().regex(/^[0-9a-f]{7,64}$/).nullable(),
@@ -133,19 +153,26 @@ export const repositoryRegistryResolutionSchema = z.discriminatedUnion("status",
 ]);
 export type RepositoryRegistryResolution = z.infer<typeof repositoryRegistryResolutionSchema>;
 
-const repositoryRegistrySettingValueSchema = z.preprocess(
-  (value) => {
-    if (typeof value !== "string") {
-      return value;
-    }
-    try {
-      return JSON.parse(value) as unknown;
-    } catch {
-      return value;
-    }
-  },
-  repositoryRegistrySchema,
-);
+/** Plugin settings store scalars only; structured values persist as JSON strings. */
+function jsonSettingValueSchema<S extends z.ZodTypeAny>(inner: S) {
+  return z.preprocess(
+    (value) => {
+      if (typeof value !== "string") {
+        return value;
+      }
+      try {
+        return JSON.parse(value) as unknown;
+      } catch {
+        return value;
+      }
+    },
+    inner,
+  );
+}
+
+const repositoryRegistrySettingValueSchema = jsonSettingValueSchema(repositoryRegistrySchema);
+const providerModelDefaultsSettingValueSchema = jsonSettingValueSchema(providerModelDefaultsSchema);
+const providerRotationSettingValueSchema = jsonSettingValueSchema(providerRotationSchema);
 
 export const scheduleSettingsSchema = z
   .object({
@@ -171,6 +198,8 @@ export const factorySettingsSchema = z
     nightWindowEndHour: z.number().int().min(0).max(23).default(6),
     runtimeCapSeconds: z.number().int().positive().default(10_800),
     providerPreference: providerPreferenceSchema.optional(),
+    providerModelDefaults: providerModelDefaultsSettingValueSchema.optional(),
+    providerRotation: providerRotationSettingValueSchema.optional(),
     minimumStartGapSeconds: z.number().int().min(3600).default(3600),
     concurrencyLimit: z.number().int().positive().default(1),
     dispatchMode: z.enum(["enabled", "paused"]).default("paused"),
@@ -567,6 +596,7 @@ export const actionKindSchema = z.enum([
   "approve-queue",
   "recommend-question",
   "recommend-approval",
+  "draft-tasks",
   "retry",
   "stop",
   "integration-report",
@@ -715,13 +745,67 @@ const recommendApprovalActionSchema = z
   })
   .strict();
 
+/**
+ * Advisory: spawns a BB thread that drafts `status: draft` queue entries in
+ * plans/factory/queue.md and commits them on the factory branch. Drafts carry
+ * `approved: none`; the human-only `ready` gate is unchanged. Like run-now,
+ * the provider triple is all-or-none; a lone serviceTier is not sent.
+ */
+const draftTasksActionSchema = z
+  .object({
+    kind: z.literal("draft-tasks"),
+    goal: nonEmptyString,
+    planPath: nonEmptyString.optional(),
+    providerId: providerIdSchema.optional(),
+    model: nonEmptyString.optional(),
+    reasoningLevel: reasoningLevelSchema.optional(),
+    serviceTier: z.enum(["default", "fast"]).optional(),
+  })
+  .strict()
+  .superRefine((action, context) => {
+    const triple = [action.providerId, action.model, action.reasoningLevel];
+    if (triple.some((value) => value !== undefined) && triple.some((value) => value === undefined)) {
+      context.addIssue({
+        code: "custom",
+        path: ["providerId"],
+        message: "providerId, model, and reasoningLevel must be provided together",
+      });
+    }
+  });
+
+/**
+ * A manual run may pin provider, model, and reasoning level; the three are
+ * all-or-none so a partial override never silently mixes with rotation.
+ * serviceTier stays independently optional, matching the recommend-* actions.
+ */
+const runNowActionSchema = z
+  .object({
+    kind: z.literal("run-now"),
+    providerId: providerIdSchema.optional(),
+    model: nonEmptyString.optional(),
+    reasoningLevel: reasoningLevelSchema.optional(),
+    serviceTier: z.enum(["default", "fast"]).optional(),
+  })
+  .strict()
+  .superRefine((action, context) => {
+    const triple = [action.providerId, action.model, action.reasoningLevel];
+    if (triple.some((value) => value !== undefined) && triple.some((value) => value === undefined)) {
+      context.addIssue({
+        code: "custom",
+        path: ["providerId"],
+        message: "providerId, model, and reasoningLevel must be provided together",
+      });
+    }
+  });
+
 export const bbInteractionActionSchema = z.union([
-  z.object({ kind: z.literal("run-now") }).strict(),
+  runNowActionSchema,
   z.object({ kind: z.literal("pause") }).strict(),
   z.object({ kind: z.literal("resume") }).strict(),
   bbInteractionAnswerActionSchema,
   recommendQuestionActionSchema,
   recommendApprovalActionSchema,
+  draftTasksActionSchema,
   z.object({ kind: z.literal("retry"), attemptId: nonEmptyString }).strict(),
   z.object({ kind: z.literal("stop") }).strict(),
 ]);
@@ -955,6 +1039,18 @@ export const recommendApprovalOutcomeSchema = z
   .strict();
 export type RecommendApprovalOutcome = z.infer<typeof recommendApprovalOutcomeSchema>;
 
+/** Accepted draft-task spawns carry the thread the UI should open. */
+export const draftTasksOutcomeSchema = z
+  .object({
+    ...actionOutcomeFields,
+    action: z.literal("draft-tasks"),
+    questionId: z.null().optional(),
+    interactionId: z.null().optional(),
+    threadId: nonEmptyString,
+  })
+  .strict();
+export type DraftTasksOutcome = z.infer<typeof draftTasksOutcomeSchema>;
+
 /** Scaffold results list each target's disposition and the commit that landed. */
 export const scaffoldProtocolOutcomeSchema = z
   .object({
@@ -1013,6 +1109,7 @@ export const actionOutcomeSchema = z.union([
   answerQuestionOutcomeSchema,
   recommendQuestionOutcomeSchema,
   recommendApprovalOutcomeSchema,
+  draftTasksOutcomeSchema,
   scaffoldProtocolOutcomeSchema,
   provisionCheckoutOutcomeSchema,
   nonAnswerActionOutcomeSchema,
@@ -1293,6 +1390,8 @@ export const factorySettingsPatchSchema = z
     nightWindowEndHour: z.number().int().min(0).max(23).optional(),
     runtimeCapSeconds: z.number().int().positive().optional(),
     providerPreference: providerPreferenceSchema.nullable().optional(),
+    providerModelDefaults: providerModelDefaultsSchema.nullable().optional(),
+    providerRotation: providerRotationSchema.nullable().optional(),
     minimumStartGapSeconds: z.number().int().min(3600).optional(),
     concurrencyLimit: z.number().int().positive().optional(),
   })

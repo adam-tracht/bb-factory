@@ -1643,8 +1643,8 @@ describe("Factory aggregate scope", () => {
       : { ...snapshotForSwitch(key), queue: [{ ...snapshot.queue[0]!, id: "data-only", title: "DATA-ONLY-TASK" }] });
     const slot = mountAggregate(FactoryView, "work", rpc);
     try {
-      const switcher = (await slot.findByRole("group", { name: "Configured repository" })) as HTMLElement;
-      fireEvent.click(within(switcher).getByRole("button", { name: "data" }));
+      // The switcher group paints before the repositories read lands; wait on the pill itself.
+      fireEvent.click(await slot.findByRole("button", { name: "data" }));
       await slot.findByText("DATA-ONLY-TASK");
       // The monorepo read from the superseded load resolves late and must not paint.
       await act(async () => {
@@ -1833,13 +1833,58 @@ describe("Factory guarded actions", () => {
       fireEvent.click(await slot.findByRole("button", { name: "Run now" }));
       const dialog = await slot.findByRole("alertdialog");
       expect(dialog.textContent).toContain("ignoring the night window");
-      expect(dialog.textContent).toContain("codex");
+      // Automatic is the default: the seeded picker stays dormant until chosen,
+      // so confirming sends no override and rotation still applies.
+      expect((within(dialog as HTMLElement).getByRole("radio", { name: "Automatic" }) as HTMLInputElement).checked).toBe(true);
+      expect(within(dialog as HTMLElement).queryByTestId("bb-provider-model-picker")).toBeNull();
+      expect(dialog.textContent).toContain("Provider: codex (available).");
       fireEvent.click(within(dialog as HTMLElement).getByRole("button", { name: "Run now" }));
       await vi.waitFor(() => {
         expect(rpc.factory_action).toHaveBeenCalledWith(expect.objectContaining({
           repositoryKey: "demo",
           expectedRevision: revision,
           action: { kind: "run-now" },
+        }));
+      });
+    } finally {
+      slot.lifecycle.unmount();
+    }
+  });
+
+  it("sends the picked provider, model, thinking level, and service tier on run-now", async () => {
+    const { FactoryView } = await import("../src/ui/FactoryView.js");
+    const rpc = baseRpc({ settings: enabledSettings });
+    const slot = renderSlot<FactoryViewProps, FactoryRpcContract>(
+      { component: FactoryView },
+      { subPath: "overview", panelPath: "factory" },
+      { rpc, settings: { repositoryKey: "demo" } },
+    );
+    try {
+      fireEvent.click(await slot.findByRole("button", { name: "Run now" }));
+      const dialog = await slot.findByRole("alertdialog");
+      fireEvent.click(within(dialog as HTMLElement).getByRole("radio", { name: "Choose provider and model" }));
+      const picker = within(dialog as HTMLElement).getByTestId("bb-provider-model-picker");
+      expect(picker.getAttribute("data-routing-kind")).toBe("environment");
+      expect(picker.getAttribute("data-routing-id")).toBe("environment-1");
+      expect((within(picker).getByLabelText("Provider ID") as HTMLInputElement).value).toBe("codex");
+      expect((within(picker).getByLabelText("Model") as HTMLInputElement).value).toBe("gpt-5");
+      expect((within(picker).getByLabelText("Reasoning level") as HTMLInputElement).value).toBe("medium");
+      fireEvent.change(within(picker).getByLabelText("Provider ID"), { target: { value: "claude-code" } });
+      fireEvent.change(within(picker).getByLabelText("Model"), { target: { value: "claude-sonnet-4" } });
+      fireEvent.change(within(picker).getByLabelText("Reasoning level"), { target: { value: "high" } });
+      fireEvent.change(within(picker).getByLabelText("Service tier"), { target: { value: "fast" } });
+      fireEvent.click(within(picker).getByRole("button", { name: "Apply execution selection" }));
+      fireEvent.click(within(dialog as HTMLElement).getByRole("button", { name: "Run now" }));
+      await vi.waitFor(() => {
+        expect(rpc.factory_action).toHaveBeenCalledWith(expect.objectContaining({
+          repositoryKey: "demo",
+          action: {
+            kind: "run-now",
+            providerId: "claude-code",
+            model: "claude-sonnet-4",
+            reasoningLevel: "high",
+            serviceTier: "fast",
+          },
         }));
       });
     } finally {

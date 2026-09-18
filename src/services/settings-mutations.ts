@@ -17,6 +17,9 @@ import type { ReadComposition } from "./read-composition.js";
 type BbSdk = BbPluginApi["sdk"];
 type SettingValue = string | number | boolean;
 
+/** Patch keys whose structured values persist as JSON strings. */
+const JSON_PATCH_KEYS: ReadonlySet<string> = new Set(["providerModelDefaults", "providerRotation"]);
+
 export interface SettingsMutationHandlers {
   factory_update_settings(input: { repositoryKey: string; patch: FactorySettingsPatch }): Promise<SettingsMutationResult>;
   factory_update_repository(input: UpdateRepositoryInput): Promise<SettingsMutationResult>;
@@ -87,7 +90,23 @@ export function createSettingsMutationHandlers(options: SettingsMutationOptions)
         return invalidSettings(validated.error);
       }
       try {
-        await applySettings(input.patch as Record<string, SettingValue | null>);
+        // Structured values persist as JSON strings; scalars pass through.
+        // The validated merge supplies post-parse values (nonEmptyString trims),
+        // and the typeof check encodes any structured key missing from the set.
+        const persisted: Record<string, SettingValue | null> = {};
+        const validatedValues = validated.data as Record<string, unknown>;
+        for (const [key, value] of Object.entries(input.patch)) {
+          if (value === undefined) continue;
+          if (value === null) {
+            persisted[key] = null;
+            continue;
+          }
+          const validatedValue = validatedValues[key];
+          persisted[key] = JSON_PATCH_KEYS.has(key) || typeof validatedValue === "object"
+            ? JSON.stringify(validatedValue)
+            : (validatedValue as SettingValue);
+        }
+        await applySettings(persisted);
       } catch (error) {
         return failure("internal", `Could not persist the settings: ${errorMessage(error)}`);
       }

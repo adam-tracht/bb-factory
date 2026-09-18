@@ -1,14 +1,21 @@
 import { createElement, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  reasoningLevelSchema,
   type FactorySettings,
   type FactorySettingsPatch,
   type HealthProjection,
+  type ProviderId,
+  type ProviderModelDefault,
+  type ProviderModelDefaults,
   type ProviderPreference,
+  type ReasoningLevel,
   type SettingsProjection,
 } from "../../contracts.js";
 import { cronValid, nextCronTimes } from "../../schedule/cron.js";
 import { describeSchedule } from "../../schedule/describe.js";
+import { hasFullPermission } from "../../provider-status.js";
 import { repositoryLabel } from "../../repository-label.js";
+import { ProviderModelPicker, pickerRoutingFor, type PickerValue } from "../providerPicker.js";
 import type { ViewContext } from "../context.js";
 import {
   ActionButton,
@@ -32,6 +39,9 @@ type DispatchMode = "enabled" | "paused";
 /**
  * Local form draft: number fields stay as text so half-typed input is not
  * coerced. `scheduleCron` uses "" for unset (patch maps it to null).
+ * `providerModelDefaults` carries the whole stored map so the wholesale-replace
+ * patch preserves entries for providers other than the pinned one.
+ * `providerRotation` carries the ordered list; an empty list patches null.
  */
 interface DraftShape {
   dispatchMode: DispatchMode;
@@ -42,6 +52,8 @@ interface DraftShape {
   minimumGapMinutes: string;
   concurrencyLimit: string;
   providerPreference: string;
+  providerModelDefaults: ProviderModelDefaults;
+  providerRotation: ProviderId[];
 }
 
 type DraftKey = keyof DraftShape;
@@ -56,7 +68,27 @@ const PATCH_KEY_TO_FIELD: Record<string, DraftKey> = {
   minimumStartGapSeconds: "minimumGapMinutes",
   concurrencyLimit: "concurrencyLimit",
   providerPreference: "providerPreference",
+  providerModelDefaults: "providerModelDefaults",
+  providerRotation: "providerRotation",
 };
+
+/** Shared empty map keeps untouched drafts at the stored reference. */
+const NO_PROVIDER_DEFAULTS: ProviderModelDefaults = {};
+
+/**
+ * A settings reload re-parses the stored map into a fresh object, so dirty
+ * tracking compares entries by value rather than reference.
+ */
+function sameProviderModelDefaults(a: ProviderModelDefaults, b: ProviderModelDefaults): boolean {
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length
+    && keys.every((key) => a[key]!.model === b[key]?.model && a[key]!.reasoningLevel === b[key]?.reasoningLevel);
+}
+
+/** Ordered list: position matters, so compare element by element. */
+function sameProviderRotation(a: readonly ProviderId[], b: readonly ProviderId[]): boolean {
+  return a.length === b.length && a.every((id, index) => id === b[index]);
+}
 
 function seedDraft(settings: FactorySettings): DraftShape {
   return {
@@ -68,6 +100,8 @@ function seedDraft(settings: FactorySettings): DraftShape {
     minimumGapMinutes: String(settings.minimumStartGapSeconds / 60),
     concurrencyLimit: String(settings.concurrencyLimit),
     providerPreference: settings.providerPreference ?? "alternate",
+    providerModelDefaults: settings.providerModelDefaults ?? NO_PROVIDER_DEFAULTS,
+    providerRotation: settings.providerRotation ?? [],
   };
 }
 
@@ -101,7 +135,12 @@ function analyzeDraft(draft: DraftShape, settings: FactorySettings): DraftAnalys
   const patch: FactorySettingsPatch = {};
 
   for (const key of Object.keys(draft) as DraftKey[]) {
-    if (draft[key] !== baseline[key]) dirty.add(key);
+    const unchanged = key === "providerModelDefaults"
+      ? sameProviderModelDefaults(draft.providerModelDefaults, baseline.providerModelDefaults)
+      : key === "providerRotation"
+        ? sameProviderRotation(draft.providerRotation, baseline.providerRotation)
+        : draft[key] === baseline[key];
+    if (!unchanged) dirty.add(key);
   }
 
   const cron = draft.scheduleCron.trim();
@@ -144,6 +183,36 @@ function analyzeDraft(draft: DraftShape, settings: FactorySettings): DraftAnalys
 
   if (dirty.has("providerPreference")) {
     patch.providerPreference = draft.providerPreference as ProviderPreference;
+  }
+
+  // Only the pinned provider's entry is editable, so only it can hold a blank
+  // model. Validating the whole map would block Save on a row that is not on
+  // screen once the preference moves to alternate; stale blanks still fail
+  // server-side if they reach the patch.
+  const editableProviderDefault = draft.providerPreference === "alternate"
+    ? undefined
+    : draft.providerModelDefaults[draft.providerPreference];
+  if (editableProviderDefault !== undefined && editableProviderDefault.model.trim() === "") {
+    errors.providerModelDefaults = "Enter a model name.";
+  } else if (dirty.has("providerModelDefaults")) {
+    patch.providerModelDefaults = Object.keys(draft.providerModelDefaults).length === 0
+      ? null
+      : draft.providerModelDefaults;
+  }
+
+  // An empty list is the cleared state (patch null); a single member cannot
+  // form a rotation, and the schema caps the list at five.
+  if (dirty.has("providerRotation")) {
+    if (draft.providerRotation.length === 0) {
+      patch.providerRotation = null;
+    } else if (draft.providerRotation.length < 2) {
+      errors.providerRotation = "Use at least 2 providers, or remove the last one to clear the rotation.";
+    } else if (draft.providerRotation.length > 5) {
+      // Defensive: stored lists are schema-capped at 5 and the editor never adds past it.
+      errors.providerRotation = "Use at most 5 providers.";
+    } else {
+      patch.providerRotation = [...draft.providerRotation];
+    }
   }
 
   if (dirty.has("dispatchMode")) {
@@ -388,14 +457,24 @@ function DispatchCard(props: {
 
   const analysis = useMemo(() => analyzeDraft(draft, settings), [draft, settings]);
   const dirtyFields = useMemo(
-    () => new Set([...analysis.dirty].filter((key) => !(lastSaved && lastSaved[key] === draft[key]))),
+    () => new Set([...analysis.dirty].filter((key) => {
+      if (lastSaved === null) return true;
+      return key === "providerModelDefaults"
+        ? !sameProviderModelDefaults(lastSaved.providerModelDefaults, draft.providerModelDefaults)
+        : key === "providerRotation"
+          ? !sameProviderRotation(lastSaved.providerRotation, draft.providerRotation)
+          : lastSaved[key] !== draft[key];
+    })),
     [analysis, lastSaved, draft],
   );
   const dirty = dirtyFields.size > 0;
   const dirtyHasError = [...dirtyFields].some((key) => analysis.errors[key] !== undefined);
 
-  const setField = <K extends DraftKey>(key: K, value: DraftShape[K]) => {
-    setDraft((current) => ({ ...current, [key]: value }));
+  const setField = <K extends DraftKey>(key: K, update: DraftShape[K] | ((current: DraftShape[K]) => DraftShape[K])) => {
+    setDraft((current) => ({
+      ...current,
+      [key]: typeof update === "function" ? (update as (current: DraftShape[K]) => DraftShape[K])(current[key]) : update,
+    }));
     setSavedFields((current) => {
       if (!current.has(key)) return current;
       const next = new Set(current);
@@ -447,8 +526,9 @@ function DispatchCard(props: {
         }
         const fieldErrors: Partial<Record<DraftKey, string[]>> = {};
         for (const [key, messages] of Object.entries(mutation.error.fieldErrors ?? {})) {
-          const field = PATCH_KEY_TO_FIELD[key] as DraftKey | undefined;
-          if (field) fieldErrors[field] = messages;
+          // Server issues arrive as dotted paths ("providerModelDefaults.codex.model").
+          const field = PATCH_KEY_TO_FIELD[key.split(".")[0] ?? key] as DraftKey | undefined;
+          if (field) fieldErrors[field] = [...(fieldErrors[field] ?? []), ...messages];
         }
         setSaveState({ pending: false, message: null, error: mutation.error.message, fieldErrors });
       },
@@ -493,7 +573,7 @@ function DispatchCard(props: {
     for (const provider of providers) {
       if (seen.has(provider.providerId)) continue;
       seen.add(provider.providerId);
-      const full = provider.permissionModes === undefined || provider.permissionModes.includes("full");
+      const full = hasFullPermission(provider);
       options.push({
         value: provider.providerId,
         label: `${provider.providerId} (${provider.availability}${full ? "" : ", lacks full permission"})`,
@@ -504,6 +584,191 @@ function DispatchCard(props: {
     }
     return options;
   }, [providers, draft.providerPreference]);
+
+  // The pinned provider can carry a configured model/thinking default. The
+  // draft holds the whole map; the control edits only this provider's entry.
+  const pinnedProviderId = draft.providerPreference === "alternate" ? null : draft.providerPreference;
+  const storedDefault = pinnedProviderId === null ? undefined : draft.providerModelDefaults[pinnedProviderId];
+  const providerDefaultsSaving = savingFields.has("providerModelDefaults");
+  const updateProviderDefault = (entry: ProviderModelDefault | null) => {
+    if (pinnedProviderId === null) return;
+    setField("providerModelDefaults", (current) => {
+      const next: ProviderModelDefaults = { ...current };
+      if (entry === null) {
+        delete next[pinnedProviderId];
+      } else {
+        next[pinnedProviderId] = entry;
+      }
+      return next;
+    });
+  };
+  const resetToHostDefault = h(ActionButton, {
+    label: "Use host default",
+    variant: "ghost",
+    size: "xs",
+    disabled: providerDefaultsSaving,
+    onClick: () => updateProviderDefault(null),
+  });
+
+  const providerDefaultControl = (() => {
+    if (pinnedProviderId === null) return null;
+    if (preferred === null) {
+      // The host no longer reports the pinned provider: show a stored default
+      // tolerantly (the "(not reported)" precedent) and allow clearing it.
+      return storedDefault === undefined
+        ? h("p", { className: "text-xs text-muted-foreground" },
+            "The host does not report this provider, so its catalog is unknown.")
+        : h("div", { className: "flex flex-wrap items-center gap-2" },
+            h("code", { className: "text-sm" }, `${storedDefault.model} · ${storedDefault.reasoningLevel}`),
+            h("span", { className: "text-xs text-muted-foreground" }, "(provider not reported)"),
+            resetToHostDefault);
+    }
+    if (ProviderModelPicker !== undefined && preferred.model !== "unavailable") {
+      return h("div", { className: "flex flex-wrap items-center gap-2" },
+        h(ProviderModelPicker, {
+          value: {
+            providerId: preferred.providerId,
+            model: storedDefault?.model ?? preferred.model,
+            reasoningLevel: storedDefault?.reasoningLevel ?? preferred.reasoningLevel,
+          },
+          onChange: (next: PickerValue) =>
+            updateProviderDefault({ model: next.model, reasoningLevel: next.reasoningLevel }),
+          routing: pickerRoutingFor(ctx),
+          allowProviderChange: false,
+          disabled: providerDefaultsSaving,
+        }),
+        storedDefault === undefined ? null : resetToHostDefault);
+    }
+    // Hosts without the bound picker fall back to a model input plus the
+    // fixed thinking-level list.
+    const hostModel = preferred.model === "unavailable" ? "" : preferred.model;
+    return h("div", { className: "flex flex-wrap items-center gap-2" },
+      h("input", {
+        type: "text",
+        "aria-label": "Default model",
+        className: `${inputClass} min-w-[10rem] flex-1`,
+        placeholder: hostModel === "" ? "model name" : hostModel,
+        value: storedDefault?.model ?? "",
+        disabled: providerDefaultsSaving,
+        onChange: (event: { target: { value: string } }) =>
+          updateProviderDefault({
+            model: event.target.value,
+            reasoningLevel: storedDefault?.reasoningLevel ?? preferred.reasoningLevel,
+          }),
+      }),
+      h("select", {
+        "aria-label": "Default thinking level",
+        className: `${inputClass} w-auto`,
+        value: storedDefault?.reasoningLevel ?? preferred.reasoningLevel,
+        disabled: providerDefaultsSaving,
+        onChange: (event: { target: { value: string } }) =>
+          updateProviderDefault({
+            model: storedDefault?.model ?? hostModel,
+            reasoningLevel: event.target.value as ReasoningLevel,
+          }),
+      },
+        reasoningLevelSchema.options.map((level) =>
+          h("option", { key: level, value: level }, level))),
+      storedDefault === undefined ? null : resetToHostDefault);
+  })();
+
+  // The rotation editor only exists while the preference alternates. The draft
+  // holds the ordered id list; stored ids the catalog no longer reports stay
+  // listed (and removable) with a "(not reported)" marker.
+  const rotationSaving = savingFields.has("providerRotation");
+  const rotationIds = draft.providerRotation;
+  const moveRotation = (from: number, to: number) =>
+    setField("providerRotation", (current) => {
+      const next = [...current];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved!);
+      return next;
+    });
+  const rotationAddable = (() => {
+    const seen = new Set<string>(rotationIds);
+    return providers.filter((provider) => {
+      if (seen.has(provider.providerId)) return false;
+      seen.add(provider.providerId);
+      return true;
+    });
+  })();
+  const rotationEditor = h("div", null,
+    rotationIds.length === 0
+      ? h("p", { className: "text-xs text-muted-foreground" },
+          "No rotation set: dispatch rotates across every reported provider.")
+      : h("ul", { className: "space-y-1.5" },
+          rotationIds.map((id, index) => {
+            const reported = providers.find((provider) => provider.providerId === id);
+            const memberDefault = draft.providerModelDefaults[id];
+            return h("li", { key: id, className: "flex flex-wrap items-center gap-x-2 gap-y-1" },
+              h("span", { className: "w-4 text-xs text-muted-foreground" }, `${index + 1}.`),
+              h("code", { className: "text-sm" }, id),
+              reported === undefined
+                ? h("span", { className: "text-xs text-muted-foreground" }, "(not reported)")
+                : h("span", { className: "text-xs text-muted-foreground" }, reported.availability),
+              memberDefault === undefined
+                ? null
+                : h("span", { className: "text-xs text-muted-foreground" },
+                    `${memberDefault.model} · ${memberDefault.reasoningLevel}`),
+              h("span", { className: "ml-auto flex items-center gap-1" },
+                h(ActionButton, {
+                  label: "Up",
+                  ariaLabel: `Move ${id} up`,
+                  variant: "ghost",
+                  size: "xs",
+                  disabled: rotationSaving || index === 0,
+                  onClick: () => moveRotation(index, index - 1),
+                }),
+                h(ActionButton, {
+                  label: "Down",
+                  ariaLabel: `Move ${id} down`,
+                  variant: "ghost",
+                  size: "xs",
+                  disabled: rotationSaving || index === rotationIds.length - 1,
+                  onClick: () => moveRotation(index, index + 1),
+                }),
+                h(ActionButton, {
+                  label: "Remove",
+                  ariaLabel: `Remove ${id} from rotation`,
+                  variant: "ghost",
+                  size: "xs",
+                  disabled: rotationSaving,
+                  onClick: () =>
+                    setField("providerRotation", (current) => current.filter((member) => member !== id)),
+                })));
+          })),
+    h("div", { className: "mt-2 flex flex-wrap items-center gap-2" },
+      h("select", {
+        "aria-label": "Add provider to rotation",
+        className: `${inputClass} w-auto`,
+        value: "",
+        disabled: rotationSaving || rotationIds.length >= 5 || rotationAddable.length === 0,
+        onChange: (event: { target: { value: string } }) => {
+          const id = event.target.value;
+          if (id === "") return;
+          setField("providerRotation", (current) =>
+            current.includes(id) || current.length >= 5 ? current : [...current, id]);
+        },
+      },
+        h("option", { value: "" },
+          rotationIds.length >= 5
+            ? "Rotation is full (5)"
+            : rotationAddable.length === 0
+              ? "No more reported providers"
+              : "Add provider..."),
+        rotationAddable.map((provider) =>
+          h("option", { key: provider.providerId, value: provider.providerId },
+            `${provider.providerId} (${provider.availability}${hasFullPermission(provider) ? "" : ", lacks full permission"})`))),
+      rotationIds.length === 0
+        ? null
+        : h(ActionButton, {
+            label: "Clear rotation",
+            variant: "ghost",
+            size: "xs",
+            disabled: rotationSaving,
+            title: "Removes every member; saving clears the stored rotation.",
+            onClick: () => setField("providerRotation", []),
+          })));
 
   const previewBlock = schedulePreview.kind === "manual"
     ? h("p", { className: "mt-1.5 text-xs text-muted-foreground" }, "Manual only: no scheduled runs.")
@@ -629,7 +894,23 @@ function DispatchCard(props: {
             onChange: (event: { target: { value: string } }) => setField("providerPreference", event.target.value),
           },
             providerOptions.map((option) =>
-              h("option", { key: option.value, value: option.value }, option.label))))),
+              h("option", { key: option.value, value: option.value }, option.label)))),
+        providerDefaultControl === null ? null : h(FormRow, {
+          label: "Default model + thinking",
+          error: fieldError("providerModelDefaults"),
+          status: fieldStatus("providerModelDefaults"),
+          hint: preferred === null
+            ? undefined
+            : storedDefault === undefined
+              ? `Dispatch uses the model and thinking level the host reports for ${pinnedProviderId}.`
+              : `Dispatch on ${pinnedProviderId} uses this instead of the host's defaults.`,
+        }, providerDefaultControl),
+        draft.providerPreference !== "alternate" ? null : h(FormRow, {
+          label: "Provider rotation",
+          error: fieldError("providerRotation"),
+          status: fieldStatus("providerRotation"),
+          hint: "Dispatch rotates through this list in order; a usable provider outside it is the fallback.",
+        }, rotationEditor)),
       saveState.message
         ? h("p", { key: "saved", className: "mt-3 text-sm text-success-foreground", role: "status" }, saveState.message)
         : null,

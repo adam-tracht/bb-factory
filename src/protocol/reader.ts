@@ -272,8 +272,9 @@ export class RepositoryProtocolReader implements ProtocolReader {
     const normalizedConfiguration = this.validateConfiguration(configuration);
     const foreman = await this.read(normalizedConfiguration, PROTOCOL_PATHS.foreman);
     const repo = await this.read(normalizedConfiguration, PROTOCOL_PATHS.repo);
-    const [queue, questions, current, dashboard] = await Promise.all([
+    const [queue, done, questions, current, dashboard] = await Promise.all([
       this.read(normalizedConfiguration, PROTOCOL_PATHS.queue),
+      this.readOptionalDone(normalizedConfiguration),
       this.read(normalizedConfiguration, PROTOCOL_PATHS.questions),
       this.read(normalizedConfiguration, PROTOCOL_PATHS.current),
       this.read(normalizedConfiguration, PROTOCOL_PATHS.dashboard),
@@ -281,7 +282,15 @@ export class RepositoryProtocolReader implements ProtocolReader {
     // Repository-specific qualified dependency rules come from repo.md.
     const repositoryPolicy = parseRepositoryPolicy(repo.content, PROTOCOL_PATHS.repo);
     const parsedQuestions = parseQuestions(questions.content, PROTOCOL_PATHS.questions);
-    const parsedQueue = parseQueue(queue.content, PROTOCOL_PATHS.queue);
+    const queueEntries = parseQueue(queue.content, PROTOCOL_PATHS.queue);
+    const doneEntries = done ? parseQueue(done.content, PROTOCOL_PATHS.done) : [];
+    const queueIds = new Set(queueEntries.map((entry) => entry.id));
+    for (const entry of doneEntries) {
+      if (queueIds.has(entry.id)) {
+        throw new ProtocolError("malformed-protocol", `Duplicate queue item '${entry.id}' across queue.md and done.md`);
+      }
+    }
+    const parsedQueue = [...queueEntries, ...doneEntries];
     const questionsForSnapshot = parsedQuestions.map(asQuestion);
     const queueForSnapshot = await Promise.all(
       parsedQueue.map((entry) =>
@@ -298,7 +307,7 @@ export class RepositoryProtocolReader implements ProtocolReader {
     const currentState = parseCurrentState(current.content, PROTOCOL_PATHS.current);
     const runRecords = await this.readRunRecords(normalizedConfiguration);
     const lock = await this.readOptionalLock(normalizedConfiguration);
-    const allFiles = [foreman, repo, queue, questions, current, dashboard, ...runRecords.map((record) => ({
+    const allFiles = [foreman, repo, queue, ...(done ? [done] : []), questions, current, dashboard, ...runRecords.map((record) => ({
       relativePath: record.relativePath,
       content: record.content,
       sha256: record.sha256,
@@ -424,6 +433,17 @@ export class RepositoryProtocolReader implements ProtocolReader {
       records.push(parseRunRecord(file.content, relativePath, file.sha256));
     }
     return records;
+  }
+
+  private async readOptionalDone(configuration: RepositoryConfiguration): Promise<TextFile | null> {
+    try {
+      return await this.read(configuration, PROTOCOL_PATHS.done);
+    } catch (error) {
+      if (error instanceof ProtocolError && error.code === "file-not-found") {
+        return null;
+      }
+      throw error;
+    }
   }
 
   private async readOptionalLock(configuration: RepositoryConfiguration): Promise<{ content: string; sha256: string } | null> {

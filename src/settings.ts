@@ -1,26 +1,33 @@
 import { z } from "zod";
 import type { PluginSettingDescriptors } from "@get-bb/plugin-sdk";
-import { providerPreferenceSchema, repositoryRegistrySchema } from "./contracts.js";
+import { providerModelDefaultsSchema, providerPreferenceSchema, providerRotationSchema, repositoryRegistrySchema } from "./contracts.js";
 
 const repositoryKey = z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/);
 const absolutePath = z.string().regex(/^(?:\/|[A-Za-z]:[\\/])/);
 
-export const repositoryRegistrySettingSchema = z.string().superRefine((value, context) => {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(value);
-  } catch {
-    context.addIssue({ code: "custom", message: "must be valid repository registry JSON" });
-    return;
-  }
-  const result = repositoryRegistrySchema.safeParse(parsed);
-  if (!result.success) {
-    context.addIssue({
-      code: "custom",
-      message: `invalid repository registry: ${result.error.issues[0]?.message ?? "schema mismatch"}`,
-    });
-  }
-});
+/** String setting holding JSON validated by an inner schema, for descriptor checks. */
+function jsonSettingSchema(inner: z.ZodTypeAny, label: string) {
+  return z.string().superRefine((value, context) => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      context.addIssue({ code: "custom", message: `must be valid ${label} JSON` });
+      return;
+    }
+    const result = inner.safeParse(parsed);
+    if (!result.success) {
+      context.addIssue({
+        code: "custom",
+        message: `invalid ${label}: ${result.error.issues[0]?.message ?? "schema mismatch"}`,
+      });
+    }
+  });
+}
+
+export const repositoryRegistrySettingSchema = jsonSettingSchema(repositoryRegistrySchema, "repository registry");
+export const providerModelDefaultsSettingSchema = jsonSettingSchema(providerModelDefaultsSchema, "provider model defaults");
+export const providerRotationSettingSchema = jsonSettingSchema(providerRotationSchema, "provider rotation");
 
 export const factorySettingDescriptors = {
   repositoryKey: {
@@ -99,6 +106,22 @@ export const factorySettingDescriptors = {
     label: "Provider preference",
     description: "Provider id to lead dispatch (any id the host reports), or alternate to rotate.",
     experimental_schema: providerPreferenceSchema,
+  },
+  providerModelDefaults: {
+    type: "string",
+    label: "Provider model defaults",
+    description:
+      "Validated JSON map of provider id to the model and thinking level dispatch uses instead of the host-reported default. The Factory Settings tab edits this per provider.",
+    experimental_multiline: true,
+    experimental_schema: providerModelDefaultsSettingSchema,
+  },
+  providerRotation: {
+    type: "string",
+    label: "Provider rotation",
+    description:
+      "Validated JSON list of 2 to 5 provider ids the alternate preference rotates through in order. The Factory Settings tab edits this list.",
+    experimental_multiline: true,
+    experimental_schema: providerRotationSettingSchema,
   },
   minimumStartGapSeconds: {
     type: "number",

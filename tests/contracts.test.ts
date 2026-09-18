@@ -8,6 +8,7 @@ import {
   factoryActionResultSchema,
   factoryErrorSchema,
   factorySettingsSchema,
+  factorySettingsPatchSchema,
   healthProjectionSchema,
   invalidationEventSchema,
   idempotencyKeySchema,
@@ -105,6 +106,64 @@ describe("Phase 0 wire contracts", () => {
   it("describes provider preference as a host-reported string", () => {
     expect(factorySettingDescriptors.providerPreference.type).toBe("string");
     expect("options" in factorySettingDescriptors.providerPreference).toBe(false);
+  });
+
+  it("parses stored provider model defaults from the JSON settings string", () => {
+    const defaults = { codex: { model: "gpt-5-codex", reasoningLevel: "high" } };
+    const encoded = JSON.stringify(defaults);
+
+    expect(factorySettingsSchema.parse({ providerModelDefaults: encoded }).providerModelDefaults).toEqual(defaults);
+    // The already-parsed projection form round-trips through the same field.
+    expect(factorySettingsSchema.parse({ providerModelDefaults: defaults }).providerModelDefaults).toEqual(defaults);
+    expect(factorySettingDescriptors.providerModelDefaults.experimental_schema.parse(encoded)).toBe(encoded);
+    expect(() => factorySettingsSchema.parse({
+      providerModelDefaults: JSON.stringify({ codex: { model: "gpt-5-codex", reasoningLevel: "ludicrous" } }),
+    })).toThrow();
+    expect(() => factorySettingsSchema.parse({
+      providerModelDefaults: JSON.stringify({ codex: { model: "", reasoningLevel: "high" } }),
+    })).toThrow();
+    expect(() => factorySettingDescriptors.providerModelDefaults.experimental_schema.parse("not json")).toThrow();
+    expect(factorySettingsSchema.parse({}).providerModelDefaults).toBeUndefined();
+  });
+
+  it("takes a full provider model defaults map or null in a settings patch", () => {
+    const defaults = { codex: { model: "gpt-5-codex", reasoningLevel: "high" } };
+    expect(factorySettingsPatchSchema.parse({ providerModelDefaults: defaults }).providerModelDefaults).toEqual(defaults);
+    expect(factorySettingsPatchSchema.parse({ providerModelDefaults: null }).providerModelDefaults).toBeNull();
+    expect(factorySettingsPatchSchema.parse({ providerModelDefaults: {} }).providerModelDefaults).toEqual({});
+    expect(() => factorySettingsPatchSchema.parse({
+      providerModelDefaults: { codex: { model: "gpt-5-codex", reasoningLevel: "ludicrous" } },
+    })).toThrow();
+    expect(() => factorySettingsPatchSchema.parse({
+      providerModelDefaults: { "Bad Provider": { model: "gpt-5-codex", reasoningLevel: "high" } },
+    })).toThrow();
+  });
+
+  it("parses a stored provider rotation from the JSON settings string", () => {
+    const rotation = ["codex", "claude-code", "acp-devin"];
+    const encoded = JSON.stringify(rotation);
+
+    expect(factorySettingsSchema.parse({ providerRotation: encoded }).providerRotation).toEqual(rotation);
+    // The already-parsed projection form round-trips through the same field.
+    expect(factorySettingsSchema.parse({ providerRotation: rotation }).providerRotation).toEqual(rotation);
+    expect(factorySettingDescriptors.providerRotation.experimental_schema.parse(encoded)).toBe(encoded);
+    expect(() => factorySettingsSchema.parse({ providerRotation: JSON.stringify(["codex"]) })).toThrow();
+    expect(() => factorySettingsSchema.parse({ providerRotation: JSON.stringify(["codex", "codex"]) })).toThrow();
+    expect(() => factorySettingsSchema.parse({
+      providerRotation: JSON.stringify(["codex", "claude-code", "acp-devin", "acp-opencode", "pi", "amp"]),
+    })).toThrow();
+    expect(() => factorySettingsSchema.parse({ providerRotation: JSON.stringify(["codex", "Bad Id"]) })).toThrow();
+    expect(() => factorySettingDescriptors.providerRotation.experimental_schema.parse("not json")).toThrow();
+    expect(factorySettingsSchema.parse({}).providerRotation).toBeUndefined();
+  });
+
+  it("takes a provider rotation list or null in a settings patch", () => {
+    expect(factorySettingsPatchSchema.parse({ providerRotation: ["codex", "claude-code"] }).providerRotation)
+      .toEqual(["codex", "claude-code"]);
+    expect(factorySettingsPatchSchema.parse({ providerRotation: null }).providerRotation).toBeNull();
+    expect(() => factorySettingsPatchSchema.parse({ providerRotation: ["codex"] })).toThrow();
+    expect(() => factorySettingsPatchSchema.parse({ providerRotation: ["codex", "codex"] })).toThrow();
+    expect(() => factorySettingsPatchSchema.parse({ providerRotation: ["codex", "Bad Id"] })).toThrow();
   });
 
   it("preserves live queue status detail and omitted question recommendations", () => {
@@ -396,6 +455,73 @@ describe("Phase 0 wire contracts", () => {
     })).toThrow();
   });
 
+  it("accepts a full run-now provider override and rejects partial triples", () => {
+    const request = (action: Record<string, unknown>) => ({
+      repositoryKey: "monorepo",
+      action,
+      idempotencyKey: "bbf:v1:monorepo:run-now:123e4567-e89b-12d3-a456-426614174000",
+      expectedRevision: repositoryRevision,
+    });
+
+    const full = { kind: "run-now", providerId: "claude-code", model: "claude-opus-5", reasoningLevel: "high", serviceTier: "fast" };
+    expect(factoryActionRequestSchema.parse(request(full))).toEqual(request(full));
+    expect(factoryActionRequestSchema.parse(request({ kind: "run-now" }))).toEqual(request({ kind: "run-now" }));
+    // serviceTier rides alone; only the provider/model/reasoning triple is all-or-none.
+    expect(factoryActionRequestSchema.parse(request({ kind: "run-now", serviceTier: "fast" })))
+      .toMatchObject({ action: { kind: "run-now", serviceTier: "fast" } });
+
+    for (const action of [
+      { kind: "run-now", providerId: "codex" },
+      { kind: "run-now", providerId: "codex", model: "gpt-5" },
+      { kind: "run-now", model: "gpt-5", reasoningLevel: "high" },
+      { kind: "run-now", reasoningLevel: "high" },
+      { kind: "run-now", providerId: "codex", reasoningLevel: "high" },
+      { kind: "run-now", providerId: "codex", model: "gpt-5", reasoningLevel: "high", extra: true },
+      { kind: "run-now", providerId: "Not A Provider", model: "gpt-5", reasoningLevel: "high" },
+    ]) {
+      expect(() => factoryActionRequestSchema.parse(request(action))).toThrow();
+    }
+  });
+
+  it("accepts draft-tasks with a goal alone or a full provider pin, and rejects malformed variants", () => {
+    const request = (action: Record<string, unknown>) => ({
+      repositoryKey: "monorepo",
+      action,
+      idempotencyKey: "bbf:v1:monorepo:draft-tasks:323e4567-e89b-12d3-a456-426614174000",
+      expectedRevision: repositoryRevision,
+    });
+
+    const goalOnly = { kind: "draft-tasks", goal: "Break the hosting rollout into tasks" };
+    expect(factoryActionRequestSchema.parse(request(goalOnly))).toEqual(request(goalOnly));
+
+    const full = {
+      kind: "draft-tasks",
+      goal: "Break the hosting rollout into tasks",
+      planPath: "docs/hosting-decision.md",
+      providerId: "claude-code",
+      model: "claude-sonnet-4",
+      reasoningLevel: "high",
+      serviceTier: "fast",
+    };
+    expect(factoryActionRequestSchema.parse(request(full))).toEqual(request(full));
+    // serviceTier rides alone; only the provider/model/reasoning triple is all-or-none.
+    expect(factoryActionRequestSchema.parse(request({ kind: "draft-tasks", goal: "g", serviceTier: "fast" })))
+      .toMatchObject({ action: { kind: "draft-tasks", serviceTier: "fast" } });
+
+    for (const action of [
+      { kind: "draft-tasks" },
+      { kind: "draft-tasks", goal: "" },
+      { kind: "draft-tasks", goal: "   " },
+      { kind: "draft-tasks", goal: "g", providerId: "codex" },
+      { kind: "draft-tasks", goal: "g", providerId: "codex", model: "gpt-5" },
+      { kind: "draft-tasks", goal: "g", model: "gpt-5", reasoningLevel: "high" },
+      { kind: "draft-tasks", goal: "g", extra: true },
+      { kind: "draft-tasks", goal: "g", providerId: "Not A Provider", model: "gpt-5", reasoningLevel: "high" },
+    ]) {
+      expect(() => factoryActionRequestSchema.parse(request(action))).toThrow();
+    }
+  });
+
   it("carries the spawned thread id on accepted recommendation outcomes", () => {
     const outcome = {
       status: "accepted",
@@ -428,6 +554,23 @@ describe("Phase 0 wire contracts", () => {
       threadId: "thr_approval",
     };
     expect(actionOutcomeSchema.parse(approvalOutcome)).toEqual(approvalOutcome);
+
+    const draftOutcome = {
+      status: "accepted",
+      message: "Started a queue-drafting chat.",
+      revision: repositoryRevision,
+      runId: null,
+      leaseId: null,
+      queueItemId: null,
+      action: "draft-tasks",
+      questionId: null,
+      interactionId: null,
+      threadId: "thr_draft",
+    };
+    expect(actionOutcomeSchema.parse(draftOutcome)).toEqual(draftOutcome);
+    const draftMissingThread = { ...draftOutcome };
+    delete (draftMissingThread as Record<string, unknown>).threadId;
+    expect(() => actionOutcomeSchema.parse(draftMissingThread)).toThrow();
   });
 
   it("binds idempotency repository and action segments to the request", () => {

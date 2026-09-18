@@ -1,5 +1,6 @@
-import type { HostPreflight, ProviderId, ProviderStatus, ProviderPreference, RepositoryKey } from "../contracts.js";
+import type { HostPreflight, ProviderId, ProviderModelDefaults, ProviderStatus, ProviderPreference, RepositoryKey } from "../contracts.js";
 import { errorMessage } from "../errors.js";
+import { hasFullPermission } from "../provider-status.js";
 import type { DispatcherState } from "../storage/index.js";
 import type { DispatchContext } from "./types.js";
 
@@ -29,29 +30,45 @@ export interface ProviderSelection {
  * configured model, is not durably limited, and supports full permissions
  * when the host reports permission modes.
  */
+export function providerUsable(provider: ProviderStatus, state: DispatcherState, nowS: number): boolean {
+  const limitedUntil = state.limits[provider.providerId] ?? 0;
+  return provider.availability === "available"
+    && provider.model !== "unavailable"
+    && limitedUntil <= nowS
+    && hasFullPermission(provider);
+}
+
 export function selectProvider(
   providers: readonly ProviderStatus[],
   state: DispatcherState,
   preference: ProviderPreference | undefined,
   nightKey: string,
   nowS: number,
+  modelDefaults?: ProviderModelDefaults,
+  rotation?: readonly ProviderId[],
 ): ProviderSelection | null {
-  const isUsable = (provider: ProviderStatus): boolean => {
-    const limitedUntil = state.limits[provider.providerId] ?? 0;
-    return provider.availability === "available"
-      && provider.model !== "unavailable"
-      && limitedUntil <= nowS
-      && (provider.permissionModes === undefined || provider.permissionModes.includes("full"));
-  };
-  const usable = providers.filter(isUsable);
+  const usable = providers.filter((provider) => providerUsable(provider, state, nowS));
   if (usable.length === 0) return null;
 
-  const selection = (picked: ProviderStatus, reason: string): ProviderSelection => ({
-    providerId: picked.providerId,
-    model: picked.model,
-    reasoningLevel: picked.reasoningLevel,
-    reason,
-  });
+  // Configured defaults apply only after the usability check: a stored model
+  // can never resurrect a provider the host reports unusable.
+  const selection = (picked: ProviderStatus, reason: string): ProviderSelection => {
+    const configured = modelDefaults?.[picked.providerId];
+    if (configured === undefined) {
+      return {
+        providerId: picked.providerId,
+        model: picked.model,
+        reasoningLevel: picked.reasoningLevel,
+        reason,
+      };
+    }
+    return {
+      providerId: picked.providerId,
+      model: configured.model,
+      reasoningLevel: configured.reasoningLevel,
+      reason: `${reason} + configured default`,
+    };
+  };
 
   if (preference !== undefined && preference !== "alternate") {
     const picked = usable.find((provider) => provider.providerId === preference) ?? usable[0]!;
@@ -61,14 +78,48 @@ export function selectProvider(
   }
 
   const lastStart = state.lastStartProvider;
+
+  // A configured list is the rotation universe: ids the catalog no longer
+  // reports hold their slot but can never be picked. When lastStart is not in
+  // the list, indexOf yields -1 and the scan starts at the head.
+  if (rotation !== undefined && rotation.length > 0) {
+    const members = rotation.map((id) => providers.find((provider) => provider.providerId === id));
+    const lastIndex = rotation.indexOf(lastStart);
+    for (let offset = 1; offset <= rotation.length; offset += 1) {
+      const picked = members[(lastIndex + offset) % rotation.length];
+      if (picked !== undefined && providerUsable(picked, state, nowS)) {
+        return selection(picked, `rotation after ${lastStart}`);
+      }
+    }
+    // Every member is unusable: same fallback contract as a pinned miss.
+    const fallback = usable.find((provider) => !rotation.includes(provider.providerId));
+    if (fallback !== undefined) return selection(fallback, "rotation exhausted, fallback");
+  }
+
   const lastIndex = providers.findIndex((provider) => provider.providerId === lastStart);
   if (lastIndex >= 0) {
     for (let offset = 1; offset <= providers.length; offset += 1) {
       const picked = providers[(lastIndex + offset) % providers.length]!;
-      if (isUsable(picked)) return selection(picked, `alternate after ${lastStart}`);
+      if (providerUsable(picked, state, nowS)) return selection(picked, `alternate after ${lastStart}`);
     }
   }
 
   const nightDay = Number(nightKey.slice(-2));
   return selection(usable[nightDay % usable.length]!, `alternate lead, night ${nightKey}`);
+}
+
+/**
+ * A manual run-now may pin the execution triple explicitly. The pick faces
+ * the same usability gate as rotation, but a rejected provider errors out
+ * instead of silently substituting another.
+ */
+export function selectExplicitProvider(
+  providers: readonly ProviderStatus[],
+  state: DispatcherState,
+  override: { providerId: ProviderId; model: string; reasoningLevel: ProviderStatus["reasoningLevel"] },
+  nowS: number,
+): ProviderSelection | null {
+  const picked = providers.find((provider) => provider.providerId === override.providerId);
+  if (picked === undefined || !providerUsable(picked, state, nowS)) return null;
+  return { providerId: picked.providerId, model: override.model, reasoningLevel: override.reasoningLevel, reason: "manual selection" };
 }

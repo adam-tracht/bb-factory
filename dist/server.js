@@ -19704,6 +19704,12 @@ var reasoningLevelSchema = external_exports.enum([
   "ultra",
   "ultracode"
 ]);
+var providerModelDefaultSchema = external_exports.object({
+  model: nonEmptyString,
+  reasoningLevel: reasoningLevelSchema
+}).strict();
+var providerModelDefaultsSchema = external_exports.record(providerIdSchema, providerModelDefaultSchema);
+var providerRotationSchema = external_exports.array(providerIdSchema).min(2).max(5).refine((ids) => new Set(ids).size === ids.length, "provider ids must be unique");
 var repositoryRevisionSchema = external_exports.object({
   gitCommit: external_exports.string().regex(/^[0-9a-f]{7,64}$/).nullable(),
   protocolDigest: sha256,
@@ -19775,19 +19781,24 @@ var repositoryRegistryResolutionSchema = external_exports.discriminatedUnion("st
     selectedRepositoryKey: external_exports.null()
   }).strict()
 ]);
-var repositoryRegistrySettingValueSchema = external_exports.preprocess(
-  (value) => {
-    if (typeof value !== "string") {
-      return value;
-    }
-    try {
-      return JSON.parse(value);
-    } catch {
-      return value;
-    }
-  },
-  repositoryRegistrySchema
-);
+function jsonSettingValueSchema(inner) {
+  return external_exports.preprocess(
+    (value) => {
+      if (typeof value !== "string") {
+        return value;
+      }
+      try {
+        return JSON.parse(value);
+      } catch {
+        return value;
+      }
+    },
+    inner
+  );
+}
+var repositoryRegistrySettingValueSchema = jsonSettingValueSchema(repositoryRegistrySchema);
+var providerModelDefaultsSettingValueSchema = jsonSettingValueSchema(providerModelDefaultsSchema);
+var providerRotationSettingValueSchema = jsonSettingValueSchema(providerRotationSchema);
 var scheduleSettingsSchema = external_exports.object({
   cron: nonEmptyString,
   timeZone: nonEmptyString.default("server-local"),
@@ -19807,6 +19818,8 @@ var factorySettingsSchema = external_exports.object({
   nightWindowEndHour: external_exports.number().int().min(0).max(23).default(6),
   runtimeCapSeconds: external_exports.number().int().positive().default(10800),
   providerPreference: providerPreferenceSchema.optional(),
+  providerModelDefaults: providerModelDefaultsSettingValueSchema.optional(),
+  providerRotation: providerRotationSettingValueSchema.optional(),
   minimumStartGapSeconds: external_exports.number().int().min(3600).default(3600),
   concurrencyLimit: external_exports.number().int().positive().default(1),
   dispatchMode: external_exports.enum(["enabled", "paused"]).default("paused")
@@ -20118,6 +20131,7 @@ var actionKindSchema = external_exports.enum([
   "approve-queue",
   "recommend-question",
   "recommend-approval",
+  "draft-tasks",
   "retry",
   "stop",
   "integration-report",
@@ -20207,13 +20221,48 @@ var recommendApprovalActionSchema = external_exports.object({
   reasoningLevel: reasoningLevelSchema,
   serviceTier: external_exports.enum(["default", "fast"]).optional()
 }).strict();
+var draftTasksActionSchema = external_exports.object({
+  kind: external_exports.literal("draft-tasks"),
+  goal: nonEmptyString,
+  planPath: nonEmptyString.optional(),
+  providerId: providerIdSchema.optional(),
+  model: nonEmptyString.optional(),
+  reasoningLevel: reasoningLevelSchema.optional(),
+  serviceTier: external_exports.enum(["default", "fast"]).optional()
+}).strict().superRefine((action, context) => {
+  const triple = [action.providerId, action.model, action.reasoningLevel];
+  if (triple.some((value) => value !== void 0) && triple.some((value) => value === void 0)) {
+    context.addIssue({
+      code: "custom",
+      path: ["providerId"],
+      message: "providerId, model, and reasoningLevel must be provided together"
+    });
+  }
+});
+var runNowActionSchema = external_exports.object({
+  kind: external_exports.literal("run-now"),
+  providerId: providerIdSchema.optional(),
+  model: nonEmptyString.optional(),
+  reasoningLevel: reasoningLevelSchema.optional(),
+  serviceTier: external_exports.enum(["default", "fast"]).optional()
+}).strict().superRefine((action, context) => {
+  const triple = [action.providerId, action.model, action.reasoningLevel];
+  if (triple.some((value) => value !== void 0) && triple.some((value) => value === void 0)) {
+    context.addIssue({
+      code: "custom",
+      path: ["providerId"],
+      message: "providerId, model, and reasoningLevel must be provided together"
+    });
+  }
+});
 var bbInteractionActionSchema = external_exports.union([
-  external_exports.object({ kind: external_exports.literal("run-now") }).strict(),
+  runNowActionSchema,
   external_exports.object({ kind: external_exports.literal("pause") }).strict(),
   external_exports.object({ kind: external_exports.literal("resume") }).strict(),
   bbInteractionAnswerActionSchema,
   recommendQuestionActionSchema,
   recommendApprovalActionSchema,
+  draftTasksActionSchema,
   external_exports.object({ kind: external_exports.literal("retry"), attemptId: nonEmptyString }).strict(),
   external_exports.object({ kind: external_exports.literal("stop") }).strict()
 ]);
@@ -20352,6 +20401,13 @@ var recommendApprovalOutcomeSchema = external_exports.object({
   interactionId: external_exports.null().optional(),
   threadId: nonEmptyString
 }).strict();
+var draftTasksOutcomeSchema = external_exports.object({
+  ...actionOutcomeFields,
+  action: external_exports.literal("draft-tasks"),
+  questionId: external_exports.null().optional(),
+  interactionId: external_exports.null().optional(),
+  threadId: nonEmptyString
+}).strict();
 var scaffoldProtocolOutcomeSchema = external_exports.object({
   ...actionOutcomeFields,
   action: external_exports.literal("scaffold-protocol"),
@@ -20394,6 +20450,7 @@ var actionOutcomeSchema = external_exports.union([
   answerQuestionOutcomeSchema,
   recommendQuestionOutcomeSchema,
   recommendApprovalOutcomeSchema,
+  draftTasksOutcomeSchema,
   scaffoldProtocolOutcomeSchema,
   provisionCheckoutOutcomeSchema,
   nonAnswerActionOutcomeSchema
@@ -20569,6 +20626,8 @@ var factorySettingsPatchSchema = external_exports.object({
   nightWindowEndHour: external_exports.number().int().min(0).max(23).optional(),
   runtimeCapSeconds: external_exports.number().int().positive().optional(),
   providerPreference: providerPreferenceSchema.nullable().optional(),
+  providerModelDefaults: providerModelDefaultsSchema.nullable().optional(),
+  providerRotation: providerRotationSchema.nullable().optional(),
   minimumStartGapSeconds: external_exports.number().int().min(3600).optional(),
   concurrencyLimit: external_exports.number().int().positive().optional()
 }).strict().refine((patch) => Object.keys(patch).length > 0, "at least one settings field is required");
@@ -21307,6 +21366,7 @@ var PROTOCOL_PATHS = {
   foreman: "plans/factory/foreman.md",
   repo: "plans/factory/repo.md",
   queue: "plans/factory/queue.md",
+  done: "plans/factory/done.md",
   questions: "plans/factory/questions.md",
   current: "plans/factory/current.md",
   dashboard: "plans/README.md",
@@ -21611,7 +21671,33 @@ var OPERATIONAL_STORAGE_MIGRATIONS = [
   )`,
   `INSERT INTO pending_action_intents_v5 SELECT * FROM pending_action_intents`,
   `DROP TABLE pending_action_intents`,
-  `ALTER TABLE pending_action_intents_v5 RENAME TO pending_action_intents`
+  `ALTER TABLE pending_action_intents_v5 RENAME TO pending_action_intents`,
+  // SQLite cannot alter a CHECK constraint, so widening action_kind for
+  // draft-tasks rebuilds the table again.
+  `CREATE TABLE pending_action_intents_v6 (
+    idempotency_key TEXT PRIMARY KEY,
+    repository_key TEXT NOT NULL,
+    action_kind TEXT NOT NULL CHECK (action_kind IN ('run-now', 'pause', 'resume', 'answer-question', 'approve-queue', 'recommend-question', 'recommend-approval', 'draft-tasks', 'retry', 'stop', 'scaffold-protocol', 'provision-checkout')),
+    request_fingerprint TEXT NOT NULL,
+    request_json TEXT NOT NULL,
+    expected_revision_json TEXT NOT NULL,
+    target_json TEXT NOT NULL,
+    file_change_json TEXT,
+    entry_point TEXT NOT NULL CHECK (entry_point IN ('action-executor', 'native-ui-initial-ready')),
+    one_shot INTEGER NOT NULL CHECK (one_shot IN (0, 1)),
+    status TEXT NOT NULL CHECK (status IN ('pending', 'resolving', 'completed', 'reconciliation-required')),
+    submitted_at TEXT NOT NULL,
+    expires_at TEXT,
+    last_attempt_at TEXT,
+    completed_at TEXT,
+    result_json TEXT,
+    observed_status TEXT CHECK (observed_status IS NULL OR observed_status IN ('pending', 'resolving', 'resolved', 'interrupted', 'written', 'conflict', 'verified')),
+    observed_resolution_json TEXT,
+    last_error TEXT
+  )`,
+  `INSERT INTO pending_action_intents_v6 SELECT * FROM pending_action_intents`,
+  `DROP TABLE pending_action_intents`,
+  `ALTER TABLE pending_action_intents_v6 RENAME TO pending_action_intents`
 ];
 var IdempotencyConflictError = class extends Error {
   code = "idempotency-conflict";
@@ -23209,6 +23295,7 @@ function repositoryLabel(repositoryKey2, displayName) {
 }
 
 // src/services/settings-mutations.ts
+var JSON_PATCH_KEYS = /* @__PURE__ */ new Set(["providerModelDefaults", "providerRotation"]);
 function failure2(category, message, fieldErrors) {
   return { ok: false, error: { category, message, ...fieldErrors ? { fieldErrors } : {} } };
 }
@@ -23261,7 +23348,18 @@ function createSettingsMutationHandlers(options) {
         return invalidSettings(validated.error);
       }
       try {
-        await applySettings(input2.patch);
+        const persisted = {};
+        const validatedValues = validated.data;
+        for (const [key, value] of Object.entries(input2.patch)) {
+          if (value === void 0) continue;
+          if (value === null) {
+            persisted[key] = null;
+            continue;
+          }
+          const validatedValue = validatedValues[key];
+          persisted[key] = JSON_PATCH_KEYS.has(key) || typeof validatedValue === "object" ? JSON.stringify(validatedValue) : validatedValue;
+        }
+        await applySettings(persisted);
       } catch (error62) {
         return failure2("internal", `Could not persist the settings: ${errorMessage(error62)}`);
       }
@@ -23560,22 +23658,27 @@ function createFactoryRpcHandlers(getComposition, publish, options = {}) {
 // src/settings.ts
 var repositoryKey = external_exports.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/);
 var absolutePath2 = external_exports.string().regex(/^(?:\/|[A-Za-z]:[\\/])/);
-var repositoryRegistrySettingSchema = external_exports.string().superRefine((value, context) => {
-  let parsed;
-  try {
-    parsed = JSON.parse(value);
-  } catch {
-    context.addIssue({ code: "custom", message: "must be valid repository registry JSON" });
-    return;
-  }
-  const result = repositoryRegistrySchema.safeParse(parsed);
-  if (!result.success) {
-    context.addIssue({
-      code: "custom",
-      message: `invalid repository registry: ${result.error.issues[0]?.message ?? "schema mismatch"}`
-    });
-  }
-});
+function jsonSettingSchema(inner, label) {
+  return external_exports.string().superRefine((value, context) => {
+    let parsed;
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      context.addIssue({ code: "custom", message: `must be valid ${label} JSON` });
+      return;
+    }
+    const result = inner.safeParse(parsed);
+    if (!result.success) {
+      context.addIssue({
+        code: "custom",
+        message: `invalid ${label}: ${result.error.issues[0]?.message ?? "schema mismatch"}`
+      });
+    }
+  });
+}
+var repositoryRegistrySettingSchema = jsonSettingSchema(repositoryRegistrySchema, "repository registry");
+var providerModelDefaultsSettingSchema = jsonSettingSchema(providerModelDefaultsSchema, "provider model defaults");
+var providerRotationSettingSchema = jsonSettingSchema(providerRotationSchema, "provider rotation");
 var factorySettingDescriptors = {
   repositoryKey: {
     type: "string",
@@ -23647,6 +23750,20 @@ var factorySettingDescriptors = {
     label: "Provider preference",
     description: "Provider id to lead dispatch (any id the host reports), or alternate to rotate.",
     experimental_schema: providerPreferenceSchema
+  },
+  providerModelDefaults: {
+    type: "string",
+    label: "Provider model defaults",
+    description: "Validated JSON map of provider id to the model and thinking level dispatch uses instead of the host-reported default. The Factory Settings tab edits this per provider.",
+    experimental_multiline: true,
+    experimental_schema: providerModelDefaultsSettingSchema
+  },
+  providerRotation: {
+    type: "string",
+    label: "Provider rotation",
+    description: "Validated JSON list of 2 to 5 provider ids the alternate preference rotates through in order. The Factory Settings tab edits this list.",
+    experimental_multiline: true,
+    experimental_schema: providerRotationSettingSchema
   },
   minimumStartGapSeconds: {
     type: "number",
@@ -24820,15 +24937,24 @@ var RepositoryProtocolReader = class {
     const normalizedConfiguration = this.validateConfiguration(configuration);
     const foreman = await this.read(normalizedConfiguration, PROTOCOL_PATHS.foreman);
     const repo = await this.read(normalizedConfiguration, PROTOCOL_PATHS.repo);
-    const [queue, questions, current, dashboard] = await Promise.all([
+    const [queue, done, questions, current, dashboard] = await Promise.all([
       this.read(normalizedConfiguration, PROTOCOL_PATHS.queue),
+      this.readOptionalDone(normalizedConfiguration),
       this.read(normalizedConfiguration, PROTOCOL_PATHS.questions),
       this.read(normalizedConfiguration, PROTOCOL_PATHS.current),
       this.read(normalizedConfiguration, PROTOCOL_PATHS.dashboard)
     ]);
     const repositoryPolicy = parseRepositoryPolicy(repo.content, PROTOCOL_PATHS.repo);
     const parsedQuestions = parseQuestions(questions.content, PROTOCOL_PATHS.questions);
-    const parsedQueue = parseQueue(queue.content, PROTOCOL_PATHS.queue);
+    const queueEntries = parseQueue(queue.content, PROTOCOL_PATHS.queue);
+    const doneEntries = done ? parseQueue(done.content, PROTOCOL_PATHS.done) : [];
+    const queueIds = new Set(queueEntries.map((entry) => entry.id));
+    for (const entry of doneEntries) {
+      if (queueIds.has(entry.id)) {
+        throw new ProtocolError("malformed-protocol", `Duplicate queue item '${entry.id}' across queue.md and done.md`);
+      }
+    }
+    const parsedQueue = [...queueEntries, ...doneEntries];
     const questionsForSnapshot = parsedQuestions.map(asQuestion);
     const queueForSnapshot = await Promise.all(
       parsedQueue.map(
@@ -24845,7 +24971,7 @@ var RepositoryProtocolReader = class {
     const currentState = parseCurrentState(current.content, PROTOCOL_PATHS.current);
     const runRecords = await this.readRunRecords(normalizedConfiguration);
     const lock = await this.readOptionalLock(normalizedConfiguration);
-    const allFiles = [foreman, repo, queue, questions, current, dashboard, ...runRecords.map((record2) => ({
+    const allFiles = [foreman, repo, queue, ...done ? [done] : [], questions, current, dashboard, ...runRecords.map((record2) => ({
       relativePath: record2.relativePath,
       content: record2.content,
       sha256: record2.sha256
@@ -24963,6 +25089,16 @@ var RepositoryProtocolReader = class {
       records.push(parseRunRecord(file2.content, relativePath, file2.sha256));
     }
     return records;
+  }
+  async readOptionalDone(configuration) {
+    try {
+      return await this.read(configuration, PROTOCOL_PATHS.done);
+    } catch (error62) {
+      if (error62 instanceof ProtocolError && error62.code === "file-not-found") {
+        return null;
+      }
+      throw error62;
+    }
   }
   async readOptionalLock(configuration) {
     try {
@@ -25416,6 +25552,21 @@ function approvalPrompt(configuration, entry) {
     "Reply with (1) the recommended approved: line text, (2) the reasoning, and (3) what stays excluded. Advisory only: do not edit files; the operator records the approval."
   ].join("\n");
 }
+function draftTasksPrompt(configuration, goal, planPath) {
+  const lines = [
+    `The factory operator asked for drafted queue entries in repository "${configuration.repositoryKey}".`,
+    "",
+    `Goal: ${goal}`
+  ];
+  if (planPath !== void 0) lines.push("", `Plan file: ${planPath} (read it for context).`);
+  lines.push(
+    "",
+    `The repository checkout is at ${configuration.checkoutPath} on the "factory" branch.`,
+    "",
+    "Read plans/factory/repo.md and the entry-format header in plans/factory/queue.md first. Append new queue entries only, each with `status: draft` (never any other status), a priority, depends_on, risk, plan path, `approved: none`, observable acceptance criteria, exact validate commands, and notes where useful. Follow the repository's dashboard-ID convention (plans/README.md) when choosing entry ids. Never edit, reorder, or delete existing entries; the human-only initial `ready` gate is unchanged: you draft, the human approves. Commit the queue.md change on the factory branch (`git add plans/factory/queue.md && git commit`), like the foreman does. Reply with the ids you appended and anything the operator should review."
+  );
+  return lines.join("\n");
+}
 function createBbInteractionActionExecutor(options) {
   const { threads, store, interactionReader, protocolReader, repositoryLookup: repositoryLookup2, dispatch, setDispatchMode } = options;
   async function findPending(repositoryKey2, interactionId) {
@@ -25707,6 +25858,57 @@ function createBbInteractionActionExecutor(options) {
       }, request.expectedRevision ?? null));
     });
   }
+  async function draftQueueTasks(request) {
+    const action = request.action;
+    const entry = repositoryLookup2(request.repositoryKey);
+    if (!entry) {
+      return actionError("not-found", `Repository '${request.repositoryKey}' is not configured.`, request.idempotencyKey);
+    }
+    const target = { kind: "repository" };
+    return guarded(request, target, async (record2) => {
+      let spawned;
+      try {
+        spawned = await threads.spawn({
+          projectId: entry.projectId,
+          environment: spawnEnvironment(entry),
+          prompt: draftTasksPrompt(entry.configuration, action.goal, action.planPath),
+          // The schema guarantees the triple arrives all-or-none; the keys
+          // stay absent entirely when no pin is set so the project's stored
+          // execution defaults apply.
+          ...action.providerId !== void 0 && action.model !== void 0 && action.reasoningLevel !== void 0 ? {
+            providerId: action.providerId,
+            model: action.model,
+            reasoningLevel: action.reasoningLevel,
+            ...action.serviceTier === void 0 ? {} : { serviceTier: action.serviceTier },
+            // Marks the picked values caller-explicit so the server does
+            // not re-derive the project's stored execution defaults over them.
+            executionInputSources: {
+              providerId: "explicit",
+              model: "explicit",
+              reasoningLevel: "explicit",
+              ...action.serviceTier === void 0 ? {} : { serviceTier: "explicit" }
+            }
+          } : {},
+          permissionMode: "auto",
+          title: `factory draft: ${repositoryLabel(entry.configuration.repositoryKey, entry.displayName)}`
+        });
+      } catch (error62) {
+        return reconcileIntent(store, record2, `Draft-tasks thread spawn failed ambiguously: ${errorMessage(error62)}. The thread may exist.`);
+      }
+      return completeIntent(store, record2, actionSuccess({
+        status: "accepted",
+        message: action.providerId === void 0 ? "Started a queue-drafting chat on the project's default provider and model." : `Started a queue-drafting chat on ${action.providerId} (${action.model}).`,
+        revision: request.expectedRevision ?? null,
+        runId: null,
+        leaseId: null,
+        queueItemId: null,
+        action: "draft-tasks",
+        questionId: null,
+        interactionId: null,
+        threadId: spawned.id
+      }, request.expectedRevision ?? null));
+    });
+  }
   async function execute(request) {
     const parsed = bbInteractionActionRequestSchema.safeParse(request);
     if (!parsed.success) {
@@ -25737,6 +25939,13 @@ function createBbInteractionActionExecutor(options) {
         return actionError("internal", `Could not spawn the approval-drafting thread: ${errorMessage(error62)}`, valid.idempotencyKey);
       }
     }
+    if (action.kind === "draft-tasks") {
+      try {
+        return await draftQueueTasks(valid);
+      } catch (error62) {
+        return actionError("internal", `Could not spawn the queue-drafting thread: ${errorMessage(error62)}`, valid.idempotencyKey);
+      }
+    }
     const target = action.kind === "retry" ? { kind: "attempt", attemptId: action.attemptId } : { kind: "repository" };
     return guarded(valid, target, async (record2) => {
       let result;
@@ -25746,7 +25955,10 @@ function createBbInteractionActionExecutor(options) {
             repositoryKey: valid.repositoryKey,
             trigger: "manual",
             idempotencyKey: valid.idempotencyKey,
-            expectedRevision: valid.expectedRevision
+            expectedRevision: valid.expectedRevision,
+            // The schema guarantees the triple arrives all-or-none.
+            ...action.providerId !== void 0 && action.model !== void 0 && action.reasoningLevel !== void 0 ? { providerOverride: { providerId: action.providerId, model: action.model, reasoningLevel: action.reasoningLevel } } : {},
+            ...action.serviceTier === void 0 ? {} : { serviceTier: action.serviceTier }
           });
           break;
         case "pause":
@@ -26864,6 +27076,11 @@ async function retryAttempt(ctx, input2) {
 // src/dispatch/start.ts
 import { randomUUID as randomUUID3 } from "node:crypto";
 
+// src/provider-status.ts
+function hasFullPermission(provider) {
+  return provider.permissionModes === void 0 || provider.permissionModes.includes("full");
+}
+
 // src/dispatch/preflight.ts
 async function hostPreflight(ctx, repositoryKey2) {
   try {
@@ -26876,33 +27093,61 @@ async function hostPreflight(ctx, repositoryKey2) {
     };
   }
 }
-function selectProvider(providers, state, preference, nightKey, nowS) {
-  const isUsable = (provider) => {
-    const limitedUntil = state.limits[provider.providerId] ?? 0;
-    return provider.availability === "available" && provider.model !== "unavailable" && limitedUntil <= nowS && (provider.permissionModes === void 0 || provider.permissionModes.includes("full"));
-  };
-  const usable = providers.filter(isUsable);
+function providerUsable(provider, state, nowS) {
+  const limitedUntil = state.limits[provider.providerId] ?? 0;
+  return provider.availability === "available" && provider.model !== "unavailable" && limitedUntil <= nowS && hasFullPermission(provider);
+}
+function selectProvider(providers, state, preference, nightKey, nowS, modelDefaults, rotation) {
+  const usable = providers.filter((provider) => providerUsable(provider, state, nowS));
   if (usable.length === 0) return null;
-  const selection = (picked, reason) => ({
-    providerId: picked.providerId,
-    model: picked.model,
-    reasoningLevel: picked.reasoningLevel,
-    reason
-  });
+  const selection = (picked, reason) => {
+    const configured = modelDefaults?.[picked.providerId];
+    if (configured === void 0) {
+      return {
+        providerId: picked.providerId,
+        model: picked.model,
+        reasoningLevel: picked.reasoningLevel,
+        reason
+      };
+    }
+    return {
+      providerId: picked.providerId,
+      model: configured.model,
+      reasoningLevel: configured.reasoningLevel,
+      reason: `${reason} + configured default`
+    };
+  };
   if (preference !== void 0 && preference !== "alternate") {
     const picked = usable.find((provider) => provider.providerId === preference) ?? usable[0];
     return selection(picked, picked.providerId === preference ? `providerPreference=${preference}` : `fallback, ${preference} unusable`);
   }
   const lastStart = state.lastStartProvider;
+  if (rotation !== void 0 && rotation.length > 0) {
+    const members2 = rotation.map((id) => providers.find((provider) => provider.providerId === id));
+    const lastIndex2 = rotation.indexOf(lastStart);
+    for (let offset = 1; offset <= rotation.length; offset += 1) {
+      const picked = members2[(lastIndex2 + offset) % rotation.length];
+      if (picked !== void 0 && providerUsable(picked, state, nowS)) {
+        return selection(picked, `rotation after ${lastStart}`);
+      }
+    }
+    const fallback = usable.find((provider) => !rotation.includes(provider.providerId));
+    if (fallback !== void 0) return selection(fallback, "rotation exhausted, fallback");
+  }
   const lastIndex = providers.findIndex((provider) => provider.providerId === lastStart);
   if (lastIndex >= 0) {
     for (let offset = 1; offset <= providers.length; offset += 1) {
       const picked = providers[(lastIndex + offset) % providers.length];
-      if (isUsable(picked)) return selection(picked, `alternate after ${lastStart}`);
+      if (providerUsable(picked, state, nowS)) return selection(picked, `alternate after ${lastStart}`);
     }
   }
   const nightDay = Number(nightKey.slice(-2));
   return selection(usable[nightDay % usable.length], `alternate lead, night ${nightKey}`);
+}
+function selectExplicitProvider(providers, state, override, nowS) {
+  const picked = providers.find((provider) => provider.providerId === override.providerId);
+  if (picked === void 0 || !providerUsable(picked, state, nowS)) return null;
+  return { providerId: picked.providerId, model: override.model, reasoningLevel: override.reasoningLevel, reason: "manual selection" };
 }
 
 // src/dispatch/start.ts
@@ -26995,11 +27240,12 @@ async function startRun(ctx, input2) {
   }
   const nightKey = nightKeyAt(ctx.now(), ctx.settings.nightWindowEndHour);
   const dispatcherState = nightState(ctx.store.getDispatcherState(input2.repositoryKey), nightKey);
-  const provider = selectProvider(providers, dispatcherState, ctx.settings.providerPreference, nightKey, dispatcherNowSeconds(ctx.now));
+  const nowS = dispatcherNowSeconds(ctx.now);
+  const provider = input2.providerOverride === void 0 ? selectProvider(providers, dispatcherState, ctx.settings.providerPreference, nightKey, nowS, ctx.settings.providerModelDefaults, ctx.settings.providerRotation) : selectExplicitProvider(providers, dispatcherState, input2.providerOverride, nowS);
   if (!provider) {
     return noSpawn(actionError(
       "provider-unavailable",
-      "No usable provider is available right now. Reported providers may be unavailable, limited, missing a model, or lack full permissions."
+      input2.providerOverride === void 0 ? "No usable provider is available right now. Reported providers may be unavailable, limited, missing a model, or lack full permissions." : `Provider '${input2.providerOverride.providerId}' is not usable right now. It may be unavailable, limited, missing a model, or lack full permissions.`
     ));
   }
   const eligible = snapshot.queue.filter((item) => item.eligible);
@@ -27081,6 +27327,13 @@ async function startRun(ctx, input2) {
   }
   let threadId;
   let environmentId;
+  const executionInputSources = {};
+  if (input2.providerOverride !== void 0) {
+    executionInputSources.providerId = "explicit";
+    executionInputSources.model = "explicit";
+    executionInputSources.reasoningLevel = "explicit";
+  }
+  if (input2.serviceTier !== void 0) executionInputSources.serviceTier = "explicit";
   try {
     const spawned = await ctx.sdk.threads.spawn({
       projectId: entry.projectId,
@@ -27089,8 +27342,10 @@ async function startRun(ctx, input2) {
       providerId: provider.providerId,
       model: provider.model,
       reasoningLevel: provider.reasoningLevel,
+      ...input2.serviceTier === void 0 ? {} : { serviceTier: input2.serviceTier },
       permissionMode: "full",
-      title: runTitle(input2.repositoryKey, entry.displayName, provider.providerId)
+      title: runTitle(input2.repositoryKey, entry.displayName, provider.providerId),
+      ...Object.keys(executionInputSources).length === 0 ? {} : { executionInputSources }
     });
     threadId = spawned.id;
     environmentId = entry.environmentId ?? spawned.environmentId;
@@ -27140,6 +27395,7 @@ async function startRun(ctx, input2) {
     transaction.saveDispatcherState({
       ...nightState(state, nightKey),
       lastStartAt: dispatcherNowSeconds(ctx.now),
+      // An explicit manual pick still advances the cursor, so the next alternate step skips it.
       lastStartProvider: provider.providerId
     });
   });

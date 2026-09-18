@@ -4,7 +4,7 @@
     {
       "template": "foreman.md",
       "target": "plans/factory/foreman.md",
-      "sha256": "8c25808104b5f7b3a206cec2d2d7d9175816ecf24142a9bd64d53a6534d8afe7"
+      "sha256": "97104e336427ccffe66d27bc329d1fafa28694350da509345c284fa3b57ac57d"
     },
     {
       "template": "repo.md",
@@ -14,12 +14,17 @@
     {
       "template": "queue.md",
       "target": "plans/factory/queue.md",
-      "sha256": "0da3d08de388191185df68adc7b566d344154a7a4fc49b65ee3c30acc7d0372a"
+      "sha256": "8082034fc68fe44b934d0a8b3b8973117c10fb4b0f2e2a5b408d2e68ab4862d8"
+    },
+    {
+      "template": "done.md",
+      "target": "plans/factory/done.md",
+      "sha256": "b170be0a9af73519aba16de271b14237af0738428ef4e267b502f58bd6590cbb"
     },
     {
       "template": "questions.md",
       "target": "plans/factory/questions.md",
-      "sha256": "73f00297495eaf10862f0db21a6f6f4a37712e0a0305716ae72a022e12e01843"
+      "sha256": "9eb704d945b519741fed1536d4a7b5f0cb74c34f313c4b11445606b380010d2e"
     },
     {
       "template": "current.md",

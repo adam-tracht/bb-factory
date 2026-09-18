@@ -30,6 +30,11 @@ confirmation copy. `repositoryKey` remains the operational identity in routes,
 DOM ids, storage keys, action scopes, RPC inputs, callbacks, and technical
 details.
 
+The Work tab reads the union of `plans/factory/queue.md` and optional
+`plans/factory/done.md`, with queue entries first. Completed entries remain
+visible and satisfy `depends_on` references after moving to `done.md`. The
+foreman never reads `done.md`; existing status and attention rules still apply.
+
 ## Aggregate composition
 
 The "All" tabs are a pure view-layer union (`src/ui/views/aggregate.ts`):
@@ -79,6 +84,23 @@ Feedback and pending state are scoped per repository and section, so one
 repository's action result never paints on another's rows. Links to sections
 without an aggregate tab (overview detail, settings) hop to the row's own
 repository; work, questions, and runs links stay inside the aggregate.
+
+## Draft tasks
+
+The Work tab carries a **Draft tasks** control above the queue groups, and
+the add-repository wizard offers the same control as its final step once the
+protocol files exist on the `factory` checkout. Both take a free-text goal
+and an optional plan file path; the Work tab dialog also offers an Automatic
+provider default or an explicit pick through the shared provider picker,
+while the wizard drafts on the project's stored defaults. The control
+dispatches the `draft-tasks` action, which spawns a permission-`auto` thread
+on the repository's factory checkout (the recommend-* spawn pattern) that
+reads `plans/factory/repo.md` and the queue format header, appends entries
+with `status: draft` and observable acceptance criteria, and commits them on
+`factory`. It never writes any other status and never edits existing
+entries, so the human-only initial `ready` gate is unchanged: the Work tab
+surfaces the appended drafts in the collapsed Drafts group, where the
+existing Approve control marks one ready and records its `approved:` line.
 
 ## Shell chrome
 
