@@ -14,6 +14,8 @@ guards every write it makes to them, and keeps only operational metadata
 (run intents, ownership leases, idempotency results) in its own SQLite
 store. It never copies task state into a second database.
 
+![The Factory overview: needs attention, last run, dispatch schedule, and repository health](docs/screenshots/overview.png)
+
 ## What you can do with it
 
 - **Approve work.** The Work tab shows the queue and why each item can or
@@ -55,7 +57,7 @@ bb plugin install git:github.com/adam-tracht/bb-factory
 Pin a release tag:
 
 ```sh
-bb plugin install git:github.com/adam-tracht/bb-factory@v0.1.5
+bb plugin install git:github.com/adam-tracht/bb-factory@v0.1.7
 ```
 
 ## Quickstart
@@ -261,6 +263,12 @@ message through bb's retry path, bounded to three total attempts per run.
 - **Shell header**: repository switcher, dispatch status chip, running or
   idle badge, pause and resume, and a confirmed **Run now** that
   optionally pins provider, model, and reasoning level for that run.
+
+| Approve work | Answer questions |
+|---|---|
+| ![The Work tab: a blocked queue entry waiting on a human approval](docs/screenshots/work.png) | ![The Questions tab: an open question with its recommended answer and a reply box](docs/screenshots/questions.png) |
+| **Tune dispatch** | **Review every repo at once** |
+| ![The Settings tab: schedule, pause state, provider preference, and runtime limits](docs/screenshots/settings.png) | ![The All scope: needs attention, queue counts, and question counts across repositories](docs/screenshots/all.png) |
 
 ## Scheduling and dispatch policy
 
