@@ -5,14 +5,25 @@ repositories. You describe tasks in a Markdown queue inside the repo, an
 unattended foreman agent claims them on a `factory` branch, and the morning
 record shows what shipped, what failed, and what is waiting on your call.
 
-The plugin has two halves:
+The plugin is the window and the controls for that work:
 
-- **A control surface**: five tabs per repository (Overview, Work,
-  Questions, Runs, Settings), an aggregate "All" view across repositories,
-  a repositories landing page, and a guided add-repository wizard.
-- **A dispatch engine**: spawns foreman threads on a cron schedule or on
-  demand, tracks them through completion, enforces one active run per
-  repository, and reconciles anything that dies mid-run.
+- The **Work** tab shows the queue and why each item can or cannot run;
+  you approve items to `ready` there.
+- When a foreman hits a decision that belongs to you it lands in the
+  **Questions** tab. Answer it directly, or send it to an agent for a
+  recommendation first.
+- The **Runs** tab lists every dispatch with its thread, provider, and
+  outcome; **Overview** shows repository health, the schedule, and the
+  last run.
+- **Settings** edits the schedule, provider rotation, and pause state,
+  and the header pauses dispatch or starts a run immediately, optionally
+  pinned to a provider and model.
+- An **All** scope unions the tabs across every managed repository, so a
+  morning review is one screen.
+
+Underneath, a dispatch engine spawns the foreman threads on a cron
+schedule or on demand, enforces one active run per repository, and
+reconciles anything that dies mid-run.
 
 The repository is always the source of truth. The queue, questions, run
 records, and repo-specific rules are plain Markdown files committed inside
