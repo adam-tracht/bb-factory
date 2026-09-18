@@ -483,6 +483,45 @@ describe("Phase 0 wire contracts", () => {
     }
   });
 
+  it("accepts draft-tasks with a goal alone or a full provider pin, and rejects malformed variants", () => {
+    const request = (action: Record<string, unknown>) => ({
+      repositoryKey: "monorepo",
+      action,
+      idempotencyKey: "bbf:v1:monorepo:draft-tasks:323e4567-e89b-12d3-a456-426614174000",
+      expectedRevision: repositoryRevision,
+    });
+
+    const goalOnly = { kind: "draft-tasks", goal: "Break the hosting rollout into tasks" };
+    expect(factoryActionRequestSchema.parse(request(goalOnly))).toEqual(request(goalOnly));
+
+    const full = {
+      kind: "draft-tasks",
+      goal: "Break the hosting rollout into tasks",
+      planPath: "docs/hosting-decision.md",
+      providerId: "claude-code",
+      model: "claude-sonnet-4",
+      reasoningLevel: "high",
+      serviceTier: "fast",
+    };
+    expect(factoryActionRequestSchema.parse(request(full))).toEqual(request(full));
+    // serviceTier rides alone; only the provider/model/reasoning triple is all-or-none.
+    expect(factoryActionRequestSchema.parse(request({ kind: "draft-tasks", goal: "g", serviceTier: "fast" })))
+      .toMatchObject({ action: { kind: "draft-tasks", serviceTier: "fast" } });
+
+    for (const action of [
+      { kind: "draft-tasks" },
+      { kind: "draft-tasks", goal: "" },
+      { kind: "draft-tasks", goal: "   " },
+      { kind: "draft-tasks", goal: "g", providerId: "codex" },
+      { kind: "draft-tasks", goal: "g", providerId: "codex", model: "gpt-5" },
+      { kind: "draft-tasks", goal: "g", model: "gpt-5", reasoningLevel: "high" },
+      { kind: "draft-tasks", goal: "g", extra: true },
+      { kind: "draft-tasks", goal: "g", providerId: "Not A Provider", model: "gpt-5", reasoningLevel: "high" },
+    ]) {
+      expect(() => factoryActionRequestSchema.parse(request(action))).toThrow();
+    }
+  });
+
   it("carries the spawned thread id on accepted recommendation outcomes", () => {
     const outcome = {
       status: "accepted",
@@ -515,6 +554,23 @@ describe("Phase 0 wire contracts", () => {
       threadId: "thr_approval",
     };
     expect(actionOutcomeSchema.parse(approvalOutcome)).toEqual(approvalOutcome);
+
+    const draftOutcome = {
+      status: "accepted",
+      message: "Started a queue-drafting chat.",
+      revision: repositoryRevision,
+      runId: null,
+      leaseId: null,
+      queueItemId: null,
+      action: "draft-tasks",
+      questionId: null,
+      interactionId: null,
+      threadId: "thr_draft",
+    };
+    expect(actionOutcomeSchema.parse(draftOutcome)).toEqual(draftOutcome);
+    const draftMissingThread = { ...draftOutcome };
+    delete (draftMissingThread as Record<string, unknown>).threadId;
+    expect(() => actionOutcomeSchema.parse(draftMissingThread)).toThrow();
   });
 
   it("binds idempotency repository and action segments to the request", () => {

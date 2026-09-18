@@ -190,6 +190,26 @@ function approvalPrompt(configuration: RepositoryConfiguration, entry: ProtocolS
   ].join("\n");
 }
 
+function draftTasksPrompt(
+  configuration: RepositoryConfiguration,
+  goal: string,
+  planPath: string | undefined,
+): string {
+  const lines = [
+    `The factory operator asked for drafted queue entries in repository "${configuration.repositoryKey}".`,
+    "",
+    `Goal: ${goal}`,
+  ];
+  if (planPath !== undefined) lines.push("", `Plan file: ${planPath} (read it for context).`);
+  lines.push(
+    "",
+    `The repository checkout is at ${configuration.checkoutPath} on the "factory" branch.`,
+    "",
+    "Read plans/factory/repo.md and the entry-format header in plans/factory/queue.md first. Append new queue entries only, each with `status: draft` (never any other status), a priority, depends_on, risk, plan path, `approved: none`, observable acceptance criteria, exact validate commands, and notes where useful. Follow the repository's dashboard-ID convention (plans/README.md) when choosing entry ids. Never edit, reorder, or delete existing entries; the human-only initial `ready` gate is unchanged: you draft, the human approves. Commit the queue.md change on the factory branch (`git add plans/factory/queue.md && git commit`), like the foreman does. Reply with the ids you appended and anything the operator should review.",
+  );
+  return lines.join("\n");
+}
+
 export function createBbInteractionActionExecutor(options: BbInteractionActionExecutorOptions): BbInteractionActionExecutor {
   const { threads, store, interactionReader, protocolReader, repositoryLookup, dispatch, setDispatchMode } = options;
 
@@ -525,6 +545,64 @@ export function createBbInteractionActionExecutor(options: BbInteractionActionEx
     });
   }
 
+  /** Spawns an advisory thread that drafts `status: draft` queue entries. */
+  async function draftQueueTasks(request: BbInteractionActionRequest): Promise<FactoryActionResult> {
+    const action = request.action as Extract<BbInteractionActionRequest["action"], { kind: "draft-tasks" }>;
+    const entry = repositoryLookup(request.repositoryKey);
+    if (!entry) {
+      return actionError("not-found", `Repository '${request.repositoryKey}' is not configured.`, request.idempotencyKey);
+    }
+    const target: PendingActionIntentTarget = { kind: "repository" };
+    return guarded(request, target, async (record) => {
+      let spawned: { id: string };
+      try {
+        spawned = await threads.spawn({
+          projectId: entry.projectId,
+          environment: spawnEnvironment(entry),
+          prompt: draftTasksPrompt(entry.configuration, action.goal, action.planPath),
+          // The schema guarantees the triple arrives all-or-none; the keys
+          // stay absent entirely when no pin is set so the project's stored
+          // execution defaults apply.
+          ...(action.providerId !== undefined && action.model !== undefined && action.reasoningLevel !== undefined
+            ? {
+                providerId: action.providerId,
+                model: action.model,
+                reasoningLevel: action.reasoningLevel,
+                ...(action.serviceTier === undefined ? {} : { serviceTier: action.serviceTier }),
+                // Marks the picked values caller-explicit so the server does
+                // not re-derive the project's stored execution defaults over them.
+                executionInputSources: {
+                  providerId: "explicit" as const,
+                  model: "explicit" as const,
+                  reasoningLevel: "explicit" as const,
+                  ...(action.serviceTier === undefined ? {} : { serviceTier: "explicit" as const }),
+                },
+              }
+            : {}),
+          permissionMode: "auto",
+          title: `factory draft: ${repositoryLabel(entry.configuration.repositoryKey, entry.displayName)}`,
+        });
+      } catch (error) {
+        return reconcileIntent(store, record, `Draft-tasks thread spawn failed ambiguously: ${errorMessage(error)}. The thread may exist.`);
+      }
+
+      return completeIntent(store, record, actionSuccess({
+        status: "accepted",
+        message: action.providerId === undefined
+          ? "Started a queue-drafting chat on the project's default provider and model."
+          : `Started a queue-drafting chat on ${action.providerId} (${action.model}).`,
+        revision: request.expectedRevision ?? null,
+        runId: null,
+        leaseId: null,
+        queueItemId: null,
+        action: "draft-tasks",
+        questionId: null,
+        interactionId: null,
+        threadId: spawned.id,
+      }, request.expectedRevision ?? null));
+    });
+  }
+
   async function execute(request: BbInteractionActionRequest): Promise<FactoryActionResult> {
     const parsed = bbInteractionActionRequestSchema.safeParse(request);
     if (!parsed.success) {
@@ -557,6 +635,14 @@ export function createBbInteractionActionExecutor(options: BbInteractionActionEx
         return await recommendApproval(valid);
       } catch (error) {
         return actionError("internal", `Could not spawn the approval-drafting thread: ${errorMessage(error)}`, valid.idempotencyKey);
+      }
+    }
+
+    if (action.kind === "draft-tasks") {
+      try {
+        return await draftQueueTasks(valid);
+      } catch (error) {
+        return actionError("internal", `Could not spawn the queue-drafting thread: ${errorMessage(error)}`, valid.idempotencyKey);
       }
     }
 

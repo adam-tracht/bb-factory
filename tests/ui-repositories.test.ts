@@ -338,8 +338,11 @@ describe("AddRepositoryView", () => {
     expect(dialog.textContent).toContain("paused");
     fireEvent.click(within(dialog).getByRole("button", { name: "Register repository" }));
 
-    await waitFor(() => expect(onDone).toHaveBeenCalledWith("newrepo"));
+    expect(await screen.findByLabelText("Goal for drafted tasks")).toBeTruthy();
+    expect(onDone).not.toHaveBeenCalled();
     expect(calls).toEqual(["provision-checkout", "resolve", "register", "scaffold-protocol"]);
+    fireEvent.click(screen.getByRole("button", { name: "Finish" }));
+    await waitFor(() => expect(onDone).toHaveBeenCalledWith("newrepo"));
     expect(ctx.addRepository).toHaveBeenCalledWith(
       expect.objectContaining({ dispatchPaused: true, displayName: "Friendly repo" }),
     );
@@ -431,6 +434,8 @@ describe("AddRepositoryView", () => {
     fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Register repository" }));
 
     fireEvent.click(await screen.findByRole("button", { name: "Use the existing factory checkout" }));
+    await screen.findByLabelText("Goal for drafted tasks");
+    fireEvent.click(screen.getByRole("button", { name: "Finish" }));
     await waitFor(() => expect(onDone).toHaveBeenCalledWith("newrepo"));
     expect(ctx.addRepository).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -461,6 +466,8 @@ describe("AddRepositoryView", () => {
 
     expect(await screen.findByText("settings write failed")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await screen.findByLabelText("Goal for drafted tasks");
+    fireEvent.click(screen.getByRole("button", { name: "Finish" }));
     await waitFor(() => expect(onDone).toHaveBeenCalledWith("newrepo"));
     expect(ctx.addRepository).toHaveBeenCalledTimes(2);
   });
@@ -485,5 +492,87 @@ describe("AddRepositoryView", () => {
     });
     render(h(AddRepositoryView, { ctx, onDone: vi.fn(), onCancel: vi.fn() }));
     expect(await screen.findByText("options unavailable")).toBeTruthy();
+  });
+
+  it("starts drafting from the final card and opens the drafting thread", async () => {
+    const ctx = makeCtx({
+      runAction: vi.fn(async (request) => {
+        if (request.action.kind === "draft-tasks") {
+          return {
+            ok: true,
+            revision: null,
+            result: {
+              status: "accepted",
+              message: "Drafting thread started.",
+              revision: REV,
+              runId: null,
+              leaseId: null,
+              queueItemId: null,
+              action: "draft-tasks",
+              questionId: null,
+              interactionId: null,
+              threadId: "thr_draft",
+            },
+          } as FactoryActionResult;
+        }
+        return request.action.kind === "provision-checkout" ? provisionResult() : scaffoldResult();
+      }),
+    });
+    const onDone = vi.fn();
+    render(h(AddRepositoryView, { ctx, onDone, onCancel: vi.fn() }));
+    fireEvent.click(await screen.findByRole("button", { name: "Choose repository folder" }));
+    await screen.findByLabelText("Repository key");
+    fireEvent.click(screen.getByRole("button", { name: "Register repository" }));
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Register repository" }));
+
+    fireEvent.change(await screen.findByLabelText("Goal for drafted tasks"), {
+      target: { value: "  Break the hosting rollout into tasks  " },
+    });
+    fireEvent.change(screen.getByLabelText("Plan file (optional)"), {
+      target: { value: "docs/hosting-decision.md" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Start drafting" }));
+
+    await waitFor(() => expect(ctx.onOpenThread).toHaveBeenCalledWith("thr_draft"));
+    const request = vi.mocked(ctx.runAction).mock.calls
+      .map((call) => call[0])
+      .find((call) => call.action.kind === "draft-tasks")!;
+    expect(request.action).toEqual({
+      kind: "draft-tasks",
+      goal: "Break the hosting rollout into tasks",
+      planPath: "docs/hosting-decision.md",
+    });
+    expect(request.idempotencyKey).toMatch(
+      /^bbf:v1:newrepo:draft-tasks:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u,
+    );
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
+  it("keeps the draft card with the error when the draft request fails", async () => {
+    const ctx = makeCtx({
+      runAction: vi.fn(async (request) => {
+        if (request.action.kind === "draft-tasks") {
+          return { ok: false as const, error: { category: "internal" as const, message: "spawn failed" } };
+        }
+        return request.action.kind === "provision-checkout" ? provisionResult() : scaffoldResult();
+      }),
+    });
+    const onDone = vi.fn();
+    render(h(AddRepositoryView, { ctx, onDone, onCancel: vi.fn() }));
+    fireEvent.click(await screen.findByRole("button", { name: "Choose repository folder" }));
+    await screen.findByLabelText("Repository key");
+    fireEvent.click(screen.getByRole("button", { name: "Register repository" }));
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Register repository" }));
+
+    fireEvent.change(await screen.findByLabelText("Goal for drafted tasks"), {
+      target: { value: "Draft the first tasks" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Start drafting" }));
+
+    expect(await screen.findByText("spawn failed")).toBeTruthy();
+    expect(ctx.onOpenThread).not.toHaveBeenCalled();
+    expect(onDone).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Finish" }));
+    await waitFor(() => expect(onDone).toHaveBeenCalledWith("newrepo"));
   });
 });

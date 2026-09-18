@@ -204,8 +204,9 @@ describe("WorkView grouping", () => {
 
   it("partitions every entry into exactly one expected group", () => {
     renderWork(queue);
-    // Done renders collapsed by default; expand it so its rows mount.
+    // Done and Drafts render collapsed by default; expand them so rows mount.
     fireEvent.click(sectionOf("Done").querySelector("summary")!);
+    fireEvent.click(sectionOf("Drafts").querySelector("summary")!);
     const expectations: Array<[string, string[]]> = [
       ["Needs you", ["NEEDS-APPROVAL", "GATED-1"]],
       ["Ready", ["READY-1"]],
@@ -223,6 +224,14 @@ describe("WorkView grouping", () => {
     for (const entry of queue) {
       expect(screen.getAllByText(entry.id)).toHaveLength(1);
     }
+  });
+
+  it("keeps Drafts collapsed by default", () => {
+    renderWork(queue);
+    const drafts = sectionOf("Drafts");
+    expect(drafts.tagName).toBe("DETAILS");
+    expect(drafts.hasAttribute("open")).toBe(false);
+    expect(document.getElementById("work-DRAFT-1")).toBeNull();
   });
 
   it("keeps Done collapsed by default and never renders eligibility reasons for done items", () => {
@@ -247,12 +256,13 @@ describe("WorkView grouping", () => {
 });
 
 describe("WorkView rows", () => {
-  it("renders a quiet Draft badge in the Drafts group with no CTAs", () => {
+  it("renders a quiet Draft badge in the Drafts group with the Approve CTA", () => {
     renderWork([makeEntry({ id: "DRAFT-1", status: { kind: "draft" }, eligibilityReasons: ["not-ready"] })]);
+    fireEvent.click(sectionOf("Drafts").querySelector("summary")!);
     const row = rowOf("DRAFT-1");
     expect(within(row).getByText("Draft")).toBeTruthy();
     expect(within(row).queryByText("Unrecognized status")).toBeNull();
-    expect(within(row).queryByRole("button", { name: "Approve" })).toBeNull();
+    expect(within(row).getByRole("button", { name: "Approve" })).toBeTruthy();
     expect(within(row).queryByRole("button", { name: /^Answer/ })).toBeNull();
   });
 
@@ -530,6 +540,114 @@ describe("WorkView approve flow", () => {
     expect(within(row).getByText("approved by Adam")).toBeTruthy();
     expect(within(row).queryByRole("textbox")).toBeNull();
     expect(within(row).queryByRole("button", { name: "Approve" })).toBeNull();
+  });
+
+  it("emits the approve-queue payload from a draft entry's composer", () => {
+    const ctx = makeCtx();
+    renderWork([makeEntry({ id: "DRAFT-1", status: { kind: "draft" }, eligibilityReasons: ["not-ready"] })], ctx);
+    fireEvent.click(sectionOf("Drafts").querySelector("summary")!);
+
+    fireEvent.click(within(rowOf("DRAFT-1")).getByRole("button", { name: "Approve" }));
+    const row = rowOf("DRAFT-1");
+    expect(within(row).getByText("Approving marks this draft ready and writes its approved: line.")).toBeTruthy();
+    fireEvent.change(within(row).getByRole("textbox"), { target: { value: "  routine work only  " } });
+
+    const approveButtons = within(row).getAllByRole("button", { name: "Approve" });
+    fireEvent.click(approveButtons[approveButtons.length - 1]!);
+
+    const dialog = screen.getByRole("alertdialog");
+    expect(within(dialog).getByText(
+      "Marks DRAFT-1 ready and writes queue.approved: 'routine work only' to plans/factory/queue.md.",
+    )).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Approve" }));
+    expect(ctx.onAction).toHaveBeenCalledWith({
+      kind: "approve-queue",
+      queueItemId: "DRAFT-1",
+      approvedText: "routine work only",
+    });
+  });
+});
+
+describe("WorkView draft tasks", () => {
+  const providers: ProviderStatus[] = [
+    { providerId: "codex", model: "gpt-5", reasoningLevel: "medium", availability: "available", limitedUntil: null, activeThreadCount: 0, lastError: null },
+    { providerId: "claude-code", model: "claude-sonnet-4", reasoningLevel: "high", availability: "limited", limitedUntil: "2026-09-11T00:00:00Z", activeThreadCount: 0, lastError: null },
+  ];
+
+  it("renders the Draft tasks button and opens the dialog", () => {
+    renderWork([]);
+    fireEvent.click(screen.getByRole("button", { name: "Draft tasks" }));
+    const dialog = screen.getByRole("alertdialog");
+    expect(within(dialog).getByText(/appends status: draft entries/)).toBeTruthy();
+    expect(within(dialog).getByLabelText("Goal")).toBeTruthy();
+    expect(within(dialog).getByLabelText("Plan file (optional)")).toBeTruthy();
+    // No provider catalog: only the automatic line renders, no radios.
+    expect(within(dialog).queryByRole("radio")).toBeNull();
+    expect(within(dialog).getByText(/configured provider defaults are used/)).toBeTruthy();
+  });
+
+  it("keeps Start chat disabled until a goal is typed", () => {
+    renderWork([]);
+    fireEvent.click(screen.getByRole("button", { name: "Draft tasks" }));
+    const dialog = screen.getByRole("alertdialog");
+    const confirm = within(dialog).getByRole("button", { name: "Start chat" });
+    expect(confirm.hasAttribute("disabled")).toBe(true);
+    fireEvent.change(within(dialog).getByLabelText("Goal"), { target: { value: "   " } });
+    expect(confirm.hasAttribute("disabled")).toBe(true);
+    fireEvent.change(within(dialog).getByLabelText("Goal"), { target: { value: "Break the rollout into tasks" } });
+    expect(confirm.hasAttribute("disabled")).toBe(false);
+  });
+
+  it("emits draft-tasks with the goal alone when Automatic is selected", () => {
+    const ctx = makeCtx();
+    renderWork([], ctx, undefined, { providers });
+    fireEvent.click(screen.getByRole("button", { name: "Draft tasks" }));
+    const dialog = screen.getByRole("alertdialog");
+    expect((within(dialog).getByRole("radio", { name: "Automatic" }) as HTMLInputElement).checked).toBe(true);
+    fireEvent.change(within(dialog).getByLabelText("Goal"), { target: { value: "  Draft the rollout tasks  " } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Start chat" }));
+    expect(ctx.onAction).toHaveBeenCalledWith({ kind: "draft-tasks", goal: "Draft the rollout tasks" });
+  });
+
+  it("includes planPath when one is typed", () => {
+    const ctx = makeCtx();
+    renderWork([], ctx);
+    fireEvent.click(screen.getByRole("button", { name: "Draft tasks" }));
+    const dialog = screen.getByRole("alertdialog");
+    fireEvent.change(within(dialog).getByLabelText("Goal"), { target: { value: "Draft the rollout tasks" } });
+    fireEvent.change(within(dialog).getByLabelText("Plan file (optional)"), { target: { value: "  plans/roadmap.md  " } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Start chat" }));
+    expect(ctx.onAction).toHaveBeenCalledWith({
+      kind: "draft-tasks",
+      goal: "Draft the rollout tasks",
+      planPath: "plans/roadmap.md",
+    });
+  });
+
+  it("sends the picked provider triple when Choose provider is selected", () => {
+    const ctx = makeCtx();
+    renderWork([], ctx, undefined, { providers });
+    fireEvent.click(screen.getByRole("button", { name: "Draft tasks" }));
+    const dialog = screen.getByRole("alertdialog");
+    fireEvent.change(within(dialog).getByLabelText("Goal"), { target: { value: "Draft the rollout tasks" } });
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Choose provider" }));
+
+    const picker = within(dialog).getByTestId("bb-provider-model-picker");
+    expect(picker.getAttribute("data-routing-kind")).toBe("environment");
+    expect(picker.getAttribute("data-routing-id")).toBe("environment-1");
+    fireEvent.change(within(picker).getByLabelText("Provider ID"), { target: { value: "claude-code" } });
+    fireEvent.change(within(picker).getByLabelText("Model"), { target: { value: "claude-sonnet-4" } });
+    fireEvent.change(within(picker).getByLabelText("Reasoning level"), { target: { value: "high" } });
+    fireEvent.click(within(picker).getByRole("button", { name: "Apply execution selection" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Start chat" }));
+
+    expect(ctx.onAction).toHaveBeenCalledWith({
+      kind: "draft-tasks",
+      goal: "Draft the rollout tasks",
+      providerId: "claude-code",
+      model: "claude-sonnet-4",
+      reasoningLevel: "high",
+    });
   });
 });
 

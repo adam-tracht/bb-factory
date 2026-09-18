@@ -879,4 +879,96 @@ describe("BB interaction action executor", () => {
     expect(replay).toMatchObject({ ok: false, error: { category: "conflict" } });
     expect(harness.spawn).toHaveBeenCalledTimes(1);
   });
+
+  it("spawns an advisory queue-drafting thread scoped to the repository", async () => {
+    const harness = makeInteractionHarness([]);
+    const request = bbRequest({
+      kind: "draft-tasks",
+      goal: "Break the hosting rollout into tasks",
+      planPath: "docs/hosting-decision.md",
+      providerId: "claude-code",
+      model: "claude-sonnet-4",
+      reasoningLevel: "high",
+      serviceTier: "fast",
+    });
+    const result = await harness.executor.execute(request);
+    expect(result).toMatchObject({
+      ok: true,
+      result: { status: "accepted", action: "draft-tasks", threadId: "thr_recommend" },
+    });
+    expect(harness.spawn).toHaveBeenCalledTimes(1);
+    const spawned = vi.mocked(harness.spawn).mock.calls[0]![0];
+    expect(spawned).toMatchObject({
+      projectId: "project-1",
+      environment: { type: "reuse", environmentId: "environment-1" },
+      providerId: "claude-code",
+      model: "claude-sonnet-4",
+      reasoningLevel: "high",
+      serviceTier: "fast",
+      permissionMode: "auto",
+      title: "factory draft: monorepo",
+      executionInputSources: { providerId: "explicit", model: "explicit", reasoningLevel: "explicit", serviceTier: "explicit" },
+    });
+    const prompt = spawned.prompt as string;
+    expect(prompt).toContain("Break the hosting rollout into tasks");
+    expect(prompt).toContain("Plan file: docs/hosting-decision.md");
+    expect(prompt).toContain("status: draft");
+    expect(prompt).toContain("plans/factory/repo.md");
+    expect(prompt).toContain("plans/factory/queue.md");
+    expect(prompt).toContain("never any other status");
+    expect(prompt).toContain("Never edit, reorder, or delete existing entries");
+    expect(prompt).toContain("git add plans/factory/queue.md && git commit");
+    expect(prompt).toContain('on the "factory" branch');
+
+    const replay = await harness.executor.execute(request);
+    expect(replay).toMatchObject({ ok: true, result: { threadId: "thr_recommend" } });
+    expect(harness.spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it("omits the provider pin keys when draft-tasks carries none", async () => {
+    const harness = makeInteractionHarness([]);
+    const result = await harness.executor.execute(bbRequest({
+      kind: "draft-tasks",
+      goal: "Sketch the rollout",
+    }));
+    expect(result.ok).toBe(true);
+    const spawned = vi.mocked(harness.spawn).mock.calls[0]![0];
+    expect("providerId" in spawned).toBe(false);
+    expect("model" in spawned).toBe(false);
+    expect("reasoningLevel" in spawned).toBe(false);
+    expect("serviceTier" in spawned).toBe(false);
+    expect("executionInputSources" in spawned).toBe(false);
+    expect(spawned.permissionMode).toBe("auto");
+  });
+
+  it("drops a lone serviceTier when draft-tasks carries no provider pin", async () => {
+    const harness = makeInteractionHarness([]);
+    const result = await harness.executor.execute(bbRequest({
+      kind: "draft-tasks",
+      goal: "Sketch the rollout",
+      serviceTier: "fast",
+    }));
+    expect(result.ok).toBe(true);
+    const spawned = vi.mocked(harness.spawn).mock.calls[0]![0];
+    expect("providerId" in spawned).toBe(false);
+    expect("model" in spawned).toBe(false);
+    expect("reasoningLevel" in spawned).toBe(false);
+    expect("serviceTier" in spawned).toBe(false);
+    expect("executionInputSources" in spawned).toBe(false);
+  });
+
+  it("marks an ambiguous draft-tasks spawn for reconciliation without respawning", async () => {
+    const harness = makeInteractionHarness([]);
+    vi.mocked(harness.spawn).mockRejectedValue(new Error("spawn lost"));
+    const request = bbRequest({
+      kind: "draft-tasks",
+      goal: "Sketch the rollout",
+    });
+    const result = await harness.executor.execute(request);
+    expect(result).toMatchObject({ ok: false, error: { category: "conflict" } });
+    expect(harness.store.getPendingActionIntent(request.idempotencyKey)?.status).toBe("reconciliation-required");
+    const replay = await harness.executor.execute(request);
+    expect(replay).toMatchObject({ ok: false, error: { category: "conflict" } });
+    expect(harness.spawn).toHaveBeenCalledTimes(1);
+  });
 });

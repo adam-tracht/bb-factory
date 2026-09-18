@@ -69,6 +69,8 @@ Other closed lists:
 3. If none are eligible: remove the lock, write `current.md` with `state: no-op` and one line on why, and stop. Do not invent work.
 4. Set the entry to `status: in-progress (thread <id>, <timestamp>)` and commit that alone: `factory: claim <ID>`.
 
+While a run is in progress the foreman may append new `status: draft` entries to `queue.md` for follow-up work it notices (never any other status, and never `ready`: the human grants the first transition). Name every appended draft in the run report.
+
 ### 3. Plan
 
 Read the task's canonical plan file and the acceptance criteria on the queue entry. Decompose into worker jobs. Each job has: files it may touch, what done looks like, and which validation commands prove it. Jobs that touch overlapping files run sequentially; disjoint jobs may run in parallel.

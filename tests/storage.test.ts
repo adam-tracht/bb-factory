@@ -141,6 +141,74 @@ describe("operational SQLite storage", () => {
     expect(db.prepare<[], { foreign_keys: number }>(`PRAGMA foreign_keys`).get()).toEqual({ foreign_keys: 1 });
   });
 
+  it("carries populated v5 pending intents through the draft-tasks rebuild", async () => {
+    const storage = makeStorage();
+    const db = storage.db;
+    // Apply the migrations a pre-draft-tasks install already ran, leaving the
+    // v6 rebuild tail for initialize to pick up.
+    const rebuildStart = OPERATIONAL_STORAGE_MIGRATIONS.findIndex((statement) =>
+      statement.startsWith("CREATE TABLE pending_action_intents_v6"),
+    );
+    storage.migrate(db, OPERATIONAL_STORAGE_MIGRATIONS.slice(0, rebuildStart));
+
+    const key = "bbf:v1:monorepo:recommend-approval:823e4567-e89b-12d3-a456-426614174000";
+    const request = {
+      repositoryKey: "monorepo",
+      action: {
+        kind: "recommend-approval",
+        queueItemId: "T1",
+        providerId: "codex",
+        model: "gpt-5",
+        reasoningLevel: "medium",
+      },
+      idempotencyKey: key,
+      expectedRevision: EMPTY_REPOSITORY_REVISION,
+    };
+    db.prepare(
+      `INSERT INTO pending_action_intents (
+         idempotency_key, repository_key, action_kind, request_fingerprint,
+         request_json, expected_revision_json, target_json, file_change_json,
+         entry_point, one_shot, status, submitted_at
+       ) VALUES (?, ?, 'recommend-approval', 'legacy-fingerprint', ?, ?, ?, NULL, 'action-executor', 0, 'pending', ?)`,
+    ).run(
+      key,
+      "monorepo",
+      JSON.stringify(request),
+      JSON.stringify(EMPTY_REPOSITORY_REVISION),
+      JSON.stringify({ kind: "queue-item", queueItemId: "T1" }),
+      "2026-09-10T00:00:00Z",
+    );
+
+    const store = initializeOperationalStorage(storage);
+    const record = store.getPendingActionIntent(key);
+    expect(record).toMatchObject({
+      repositoryKey: "monorepo",
+      actionKind: "recommend-approval",
+      status: "pending",
+      request: {
+        action: {
+          kind: "recommend-approval",
+          queueItemId: "T1",
+          providerId: "codex",
+          model: "gpt-5",
+          reasoningLevel: "medium",
+        },
+      },
+      target: { kind: "queue-item", queueItemId: "T1" },
+    });
+
+    // The widened CHECK accepts draft-tasks claims on the rebuilt table.
+    const draftRequest: BbInteractionActionRequest = {
+      repositoryKey: "monorepo",
+      action: { kind: "draft-tasks", goal: "Sketch the rollout" },
+      idempotencyKey: "bbf:v1:monorepo:draft-tasks:923e4567-e89b-12d3-a456-426614174000",
+    };
+    expect(store.claimPendingActionIntent({
+      request: draftRequest,
+      target: { kind: "repository" },
+    })).toMatchObject({ created: true, record: { actionKind: "draft-tasks" } });
+  });
+
   it("initializes through SDK storage, preserves run links, and reloads durably", async () => {
     const storage = makeStorage();
     const store = initializeOperationalStorage(storage);

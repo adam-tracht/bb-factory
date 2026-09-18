@@ -227,6 +227,8 @@ function actionTarget(action: FactoryAction, routeRunId: string | null): string 
       return `question:${action.questionId}`;
     case "recommend-approval":
       return `queued:${action.queueItemId}`;
+    case "draft-tasks":
+      return "draft-tasks";
     case "retry":
     case "stop":
       return `run:${routeRunId ?? "?"}`;
@@ -581,7 +583,9 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
         setActionState({ pendingTarget: null, feedback: { pending: false, target, message: null, error: "The action result was malformed.", scope } });
       } else if (parsed.data.ok) {
         setActionState({ pendingTarget: null, feedback: { pending: false, target, message: parsed.data.result.message, error: null, scope } });
-        if (parsed.data.result.action === "recommend-question" || parsed.data.result.action === "recommend-approval") {
+        if (parsed.data.result.action === "recommend-question"
+          || parsed.data.result.action === "recommend-approval"
+          || parsed.data.result.action === "draft-tasks") {
           navigate.toThread(parsed.data.result.threadId);
         }
       } else {

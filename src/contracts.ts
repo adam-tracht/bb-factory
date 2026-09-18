@@ -596,6 +596,7 @@ export const actionKindSchema = z.enum([
   "approve-queue",
   "recommend-question",
   "recommend-approval",
+  "draft-tasks",
   "retry",
   "stop",
   "integration-report",
@@ -745,6 +746,34 @@ const recommendApprovalActionSchema = z
   .strict();
 
 /**
+ * Advisory: spawns a BB thread that drafts `status: draft` queue entries in
+ * plans/factory/queue.md and commits them on the factory branch. Drafts carry
+ * `approved: none`; the human-only `ready` gate is unchanged. Like run-now,
+ * the provider triple is all-or-none; a lone serviceTier is not sent.
+ */
+const draftTasksActionSchema = z
+  .object({
+    kind: z.literal("draft-tasks"),
+    goal: nonEmptyString,
+    planPath: nonEmptyString.optional(),
+    providerId: providerIdSchema.optional(),
+    model: nonEmptyString.optional(),
+    reasoningLevel: reasoningLevelSchema.optional(),
+    serviceTier: z.enum(["default", "fast"]).optional(),
+  })
+  .strict()
+  .superRefine((action, context) => {
+    const triple = [action.providerId, action.model, action.reasoningLevel];
+    if (triple.some((value) => value !== undefined) && triple.some((value) => value === undefined)) {
+      context.addIssue({
+        code: "custom",
+        path: ["providerId"],
+        message: "providerId, model, and reasoningLevel must be provided together",
+      });
+    }
+  });
+
+/**
  * A manual run may pin provider, model, and reasoning level; the three are
  * all-or-none so a partial override never silently mixes with rotation.
  * serviceTier stays independently optional, matching the recommend-* actions.
@@ -776,6 +805,7 @@ export const bbInteractionActionSchema = z.union([
   bbInteractionAnswerActionSchema,
   recommendQuestionActionSchema,
   recommendApprovalActionSchema,
+  draftTasksActionSchema,
   z.object({ kind: z.literal("retry"), attemptId: nonEmptyString }).strict(),
   z.object({ kind: z.literal("stop") }).strict(),
 ]);
@@ -1009,6 +1039,18 @@ export const recommendApprovalOutcomeSchema = z
   .strict();
 export type RecommendApprovalOutcome = z.infer<typeof recommendApprovalOutcomeSchema>;
 
+/** Accepted draft-task spawns carry the thread the UI should open. */
+export const draftTasksOutcomeSchema = z
+  .object({
+    ...actionOutcomeFields,
+    action: z.literal("draft-tasks"),
+    questionId: z.null().optional(),
+    interactionId: z.null().optional(),
+    threadId: nonEmptyString,
+  })
+  .strict();
+export type DraftTasksOutcome = z.infer<typeof draftTasksOutcomeSchema>;
+
 /** Scaffold results list each target's disposition and the commit that landed. */
 export const scaffoldProtocolOutcomeSchema = z
   .object({
@@ -1067,6 +1109,7 @@ export const actionOutcomeSchema = z.union([
   answerQuestionOutcomeSchema,
   recommendQuestionOutcomeSchema,
   recommendApprovalOutcomeSchema,
+  draftTasksOutcomeSchema,
   scaffoldProtocolOutcomeSchema,
   provisionCheckoutOutcomeSchema,
   nonAnswerActionOutcomeSchema,

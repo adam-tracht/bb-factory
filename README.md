@@ -75,11 +75,13 @@ bb plugin install git:github.com/adam-tracht/bb-factory@v0.1.5
    scaffold it (`foreman.md`, `repo.md`, `queue.md`, `current.md`,
    `questions.md`, `runs/`), committed on the `factory` branch. Existing
    protocol files are never overwritten.
-4. Get the first entries into `queue.md`. Today that means writing them
-   by hand, or asking any agent thread on the checkout to draft them with
-   `status: draft` using the format header in the file. A **Draft tasks**
-   control that spawns that thread for you is queued as BBF-0047. Then
-   set `status: ready`. Marking work ready is always a human act.
+4. Draft the first queue entries. The wizard's final step and the Work
+   tab both carry a **Draft tasks** control: give it a goal and an
+   optional plan file, and it spawns an agent chat on the factory
+   checkout that reads `repo.md` and the queue format header, appends
+   entries with `status: draft`, and commits them on `factory`. Review
+   the drafts in the Work tab's collapsed Drafts group and approve what
+   should run. Marking work ready is always a human act.
 5. Press **Run now** in the header for a supervised first run, or unpause
    dispatch and let the schedule take it. The next morning, review
    `current.md`, `runs/`, and `questions.md` from the tabs.

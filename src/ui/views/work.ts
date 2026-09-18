@@ -105,7 +105,7 @@ export const WORK_GROUPS: ReadonlyArray<{ key: WorkGroup; title: string; default
   { key: "ready", title: "Ready", defaultOpen: true },
   { key: "blocked", title: "Blocked", defaultOpen: true },
   { key: "running", title: "Running", defaultOpen: true },
-  { key: "draft", title: "Drafts", defaultOpen: true },
+  { key: "draft", title: "Drafts", defaultOpen: false },
   { key: "done", title: "Done", defaultOpen: false },
 ];
 
@@ -252,9 +252,12 @@ function ApproveComposer(props: {
   const draftSeed = seedPickerValue(props.providers, props.preferredProviderId);
   const canDraft = ProviderModelPicker !== undefined && draftSeed !== null;
   const pickerRouting = pickerRoutingFor(ctx);
+  const isDraft = entry.status.kind === "draft";
   return h("div", { className: "space-y-1.5" },
     h("div", { className: "space-y-1 text-xs text-muted-foreground" },
-      h("p", null, `Risk: ${entry.risk}. Approval is required before this item can run.`),
+      h("p", null, isDraft
+        ? "Approving marks this draft ready and writes its approved: line."
+        : `Risk: ${entry.risk}. Approval is required before this item can run.`),
       h("p", null, `Approval lists what the factory may do beyond routine work: ${APPROVAL_GATED_ACTIONS}. Anything unlisted stays off-limits.`)),
     h("textarea", {
       value: text,
@@ -335,7 +338,9 @@ function ApproveComposer(props: {
     h(ConfirmDialog, {
       open: confirming,
       title: `Approve ${entry.id}`,
-      body: `Writes queue.approved: '${trimmed}' to plans/factory/queue.md for ${entry.id}.`,
+      body: isDraft
+        ? `Marks ${entry.id} ready and writes queue.approved: '${trimmed}' to plans/factory/queue.md.`
+        : `Writes queue.approved: '${trimmed}' to plans/factory/queue.md for ${entry.id}.`,
       confirmLabel: "Approve",
       busy: pending,
       onConfirm: () => {
@@ -343,6 +348,123 @@ function ApproveComposer(props: {
         ctx.onAction({ kind: "approve-queue", queueItemId: entry.id, approvedText: trimmed });
       },
       onCancel: () => setConfirming(false),
+    }));
+}
+
+/**
+ * Button plus dialog that spawns the draft-tasks advisory thread. The thread
+ * writes `status: draft` entries; only a human sets `status: ready`.
+ */
+function DraftTasksControl(props: {
+  ctx: ViewContext;
+  providers: readonly ProviderStatus[];
+  preferredProviderId: string | null;
+}) {
+  const { ctx } = props;
+  const [open, setOpen] = useState(false);
+  const [goal, setGoal] = useState("");
+  const [planPath, setPlanPath] = useState("");
+  const [custom, setCustom] = useState(false);
+  const [selection, setSelection] = useState<PickerValue | null>(null);
+  const pending = ctx.pendingTarget === "draft-tasks";
+  const trimmedGoal = goal.trim();
+  const trimmedPlan = planPath.trim();
+  const seed = seedPickerValue(props.providers, props.preferredProviderId);
+  const canPick = ProviderModelPicker !== undefined && seed !== null;
+  return h("div", null,
+    h(ActionButton, {
+      label: "Draft tasks",
+      variant: "secondary",
+      size: "sm",
+      disabled: pending,
+      title: "Start a chat that drafts queue entries",
+      onClick: () => {
+        // Seed once per open so a canceled dialog never leaks a stale pick.
+        setGoal("");
+        setPlanPath("");
+        setCustom(false);
+        setSelection(seed);
+        setOpen(true);
+      },
+    }),
+    h(ConfirmDialog, {
+      open,
+      title: "Draft queue tasks",
+      body: h("div", { className: "space-y-3" },
+        h("p", null,
+          "Starts a chat on this repository's factory checkout that appends status: draft entries to plans/factory/queue.md and commits them. It never marks anything ready."),
+        h("textarea", {
+          value: goal,
+          rows: 2,
+          disabled: pending,
+          "aria-label": "Goal",
+          placeholder: "What should the factory work on?",
+          className: "w-full box-border rounded-md border border-border bg-background px-2 py-1.5 text-xs text-foreground",
+          onChange: (event: { target: { value: string } }) => setGoal(event.target.value),
+        }),
+        h("input", {
+          type: "text",
+          value: planPath,
+          disabled: pending,
+          "aria-label": "Plan file (optional)",
+          placeholder: "plans/roadmap.md",
+          className: "w-full box-border rounded-md border border-border bg-background px-2 py-1.5 font-mono text-xs text-foreground",
+          onChange: (event: { target: { value: string } }) => setPlanPath(event.target.value),
+        }),
+        canPick
+          ? h("div", {
+              role: "radiogroup",
+              "aria-label": "Provider selection",
+              className: "space-y-1.5",
+            },
+              h("label", { className: "flex items-center gap-2 text-xs text-foreground" },
+                h("input", {
+                  type: "radio",
+                  name: "factory-draft-tasks-provider",
+                  checked: !custom,
+                  disabled: pending,
+                  onChange: () => setCustom(false),
+                }),
+                "Automatic"),
+              h("label", { className: "flex items-center gap-2 text-xs text-foreground" },
+                h("input", {
+                  type: "radio",
+                  name: "factory-draft-tasks-provider",
+                  checked: custom,
+                  disabled: pending,
+                  onChange: () => setCustom(true),
+                }),
+                "Choose provider"))
+          : null,
+        canPick && custom && ProviderModelPicker !== undefined && selection !== null
+          ? h(ProviderModelPicker, {
+              value: selection,
+              onChange: (next: PickerValue) => setSelection(next),
+              routing: pickerRoutingFor(ctx),
+              disabled: pending,
+            })
+          : h("p", { className: "text-xs text-muted-foreground" },
+              "The repository's configured provider defaults are used.")),
+      confirmLabel: "Start chat",
+      busy: pending,
+      confirmDisabled: trimmedGoal.length === 0,
+      onConfirm: () => {
+        setOpen(false);
+        ctx.onAction({
+          kind: "draft-tasks",
+          goal: trimmedGoal,
+          ...(trimmedPlan ? { planPath: trimmedPlan } : {}),
+          ...(custom && selection !== null
+            ? {
+                providerId: selection.providerId,
+                model: selection.model,
+                reasoningLevel: selection.reasoningLevel,
+                ...(selection.serviceTier === undefined ? {} : { serviceTier: selection.serviceTier }),
+              }
+            : {}),
+        });
+      },
+      onCancel: () => setOpen(false),
     }));
 }
 
@@ -417,7 +539,7 @@ function WorkRowDetail(props: {
           h("blockquote", {
             className: "mt-0.5 border-l-2 border-success/50 pl-2 text-xs text-muted-foreground",
           }, entry.approved.text))
-      : approvalMissing(entry) && entry.blockingQuestionIds.length === 0
+      : (approvalMissing(entry) || entry.status.kind === "draft") && entry.blockingQuestionIds.length === 0
         ? h("div", null,
             h(DetailLabel, { text: "Approval" }),
             h("div", { className: "mt-1" }, h(ApproveComposer, {
@@ -459,7 +581,8 @@ function WorkRow(props: {
   }, [props.defaultExpanded]);
   const pending = ctx.pendingTarget === `queued:${entry.id}`;
   const openQids = entry.blockingQuestionIds;
-  const approvalNeeded = approvalMissing(entry);
+  // A draft approves the same way: the human reads it, then marks it ready.
+  const approvalNeeded = approvalMissing(entry) || entry.status.kind === "draft";
 
   // A ready item gated by open questions is question-blocked in reality:
   // render the blocked-by warning treatment, not a misleading "Ready" badge.
@@ -622,7 +745,7 @@ export function WorkGroupSection(props: {
     title: props.title ?? WORK_GROUPS.find((section) => section.key === props.group)?.title ?? props.group,
     count: props.entries.length,
     collapsible: true,
-    defaultOpen: props.defaultOpen ?? (props.group === "needs-you" || (props.group !== "done" && !phone)),
+    defaultOpen: props.defaultOpen ?? (props.group === "needs-you" || (props.group !== "done" && props.group !== "draft" && !phone)),
     forceOpen: focusedGroup ? focusElementId : false,
     storageKey: props.storageKey ?? sectionStorageKey(props.ctx.repository.repositoryKey, "work", props.group),
     children: h(WorkGroupRows, props),
@@ -645,6 +768,8 @@ export function WorkView(props: {
 
   return h("div", { className: "space-y-4" },
     h(FeedbackNotice, { feedback: ctx.feedback }),
+    h("div", { className: "flex justify-end" },
+      h(DraftTasksControl, { ctx, providers, preferredProviderId })),
     snapshot.queue.length === 0
       ? h(EmptyNotice, {
           title: "The queue is empty",
