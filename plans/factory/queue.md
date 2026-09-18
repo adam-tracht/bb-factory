@@ -47,7 +47,7 @@ validate:
 notes: Publishing, tagging, and opening the marketplace PR are protected and need an `approved:` line before a run may do them.
 
 ## BBF-0047 Agent-drafted queue entries
-status: ready
+status: in-progress (thread thr_d2furp39dd, 2026-09-18T01:15:03Z)
 priority: 2
 depends_on: none
 risk: low
