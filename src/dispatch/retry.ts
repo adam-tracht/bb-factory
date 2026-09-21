@@ -227,7 +227,11 @@ export async function retryAttempt(ctx: DispatchContext, input: RetryAttemptInpu
       if (transaction.getActiveAttempt(run.runId) !== null) {
         throw new Error(`run '${run.runId}' already has an active retry attempt`);
       }
-      transaction.assertGlobalCapacity(run.repositoryKey, ctx.settings.concurrencyLimit, run.runId);
+      if (ctx.tasksIntegration === "enabled") {
+        transaction.assertRepositoryCapacity(run.repositoryKey, ctx.settings.concurrencyLimit, run.runId);
+      } else {
+        transaction.assertGlobalCapacity(ctx.settings.concurrencyLimit, run.runId);
+      }
       transaction.resetReconciliation(run.runId);
       transaction.updateRunDispatch(runDispatchUpdate(currentRun, {
         status: "started",

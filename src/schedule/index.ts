@@ -44,9 +44,6 @@ export async function schedulerTick(
   const skip = (reason: string): SchedulerTickResult => ({ repositoryKey, action: "skipped", reason });
 
   if (settings.dispatchMode !== "enabled") return skip("dispatch is paused");
-  // Kept in the signature for the scheduler's existing call shape. Capacity
-  // is checked per repository, so another repo's quarantine cannot starve it.
-  void allRepositoryKeys;
   if (ctx.repositoryLookup(repositoryKey)?.dispatchPaused === true) {
     return skip("dispatch is paused for this repository");
   }
@@ -76,8 +73,13 @@ export async function schedulerTick(
   const lease = ctx.store.getCurrentOwnership(repositoryKey);
   if (lease && lease.status !== "released") return skip(`an active run '${lease.runId}' holds ownership`);
 
-  const activeForRepository = ctx.store.listActiveRuns(repositoryKey).length;
-  if (activeForRepository >= settings.concurrencyLimit) return skip("the concurrency limit is reached");
+  if (ctx.tasksIntegration === "enabled") {
+    const activeForRepository = ctx.store.listActiveRuns(repositoryKey).length;
+    if (activeForRepository >= settings.concurrencyLimit) return skip("the concurrency limit is reached");
+  } else {
+    const activeAcross = allRepositoryKeys.reduce((count, key) => count + ctx.store.listActiveRuns(key).length, 0);
+    if (activeAcross >= settings.concurrencyLimit) return skip("the concurrency limit is reached");
+  }
 
   const slotIso = new Date(Math.floor(now.getTime() / 60000) * 60000).toISOString();
   const idempotencyKey = `bbf:v1:${repositoryKey}:run-now:${deterministicUuid(`${repositoryKey}|${slotIso}`)}`;

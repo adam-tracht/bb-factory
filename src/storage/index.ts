@@ -800,7 +800,8 @@ export interface OperationalTransaction {
   getCurrentOwnership(repositoryKey: RepositoryKey): OwnershipLease | null;
   getReconciliation(runId: string): ReconciliationMetadata | null;
   getStopIntent(runId: string): StopIntent | null;
-  assertGlobalCapacity(repositoryKey: RepositoryKey, limit: number, excludingRunId?: string): void;
+  assertGlobalCapacity(limit: number, excludingRunId?: string): void;
+  assertRepositoryCapacity(repositoryKey: RepositoryKey, limit: number, excludingRunId?: string): void;
   updateRunTaskId(runId: string, taskId: string): void;
   createRunIntent(input: CreateRunIntentInput): CreateRunIntentResult;
   updateRunDispatch(input: RunDispatchUpdate): void;
@@ -1275,7 +1276,8 @@ class OperationalSqliteStore implements OperationalStateStore {
       getCurrentOwnership: (repositoryKey) => readCurrentOwnership(this.db, repositoryKey),
       getReconciliation: (runId) => readReconciliation(this.db, runId),
       getStopIntent: (runId) => readStopIntent(this.db, runId),
-      assertGlobalCapacity: (repositoryKey, limit, excludingRunId) => assertGlobalCapacity(this.db, repositoryKey, limit, excludingRunId),
+      assertGlobalCapacity: (limit, excludingRunId) => assertGlobalCapacity(this.db, limit, excludingRunId),
+      assertRepositoryCapacity: (repositoryKey, limit, excludingRunId) => assertRepositoryCapacity(this.db, repositoryKey, limit, excludingRunId),
       updateRunTaskId: (runId, taskId) => updateRunTaskId(this.db, runId, taskId),
       createRunIntent: (input) => insertRunIntent(this.db, input),
       updateRunDispatch: (input) => updateRunDispatch(this.db, input),
@@ -2207,7 +2209,20 @@ function insertRunIntent(db: SqliteDatabase, input: CreateRunIntentInput): Creat
   return { created: true, runId: intent.runId };
 }
 
-function assertGlobalCapacity(db: SqliteDatabase, repositoryKey: RepositoryKey, limit: number, excludingRunId?: string): void {
+function assertGlobalCapacity(db: SqliteDatabase, limit: number, excludingRunId?: string): void {
+  const parsedLimit = z.number().int().positive().parse(limit);
+  const active = db
+    .prepare<unknown[], { count: number }>(
+      `SELECT COUNT(*) AS count
+         FROM operational_runs
+        WHERE status IN ('pending', 'started', 'cancel-requested', 'reconciliation-required')
+          AND (? IS NULL OR run_id <> ?)`,
+    )
+    .get(excludingRunId ?? null, excludingRunId ?? null);
+  if ((active?.count ?? 0) >= parsedLimit) throw new GlobalConcurrencyLimitError(parsedLimit);
+}
+
+function assertRepositoryCapacity(db: SqliteDatabase, repositoryKey: RepositoryKey, limit: number, excludingRunId?: string): void {
   const parsedRepositoryKey = repositoryKeySchema.parse(repositoryKey);
   const parsedLimit = z.number().int().positive().parse(limit);
   const active = db

@@ -476,7 +476,11 @@ export async function startRun(ctx: DispatchContext, input: StartRunInput): Prom
         persistedRunId = inserted.runId;
         return false;
       }
-      transaction.assertGlobalCapacity(input.repositoryKey, ctx.settings.concurrencyLimit, runId);
+      if (ctx.tasksIntegration === "enabled") {
+        transaction.assertRepositoryCapacity(input.repositoryKey, ctx.settings.concurrencyLimit, runId);
+      } else {
+        transaction.assertGlobalCapacity(ctx.settings.concurrencyLimit, runId);
+      }
       transaction.createOwnershipLease({
         leaseId,
         repositoryKey: input.repositoryKey,

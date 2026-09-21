@@ -16,6 +16,7 @@ import {
   makeRegistryEntry,
   makeSettings,
   makeStore,
+  QUEUE_MD,
 } from "./fakes.js";
 
 afterEach(cleanupStorages);
@@ -370,7 +371,7 @@ describe("dispatch engine", () => {
     expect(store.getDispatcherState("monorepo").lastStartProvider).toBe("codex");
   });
 
-  it("atomically enforces capacity per repository for concurrent manual starts", async () => {
+  it("atomically enforces global capacity for concurrent manual starts", async () => {
     const { engine, store, threads } = makeMultiRepositoryHarness({ settings: { concurrencyLimit: 1 } });
     const [first, second] = await Promise.all([
       engine.requestRun({ ...MANUAL_REQUEST, idempotencyKey: "bbf:v1:monorepo:run-now:823e4567-e89b-42d3-a456-426614174001" as never }),
@@ -380,9 +381,10 @@ describe("dispatch engine", () => {
         idempotencyKey: "bbf:v1:other:run-now:823e4567-e89b-42d3-a456-426614174002" as never,
       }),
     ]);
-    expect([first, second].filter((result) => result.ok)).toHaveLength(2);
-    expect(threads.spawnCalls).toHaveLength(2);
-    expect(store.listActiveRuns("monorepo").length + store.listActiveRuns("other").length).toBe(2);
+    expect([first, second].filter((result) => result.ok)).toHaveLength(1);
+    expect([first, second].find((result) => !result.ok)).toMatchObject({ error: { category: "conflict" } });
+    expect(threads.spawnCalls).toHaveLength(1);
+    expect(store.listActiveRuns("monorepo").length + store.listActiveRuns("other").length).toBe(1);
   });
 
   it("runs an explicit provider override with caller-explicit execution inputs", async () => {
@@ -1845,7 +1847,7 @@ describe("dispatch engine", () => {
     expect(store.getLeaseForRun(runId)?.status).toBe("released");
   });
 
-  it("does not let another repository block a retry", async () => {
+  it("enforces global capacity atomically before a retry on another repository", async () => {
     const { engine, threads, store, clock } = makeMultiRepositoryHarness({ settings: { concurrencyLimit: 1 } });
     const started = await engine.requestRun({ ...MANUAL_REQUEST, idempotencyKey: "bbf:v1:monorepo:run-now:923e4567-e89b-42d3-a456-426614174032" as never });
     if (!started.ok) throw new Error("expected success");
@@ -1863,9 +1865,9 @@ describe("dispatch engine", () => {
     expect(other).toMatchObject({ ok: true, result: { status: "accepted" } });
 
     const retried = await engine.requestRetry({ repositoryKey: "monorepo", attemptId });
-    expect(retried).toMatchObject({ ok: true, result: { status: "accepted" } });
-    expect(threads.retried).toHaveLength(1);
-    expect((await store.getRun({ repositoryKey: "monorepo", runId })).run?.summary.status).toBe("started");
+    expect(retried).toMatchObject({ ok: false, error: { category: "conflict" } });
+    expect(threads.retried).toHaveLength(0);
+    expect((await store.getRun({ repositoryKey: "monorepo", runId })).run?.summary.status).toBe("failed-safe");
   });
 
   it("does not let retry success overwrite a concurrent stop generation", async () => {
@@ -2048,10 +2050,45 @@ describe("scheduler", () => {
       ["plans/factory/queue.md", "# Queue\n"],
       ["plans/README.md", "# Dashboard\n\n| id | work item | status | next action | evidence and canonical detail |\n|---|---|---|---|---|\n| T1 | Sample task | open | run | queue |\n"],
     ] as const) harness.files.seed(path, content, "/repo-other");
+    harness.files.put("/repo-other/plans/factory/queue.md", QUEUE_MD.replace("status: blocked-by: Q6", "status: ready").replace("approved: none", "approved: task scope"));
+    harness.files.put("/repo-other/plans/factory/questions.md", "# Questions\n");
     const entries = new Map([["monorepo", makeRegistryEntry()], ["other", otherEntry]]);
+    const tasksClient = {
+      listProjects: async () => [],
+      createProject: async (input: { linkedBbProjectId?: string | null }) => ({
+        id: `tasks-${input.linkedBbProjectId ?? "factory"}`,
+        name: "Factory",
+        prefix: "OTHER",
+        color: "#123456",
+        linkedBbProjectId: input.linkedBbProjectId ?? null,
+      }),
+      listAllTasks: async () => [],
+      createTask: async (input: { projectId: string; title: string }) => ({
+        ok: true as const,
+        task: {
+          id: `task-${input.projectId}`,
+          projectId: input.projectId,
+          key: "OTHER-1",
+          title: input.title,
+          status: "todo" as const,
+          priority: "medium" as const,
+          description: null,
+          dueDate: null,
+          labelIds: [],
+          parentTaskId: null,
+          position: 0,
+        },
+      }),
+    } as unknown as TasksClient;
     const ctx: DispatchContext = {
       ...harness.ctx,
       repositoryLookup: (key) => entries.get(key as "monorepo" | "other") ?? null,
+      tasksIntegration: "enabled",
+      tasksClient,
+      healthReader: {
+        ...harness.ctx.healthReader,
+        getTasksAvailability: async () => ({ enabled: true, status: "available" as const, message: "Tasks is available." }),
+      },
       settings: makeSettings({
         scheduleCron: "* * * * *",
         concurrencyLimit: 1,
