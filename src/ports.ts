@@ -14,6 +14,7 @@ import type {
   RepositoryConfiguration,
   RepositoryKey,
   RepositoryActionRequest,
+  TasksActionRequest,
   RevisionFreeActionRequest,
   ScaffoldProtocolActionRequest,
 } from "./contracts.js";
@@ -46,6 +47,10 @@ export interface ReadOnlyActionExecutor {
 
 export interface RepositoryActionExecutor {
   execute(request: RepositoryActionRequest): Promise<FactoryActionResult>;
+}
+
+export interface TasksActionExecutor {
+  execute(request: TasksActionRequest): Promise<FactoryActionResult>;
 }
 
 export interface BbInteractionActionExecutor {

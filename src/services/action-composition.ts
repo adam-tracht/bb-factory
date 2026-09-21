@@ -4,12 +4,14 @@ import type {
   ProvisionCheckoutActionExecutor,
   RepositoryActionExecutor,
   ScaffoldProtocolActionExecutor,
+  TasksActionExecutor,
 } from "../ports.js";
 import type { RepositoryKey } from "../contracts.js";
 import { createBbInteractionActionExecutor } from "../actions/interactions.js";
 import { createProvisionCheckoutActionExecutor } from "../actions/provision.js";
 import { createRepositoryActionExecutor } from "../actions/repository.js";
 import { createScaffoldProtocolActionExecutor } from "../actions/scaffold.js";
+import { createTasksActionExecutor } from "../actions/tasks.js";
 import { createDispatchEngine, type DispatchEngine } from "../dispatch/index.js";
 import type { DispatchContext } from "../dispatch/types.js";
 import { createScheduler, type SchedulerTickResult } from "../schedule/index.js";
@@ -29,6 +31,7 @@ export interface ActionCompositionOptions {
 
 export interface ActionComposition {
   readonly repositoryActionExecutor: RepositoryActionExecutor;
+  readonly tasksActionExecutor: TasksActionExecutor;
   readonly bbInteractionActionExecutor: BbInteractionActionExecutor;
   readonly scaffoldProtocolActionExecutor: ScaffoldProtocolActionExecutor;
   readonly provisionCheckoutActionExecutor: ProvisionCheckoutActionExecutor;
@@ -75,6 +78,13 @@ export function createActionComposition(options: ActionCompositionOptions): Acti
     now,
   });
 
+  const tasksActionExecutor = createTasksActionExecutor({
+    tasksClient: composition.tasksClient,
+    store,
+    repositoryLookup: (repositoryKey) => composition.getRepositoryEntry(repositoryKey)?.configuration ?? null,
+    now,
+  });
+
   const scaffoldProtocolActionExecutor = createScaffoldProtocolActionExecutor({
     sdk,
     store,
@@ -101,6 +111,7 @@ export function createActionComposition(options: ActionCompositionOptions): Acti
 
   return {
     repositoryActionExecutor,
+    tasksActionExecutor,
     bbInteractionActionExecutor,
     scaffoldProtocolActionExecutor,
     provisionCheckoutActionExecutor,

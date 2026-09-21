@@ -4,6 +4,7 @@ import {
   repositoryActionRequestSchema,
   revisionFreeActionRequestSchema,
   scaffoldProtocolActionRequestSchema,
+  tasksActionRequestSchema,
   factoryActionResultSchema,
   type FactoryActionResult,
   type InvalidationEvent,
@@ -77,14 +78,19 @@ export function createFactoryRpcHandlers(
         return composition.readOnlyActionExecutor.execute(revisionFree.data);
       }
 
+      const tasksAction = tasksActionRequestSchema.safeParse(input);
       const repositoryAction = repositoryActionRequestSchema.safeParse(input);
-      const scaffoldAction = repositoryAction.success ? null : scaffoldProtocolActionRequestSchema.safeParse(input);
-      const provisionAction = repositoryAction.success || scaffoldAction?.success
+      const scaffoldAction = tasksAction.success || repositoryAction.success ? null : scaffoldProtocolActionRequestSchema.safeParse(input);
+      const provisionAction = tasksAction.success || repositoryAction.success || scaffoldAction?.success
         ? null
         : provisionCheckoutActionRequestSchema.safeParse(input);
       let request;
       let execute: () => Promise<FactoryActionResult>;
-      if (repositoryAction.success) {
+      if (tasksAction.success) {
+        request = tasksAction.data;
+        const valid = tasksAction.data;
+        execute = () => composition.tasksActionExecutor.execute(valid);
+      } else if (repositoryAction.success) {
         request = repositoryAction.data;
         const valid = repositoryAction.data;
         execute = () => composition.repositoryActionExecutor.execute(valid);

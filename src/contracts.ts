@@ -594,6 +594,7 @@ export const actionKindSchema = z.enum([
   "resume",
   "answer-question",
   "approve-queue",
+  "approve-task",
   "recommend-question",
   "recommend-approval",
   "draft-tasks",
@@ -706,12 +707,17 @@ const bbInteractionAnswerActionSchema = z
 const approveQueueActionSchema = z
   .object({ kind: z.literal("approve-queue"), queueItemId: nonEmptyString, approvedText: nonEmptyString })
   .strict();
+const approveTaskActionSchema = z
+  .object({ kind: z.literal("approve-task"), taskId: nonEmptyString, operationClass: nonEmptyString })
+  .strict();
 
 export const repositoryActionSchema = z.union([
   repositoryQuestionAnswerActionSchema,
   approveQueueActionSchema,
 ]);
 export type RepositoryAction = z.infer<typeof repositoryActionSchema>;
+export const tasksActionSchema = approveTaskActionSchema;
+export type TasksAction = z.infer<typeof tasksActionSchema>;
 
 /**
  * Advisory only: spawns a BB thread that recommends an answer for a repository
@@ -850,7 +856,7 @@ const provisionCheckoutActionSchema = z
   });
 export type ProvisionCheckoutAction = z.infer<typeof provisionCheckoutActionSchema>;
 
-export const guardedActionSchema = z.union([repositoryActionSchema, bbInteractionActionSchema]);
+export const guardedActionSchema = z.union([repositoryActionSchema, tasksActionSchema, bbInteractionActionSchema]);
 export type GuardedAction = z.infer<typeof guardedActionSchema>;
 
 export const factoryActionSchema = z.union([
@@ -907,6 +913,17 @@ export const repositoryActionRequestSchema = z
   .superRefine(validateIdempotencyBinding);
 export type RepositoryActionRequest = z.infer<typeof repositoryActionRequestSchema>;
 
+export const tasksActionRequestSchema = z
+  .object({
+    repositoryKey: repositoryKeySchema,
+    action: tasksActionSchema,
+    idempotencyKey: idempotencyKeySchema,
+    expectedRevision: repositoryRevisionSchema,
+  })
+  .strict()
+  .superRefine(validateIdempotencyBinding);
+export type TasksActionRequest = z.infer<typeof tasksActionRequestSchema>;
+
 export const bbInteractionActionRequestSchema = z
   .object({
     repositoryKey: repositoryKeySchema,
@@ -957,6 +974,7 @@ export type ProvisionCheckoutActionRequest = z.infer<typeof provisionCheckoutAct
 export const factoryActionRequestSchema = z.union([
   revisionFreeActionRequestSchema,
   repositoryActionRequestSchema,
+  tasksActionRequestSchema,
   bbInteractionActionRequestSchema,
   scaffoldProtocolActionRequestSchema,
   provisionCheckoutActionRequestSchema,
@@ -1014,6 +1032,19 @@ export const nonAnswerActionOutcomeSchema = z
   })
   .strict();
 export type NonAnswerActionOutcome = z.infer<typeof nonAnswerActionOutcomeSchema>;
+
+export const approveTaskOutcomeSchema = z
+  .object({
+    ...actionOutcomeFields,
+    action: z.literal("approve-task"),
+    taskId: nonEmptyString,
+    operationClass: nonEmptyString,
+    contentRevision: nonEmptyString,
+    questionId: z.null().optional(),
+    interactionId: z.null().optional(),
+  })
+  .strict();
+export type ApproveTaskOutcome = z.infer<typeof approveTaskOutcomeSchema>;
 
 /** Accepted recommendation spawns carry the thread the UI should open. */
 export const recommendQuestionOutcomeSchema = z
@@ -1107,6 +1138,7 @@ export type ProvisionCheckoutOutcome = z.infer<typeof provisionCheckoutOutcomeSc
 
 export const actionOutcomeSchema = z.union([
   answerQuestionOutcomeSchema,
+  approveTaskOutcomeSchema,
   recommendQuestionOutcomeSchema,
   recommendApprovalOutcomeSchema,
   draftTasksOutcomeSchema,

@@ -1,4 +1,5 @@
 import type { BbPluginApi, JsonValue } from "@get-bb/plugin-sdk";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 
 const TASKS_PLUGIN_ID = "tasks";
@@ -41,7 +42,9 @@ export const tasksTaskSchema = z
     title: z.string(),
     status: taskStatusSchema,
     priority: taskPrioritySchema,
+    description: z.string().nullable().optional(),
     dueDate: z.string().nullable(),
+    labelIds: z.array(z.string()).optional(),
     parentTaskId: z.string().nullable(),
     position: z.number(),
   })
@@ -132,6 +135,36 @@ export type TasksMutationResult = z.infer<typeof tasksMutationSchema>;
 export type TasksTaskStatus = z.infer<typeof taskStatusSchema>;
 export type TasksWorkStatus = Exclude<TasksTaskStatus, "canceled">;
 export type TasksRpcCall = BbPluginApi["sdk"]["plugins"]["callRpc"];
+
+const tasksApprovalContentSchema = z
+  .object({
+    title: z.string(),
+    description: z.string().nullable(),
+    dueDate: z.string().nullable(),
+    labelIds: z.array(z.string()),
+    parentTaskId: z.string().nullable(),
+  })
+  .strict();
+export type TasksApprovalContent = z.infer<typeof tasksApprovalContentSchema>;
+
+/**
+ * Derive the revision an approval is bound to. Only title, description,
+ * dueDate, label ids, and parentTaskId are covered. Status, comments, and
+ * updatedAt are intentionally excluded so progress and discussion do not
+ * invalidate an approval.
+ */
+export function deriveTasksContentRevision(
+  task: Pick<TasksTask, "title" | "description" | "dueDate" | "labelIds" | "parentTaskId">,
+): string {
+  const content: TasksApprovalContent = tasksApprovalContentSchema.parse({
+    title: task.title,
+    description: task.description ?? null,
+    dueDate: task.dueDate,
+    labelIds: [...(task.labelIds ?? [])].sort(),
+    parentTaskId: task.parentTaskId,
+  });
+  return createHash("sha256").update(JSON.stringify(content), "utf8").digest("hex");
+}
 
 export interface TasksListFilters {
   readonly projectId?: string;
