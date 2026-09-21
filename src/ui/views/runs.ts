@@ -261,8 +261,11 @@ export function RunDetailView(props: { detail: OperationalRunDetail; ctx: ViewCo
 
   const latestAttempt = detail.attempts.length > 0 ? detail.attempts[detail.attempts.length - 1] : null;
   const active = isActiveRunStatus(run.status);
-  const canRetry = latestAttempt !== null && (active || run.status === "failed-safe");
-  const canStop = active && run.status !== "reconciliation-required";
+  const leaseQuarantined = detail.lease?.status === "reconciliation-required";
+  const canRetry = latestAttempt !== null && run.status === "failed-safe" && !leaseQuarantined;
+  const canResolveQuarantine = run.status === "failed-safe" && leaseQuarantined;
+  const canStop = (active && run.status !== "reconciliation-required") || canResolveQuarantine;
+  const retryRecovery = detail.attempts.filter((attempt) => attempt.runId === run.runId).length > 1;
   const pending = ctx.pendingTarget === `run:${run.runId}`;
   const duration = formatDuration(run.startedAt, run.finishedAt, now);
   const when = timeAgo(run.startedAt ?? run.requestedAt, now);
@@ -314,6 +317,15 @@ export function RunDetailView(props: { detail: OperationalRunDetail; ctx: ViewCo
           })
         : null),
     }),
+    run.status === "reconciliation-required"
+      ? h("p", { role: "status", className: "rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning-foreground" }, retryRecovery
+        ? "Retry recovery is being reconciled. A corrected correlated outcome may settle during the bounded window. Otherwise this run fails safe and frees global capacity; its repository lease remains quarantined until worker termination is confirmed."
+        : "Terminal evidence is being reconciled. A corrected correlated outcome may settle during the bounded window. Otherwise this run fails safe and frees global capacity; its repository lease remains quarantined until worker termination is confirmed.")
+      : run.status === "failed-safe"
+        ? h("p", { role: "status", className: "rounded-md border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger-foreground" }, leaseQuarantined
+          ? "This run is terminal and failed safe. Global capacity is free, but repository ownership remains quarantined until worker termination is confirmed. Retry is unavailable while the lease is quarantined."
+          : "This run is terminal and failed safe. Global capacity is free and the repository lease is released. Retry is the supported next action.")
+        : null,
     h(Section, {
       title: "Timeline",
       collapsible: true,
@@ -371,7 +383,7 @@ export function RunDetailView(props: { detail: OperationalRunDetail; ctx: ViewCo
             : null,
           canStop
             ? h(ActionButton, {
-                label: "Stop run",
+                label: canResolveQuarantine ? "Resolve ownership" : "Stop run",
                 variant: "danger",
                 disabled: pending,
                 onClick: () => setConfirm("stop"),
@@ -394,7 +406,7 @@ export function RunDetailView(props: { detail: OperationalRunDetail; ctx: ViewCo
     h(ConfirmDialog, {
       open: confirm === "retry",
       title: "Retry run",
-      body: `Dispatches a new attempt for run ${run.runId}. The current attempt may continue until the scheduler replaces it.`,
+      body: `Dispatches a new attempt for failed-safe run ${run.runId}. The previous attempt is terminal and the repository lease is released.`,
       confirmLabel: "Retry",
       busy: pending,
       onConfirm: () => {
@@ -405,10 +417,12 @@ export function RunDetailView(props: { detail: OperationalRunDetail; ctx: ViewCo
     }),
     h(TypedConfirmDialog, {
       open: confirm === "stop",
-      title: "Stop run",
-      body: `Kills the running agent for ${run.runId}. Uncommitted work in the worktree may be lost.`,
-      confirmPhrase: "stop",
-      confirmLabel: "Stop run",
+      title: canResolveQuarantine ? "Resolve quarantined ownership" : "Stop run",
+      body: canResolveQuarantine
+        ? `Requests the reviewed ownership repair path for ${run.runId}. Global capacity is already free; the repository lease remains quarantined until a worker is confirmed stopped or the explicit sentinel timeout path is eligible.`
+        : `Kills the running agent for ${run.runId}. Uncommitted work in the worktree may be lost.`,
+      confirmPhrase: canResolveQuarantine ? "resolve" : "stop",
+      confirmLabel: canResolveQuarantine ? "Resolve ownership" : "Stop run",
       busy: pending,
       onConfirm: () => {
         setConfirm(null);

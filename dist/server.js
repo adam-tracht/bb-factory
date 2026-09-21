@@ -21053,7 +21053,7 @@ async function readTextFile(files, options) {
     modifiedAtMs: result.modifiedAtMs
   };
 }
-async function listFiles(files, options) {
+async function listFilesPage(files, options) {
   const absolutePath3 = confinedPath(options.rootPath, options.relativePath);
   let result;
   try {
@@ -21062,7 +21062,8 @@ async function listFiles(files, options) {
       path: absolutePath3,
       includeFiles: true,
       includeDirectories: false,
-      limit: 1e3,
+      ...options.query === void 0 ? {} : { query: options.query },
+      limit: options.limit ?? 1e3,
       signal: options.signal
     });
   } catch (error62) {
@@ -21071,15 +21072,8 @@ async function listFiles(files, options) {
       repositoryKey: options.repositoryKey
     });
   }
-  if (result.truncated) {
-    throw new ProtocolError(
-      "malformed-protocol",
-      `The immutable run-record directory '${options.relativePath}' contains more than 1000 files`,
-      { path: options.relativePath, repositoryKey: options.repositoryKey }
-    );
-  }
   const listedRoot = confinedPath(options.rootPath, options.relativePath);
-  return result.paths.filter((entry) => entry.kind === "file").map((entry) => {
+  const paths = result.paths.filter((entry) => entry.kind === "file").map((entry) => {
     const requestedDirectory = options.relativePath.replace(/\/$/u, "");
     const relativeEntryPath = entry.path.replace(/^\.\/+/u, "");
     const entryPath = isAbsolutePath(entry.path) ? entry.path : relativeEntryPath === requestedDirectory || relativeEntryPath.startsWith(`${requestedDirectory}/`) ? confinedPath(options.rootPath, relativeEntryPath) : confinedPath(listedRoot, relativeEntryPath);
@@ -21093,6 +21087,18 @@ async function listFiles(files, options) {
     }
     return relative;
   });
+  return { paths, truncated: result.truncated };
+}
+async function listFiles(files, options) {
+  const result = await listFilesPage(files, options);
+  if (result.truncated && options.allowTruncated !== true) {
+    throw new ProtocolError(
+      "malformed-protocol",
+      `The immutable run-record directory '${options.relativePath}' contains more than ${options.limit ?? 1e3} files`,
+      { path: options.relativePath, repositoryKey: options.repositoryKey }
+    );
+  }
+  return result.paths;
 }
 
 // src/services/live-health.ts
@@ -21697,13 +21703,41 @@ var OPERATIONAL_STORAGE_MIGRATIONS = [
   )`,
   `INSERT INTO pending_action_intents_v6 SELECT * FROM pending_action_intents`,
   `DROP TABLE pending_action_intents`,
-  `ALTER TABLE pending_action_intents_v6 RENAME TO pending_action_intents`
+  `ALTER TABLE pending_action_intents_v6 RENAME TO pending_action_intents`,
+  `CREATE TABLE run_reconciliation_metadata (
+    run_id TEXT PRIMARY KEY REFERENCES operational_runs(run_id),
+    first_detected_at TEXT NOT NULL,
+    deadline_at TEXT NOT NULL,
+    reason_code TEXT NOT NULL,
+    raw_observation TEXT,
+    detection_count INTEGER NOT NULL CHECK (detection_count > 0),
+    resolved_at TEXT,
+    resolution TEXT CHECK (resolution IS NULL OR resolution IN ('completed', 'blocked', 'failed-safe', 'no-op'))
+  )`,
+  `ALTER TABLE run_reconciliation_metadata ADD COLUMN resolution_reason TEXT`,
+  `CREATE TABLE stop_intents (
+    token TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES operational_runs(run_id),
+    attempt_id TEXT NOT NULL REFERENCES dispatch_attempts(attempt_id),
+    lease_id TEXT NOT NULL REFERENCES ownership_leases(lease_id),
+    repository_key TEXT NOT NULL,
+    worker_thread_id TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE UNIQUE INDEX stop_intent_one_per_run ON stop_intents(run_id)`
 ];
 var IdempotencyConflictError = class extends Error {
   code = "idempotency-conflict";
   constructor(idempotencyKey) {
     super(`idempotency key was already used for a different request: ${idempotencyKey}`);
     this.name = "IdempotencyConflictError";
+  }
+};
+var GlobalConcurrencyLimitError = class extends Error {
+  code = "global-concurrency-limit";
+  constructor(limit) {
+    super(`global run concurrency limit of ${limit} is reached`);
+    this.name = "GlobalConcurrencyLimitError";
   }
 };
 var PendingActionIntentExpiredError = class extends Error {
@@ -21759,6 +21793,21 @@ var OperationalSqliteStore = class {
   updateOwnershipLease(lease) {
     this.withTransaction((transaction) => transaction.updateOwnershipLease(lease));
   }
+  createStopIntent(input2) {
+    this.withTransaction((transaction) => transaction.createStopIntent(input2));
+  }
+  deleteStopIntent(token) {
+    this.withTransaction((transaction) => transaction.deleteStopIntent(token));
+  }
+  resetReconciliation(runId) {
+    this.withTransaction((transaction) => transaction.resetReconciliation(runId));
+  }
+  recordReconciliation(input2) {
+    return this.withTransaction((transaction) => transaction.recordReconciliation(input2));
+  }
+  resolveReconciliation(input2) {
+    return this.withTransaction((transaction) => transaction.resolveReconciliation(input2));
+  }
   claimQuestionAnswer(input2) {
     return this.withTransaction((transaction) => transaction.claimQuestionAnswer(input2));
   }
@@ -21809,16 +21858,10 @@ var OperationalSqliteStore = class {
     return this.withTransaction((transaction) => transaction.updatePendingActionIntent(input2));
   }
   getCurrentOwnership(repositoryKey2) {
-    repositoryKeySchema.parse(repositoryKey2);
-    const row = this.db.prepare(
-      `SELECT lease_id, repository_key, run_id, queue_item_ids_json, worker_thread_id,
-                authorization_provenance_json, acquired_at, expires_at, status
-           FROM ownership_leases
-          WHERE repository_key = ? AND status <> 'released'
-          ORDER BY acquired_at DESC
-          LIMIT 1`
-    ).get(repositoryKey2);
-    return row === void 0 ? null : ownershipFromRow(row);
+    return readCurrentOwnership(this.db, repositoryKey2);
+  }
+  getStopIntent(runId) {
+    return readStopIntent(this.db, runId);
   }
   async listRuns(input2) {
     const parsed = operationalRunListInputSchema.parse(input2);
@@ -21877,12 +21920,27 @@ var OperationalSqliteStore = class {
   }
   createTransactionApi() {
     return {
+      getRunSummary: (runId) => readRunSummary(this.db, runId),
+      getRunStatus: (runId) => readRunStatus(this.db, runId),
+      getActiveAttempt: (runId) => readActiveAttempt(this.db, runId),
+      hasDispatchAttemptStatus: (runId, status) => hasDispatchAttemptStatus(this.db, runId, status),
+      getDispatchAttempt: (attemptId) => readDispatchAttempt(this.db, attemptId),
+      getLeaseForRun: (runId) => readLeaseForRun(this.db, runId),
+      getCurrentOwnership: (repositoryKey2) => readCurrentOwnership(this.db, repositoryKey2),
+      getReconciliation: (runId) => readReconciliation(this.db, runId),
+      getStopIntent: (runId) => readStopIntent(this.db, runId),
+      assertGlobalCapacity: (limit, excludingRunId) => assertGlobalCapacity(this.db, limit, excludingRunId),
       createRunIntent: (input2) => insertRunIntent(this.db, input2),
       updateRunDispatch: (input2) => updateRunDispatch(this.db, input2),
       createDispatchAttempt: (attempt) => insertDispatchAttempt(this.db, attempt),
       updateDispatchAttempt: (attempt) => updateDispatchAttempt(this.db, attempt),
       createOwnershipLease: (lease) => insertOwnershipLease(this.db, lease),
       updateOwnershipLease: (lease) => updateOwnershipLease(this.db, lease),
+      createStopIntent: (input2) => insertStopIntent(this.db, input2),
+      deleteStopIntent: (token) => deleteStopIntent(this.db, token),
+      resetReconciliation: (runId) => resetReconciliation(this.db, runId),
+      recordReconciliation: (input2) => recordReconciliation(this.db, input2),
+      resolveReconciliation: (input2) => resolveReconciliation(this.db, input2),
       claimQuestionAnswer: (input2) => claimQuestionAnswer(this.db, input2),
       completeQuestionAnswer: (idempotencyKey, result, completedAt) => completeQuestionAnswer(this.db, idempotencyKey, result, completedAt),
       claimRepositoryWrite: (input2) => claimRepositoryWrite(this.db, input2),
@@ -21914,6 +21972,9 @@ var OperationalSqliteStore = class {
           LIMIT 1`
     ).get(external_exports.string().trim().min(1).parse(runId));
     return row === void 0 ? null : ownershipFromRow(row);
+  }
+  getReconciliation(runId) {
+    return readReconciliation(this.db, runId);
   }
   findRunIdByIdempotencyKey(idempotencyKey) {
     const row = this.db.prepare(
@@ -22362,6 +22423,16 @@ function insertRunIntent(db, input2) {
   );
   return { created: true, runId: intent.runId };
 }
+function assertGlobalCapacity(db, limit, excludingRunId) {
+  const parsedLimit = external_exports.number().int().positive().parse(limit);
+  const active = db.prepare(
+    `SELECT COUNT(*) AS count
+         FROM operational_runs
+        WHERE status IN ('pending', 'started', 'cancel-requested', 'reconciliation-required')
+          AND (? IS NULL OR run_id <> ?)`
+  ).get(excludingRunId ?? null, excludingRunId ?? null);
+  if ((active?.count ?? 0) >= parsedLimit) throw new GlobalConcurrencyLimitError(parsedLimit);
+}
 function updateRunDispatch(db, input2) {
   const repositoryKey2 = repositoryKeySchema.parse(input2.repositoryKey);
   const status = dispatchedRunStatusSchema.parse(input2.status);
@@ -22378,6 +22449,7 @@ function updateRunDispatch(db, input2) {
   }
   const currentSummary = runSummaryFromRow(row);
   const canonicalRecords = input2.canonicalRecords === void 0 ? currentSummary.canonicalRecords : canonicalRecordsSchema.parse(input2.canonicalRecords);
+  deleteStopIntentForRun(db, input2.runId);
   const summary = operationalRunSummarySchema.parse({
     ...currentSummary,
     status,
@@ -22434,6 +22506,7 @@ function insertDispatchAttempt(db, attempt) {
 function updateDispatchAttempt(db, attempt) {
   const parsed = dispatchAttemptSchema.parse(attempt);
   assertRunRepository(db, parsed.runId, parsed.repositoryKey);
+  deleteStopIntentForRun(db, parsed.runId);
   const result = db.prepare(
     `UPDATE dispatch_attempts
         SET run_id = ?, repository_key = ?, provider_id = ?, model = ?,
@@ -22480,6 +22553,7 @@ function insertOwnershipLease(db, lease) {
 function updateOwnershipLease(db, lease) {
   const parsed = ownershipLeaseSchema.parse(lease);
   assertRunRepository(db, parsed.runId, parsed.repositoryKey);
+  deleteStopIntentForRun(db, parsed.runId);
   const result = db.prepare(
     `UPDATE ownership_leases
         SET repository_key = ?, run_id = ?, queue_item_ids_json = ?,
@@ -22501,6 +22575,104 @@ function updateOwnershipLease(db, lease) {
   if (result.changes !== 1) {
     throw new Error(`cannot update missing ownership lease: ${parsed.leaseId}`);
   }
+}
+function insertStopIntent(db, input2) {
+  const token = external_exports.string().trim().min(1).parse(input2.token);
+  const runId = external_exports.string().trim().min(1).parse(input2.runId);
+  const attemptId = external_exports.string().trim().min(1).parse(input2.attemptId);
+  const leaseId = external_exports.string().trim().min(1).parse(input2.leaseId);
+  const repositoryKey2 = repositoryKeySchema.parse(input2.repositoryKey);
+  const workerThreadId = external_exports.string().trim().min(1).parse(input2.workerThreadId);
+  const createdAt = isoTimestampSchema.parse(input2.createdAt);
+  assertRunRepository(db, runId, repositoryKey2);
+  db.prepare(
+    `INSERT INTO stop_intents (
+       token, run_id, attempt_id, lease_id, repository_key, worker_thread_id, created_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(token, runId, attemptId, leaseId, repositoryKey2, workerThreadId, createdAt);
+}
+function deleteStopIntent(db, token) {
+  db.prepare(`DELETE FROM stop_intents WHERE token = ?`).run(external_exports.string().trim().min(1).parse(token));
+}
+function deleteStopIntentForRun(db, runId) {
+  db.prepare(`DELETE FROM stop_intents WHERE run_id = ?`).run(external_exports.string().trim().min(1).parse(runId));
+}
+function resetReconciliation(db, runId) {
+  const parsedRunId = external_exports.string().trim().min(1).parse(runId);
+  db.prepare(`DELETE FROM run_reconciliation_metadata WHERE run_id = ?`).run(parsedRunId);
+}
+function recordReconciliation(db, input2) {
+  const runId = external_exports.string().trim().min(1).parse(input2.runId);
+  const firstDetectedAt = isoTimestampSchema.parse(input2.firstDetectedAt);
+  const deadlineAt = isoTimestampSchema.parse(input2.deadlineAt);
+  const reasonCode = external_exports.string().trim().min(1).max(128).parse(input2.reasonCode);
+  const rawObservation = input2.rawObservation === void 0 || input2.rawObservation === null ? null : external_exports.string().max(512).parse(input2.rawObservation);
+  assertRunExists(db, runId);
+  db.prepare(
+    `INSERT INTO run_reconciliation_metadata (
+       run_id, first_detected_at, deadline_at, reason_code, raw_observation,
+       detection_count, resolved_at, resolution
+     ) VALUES (?, ?, ?, ?, ?, 1, NULL, NULL)
+     ON CONFLICT(run_id) DO UPDATE SET
+       reason_code = CASE
+         WHEN run_reconciliation_metadata.resolved_at IS NULL
+           AND excluded.reason_code LIKE 'dead-start:%'
+           AND run_reconciliation_metadata.reason_code NOT LIKE 'dead-start:%'
+           THEN excluded.reason_code
+         ELSE run_reconciliation_metadata.reason_code
+       END,
+       raw_observation = CASE
+         WHEN excluded.raw_observation IS NULL THEN run_reconciliation_metadata.raw_observation
+         ELSE excluded.raw_observation
+       END,
+       detection_count = CASE
+         WHEN run_reconciliation_metadata.resolved_at IS NULL
+           THEN run_reconciliation_metadata.detection_count + 1
+         ELSE run_reconciliation_metadata.detection_count
+       END`
+  ).run(runId, firstDetectedAt, deadlineAt, reasonCode, rawObservation);
+  const row = db.prepare(
+    `SELECT run_id, first_detected_at, deadline_at, reason_code,
+              raw_observation, detection_count, resolved_at, resolution,
+              resolution_reason
+         FROM run_reconciliation_metadata
+        WHERE run_id = ?`
+  ).get(runId);
+  if (row === void 0) throw new Error(`cannot read reconciliation metadata for run: ${runId}`);
+  return reconciliationFromRow(row);
+}
+function resolveReconciliation(db, input2) {
+  const runId = external_exports.string().trim().min(1).parse(input2.runId);
+  const resolvedAt = isoTimestampSchema.parse(input2.resolvedAt);
+  const resolution = external_exports.enum(["completed", "blocked", "failed-safe", "no-op"]).parse(input2.resolution);
+  const reasonCode = external_exports.string().trim().min(1).max(128).parse(input2.reasonCode);
+  const existing = db.prepare(
+    `SELECT run_id, first_detected_at, deadline_at, reason_code,
+              raw_observation, detection_count, resolved_at, resolution,
+              resolution_reason
+         FROM run_reconciliation_metadata
+        WHERE run_id = ?`
+  ).get(runId);
+  if (existing === void 0) return null;
+  if (existing.resolved_at !== null) {
+    if (existing.resolution !== resolution) {
+      throw new Error(`reconciliation for run '${runId}' was already resolved as ${existing.resolution}`);
+    }
+    return reconciliationFromRow(existing);
+  }
+  db.prepare(
+    `UPDATE run_reconciliation_metadata
+        SET resolved_at = ?, resolution = ?, resolution_reason = ?
+      WHERE run_id = ? AND resolved_at IS NULL`
+  ).run(resolvedAt, resolution, reasonCode, runId);
+  const row = db.prepare(
+    `SELECT run_id, first_detected_at, deadline_at, reason_code,
+              raw_observation, detection_count, resolved_at, resolution,
+              resolution_reason
+         FROM run_reconciliation_metadata
+        WHERE run_id = ?`
+  ).get(runId);
+  return row === void 0 ? null : reconciliationFromRow(row);
 }
 function claimQuestionAnswer(db, input2) {
   const parsed = validateQuestionAnswerInput(input2);
@@ -22640,6 +22812,107 @@ function assertRunRepository(db, runId, repositoryKey2) {
     throw new Error(`operational run belongs to a different repository: ${runId}`);
   }
 }
+function assertRunExists(db, runId) {
+  const row = db.prepare(`SELECT run_id FROM operational_runs WHERE run_id = ?`).get(runId);
+  if (row === void 0) throw new Error(`cannot reference missing operational run: ${runId}`);
+}
+function readReconciliation(db, runId) {
+  const row = db.prepare(
+    `SELECT run_id, first_detected_at, deadline_at, reason_code,
+              raw_observation, detection_count, resolved_at, resolution,
+              resolution_reason
+         FROM run_reconciliation_metadata
+        WHERE run_id = ?`
+  ).get(external_exports.string().trim().min(1).parse(runId));
+  return row === void 0 ? null : reconciliationFromRow(row);
+}
+function readStopIntent(db, runId) {
+  const row = db.prepare(
+    `SELECT token, run_id, attempt_id, lease_id, repository_key,
+              worker_thread_id, created_at
+         FROM stop_intents
+        WHERE run_id = ?`
+  ).get(external_exports.string().trim().min(1).parse(runId));
+  if (row === void 0) return null;
+  return {
+    token: external_exports.string().trim().min(1).parse(row.token),
+    runId: external_exports.string().trim().min(1).parse(row.run_id),
+    attemptId: external_exports.string().trim().min(1).parse(row.attempt_id),
+    leaseId: external_exports.string().trim().min(1).parse(row.lease_id),
+    repositoryKey: repositoryKeySchema.parse(row.repository_key),
+    workerThreadId: external_exports.string().trim().min(1).parse(row.worker_thread_id),
+    createdAt: isoTimestampSchema.parse(row.created_at)
+  };
+}
+function readRunStatus(db, runId) {
+  const row = db.prepare(`SELECT status FROM operational_runs WHERE run_id = ?`).get(runId);
+  return row === void 0 ? null : operationalRunStatusSchema.parse(row.status);
+}
+function readRunSummary(db, runId) {
+  const row = db.prepare(
+    `SELECT run_id, repository_key, requested_at, status, started_at, finished_at,
+              provider_id, worker_thread_id, project_id, environment_id,
+              queue_item_ids_json, repository_revision_json, canonical_records_json
+         FROM operational_runs
+        WHERE run_id = ?`
+  ).get(external_exports.string().trim().min(1).parse(runId));
+  return row === void 0 ? null : runSummaryFromRow(row);
+}
+function readActiveAttempt(db, runId) {
+  const row = db.prepare(
+    `SELECT attempt_id, run_id, repository_key, provider_id, model,
+              reasoning_level, worker_thread_id, status, started_at, finished_at
+         FROM dispatch_attempts
+        WHERE run_id = ?
+          AND status IN ('pending', 'started', 'cancel-requested', 'reconciliation-required')
+        ORDER BY rowid DESC
+        LIMIT 1`
+  ).get(external_exports.string().trim().min(1).parse(runId));
+  return row === void 0 ? null : attemptFromRow(row);
+}
+function hasDispatchAttemptStatus(db, runId, status) {
+  const parsedRunId = external_exports.string().trim().min(1).parse(runId);
+  const parsedStatus = dispatchAttemptSchema.shape.status.parse(status);
+  const row = db.prepare(
+    `SELECT 1 AS found
+         FROM dispatch_attempts
+        WHERE run_id = ? AND status = ?
+        LIMIT 1`
+  ).get(parsedRunId, parsedStatus);
+  return row !== void 0;
+}
+function readDispatchAttempt(db, attemptId) {
+  const row = db.prepare(
+    `SELECT attempt_id, run_id, repository_key, provider_id, model,
+              reasoning_level, worker_thread_id, status, started_at, finished_at
+         FROM dispatch_attempts
+        WHERE attempt_id = ?`
+  ).get(external_exports.string().trim().min(1).parse(attemptId));
+  return row === void 0 ? null : attemptFromRow(row);
+}
+function readLeaseForRun(db, runId) {
+  const row = db.prepare(
+    `SELECT lease_id, repository_key, run_id, queue_item_ids_json, worker_thread_id,
+              authorization_provenance_json, acquired_at, expires_at, status
+         FROM ownership_leases
+        WHERE run_id = ?
+        ORDER BY acquired_at DESC
+        LIMIT 1`
+  ).get(external_exports.string().trim().min(1).parse(runId));
+  return row === void 0 ? null : ownershipFromRow(row);
+}
+function readCurrentOwnership(db, repositoryKey2) {
+  const parsedRepositoryKey = repositoryKeySchema.parse(repositoryKey2);
+  const row = db.prepare(
+    `SELECT lease_id, repository_key, run_id, queue_item_ids_json, worker_thread_id,
+              authorization_provenance_json, acquired_at, expires_at, status
+         FROM ownership_leases
+        WHERE repository_key = ? AND status <> 'released'
+        ORDER BY acquired_at DESC
+        LIMIT 1`
+  ).get(parsedRepositoryKey);
+  return row === void 0 ? null : ownershipFromRow(row);
+}
 function runSummaryFromRow(row) {
   return operationalRunSummarySchema.parse({
     runId: row.run_id,
@@ -22695,6 +22968,19 @@ function ownershipFromRow(row) {
     expiresAt: row.expires_at,
     status: row.status
   });
+}
+function reconciliationFromRow(row) {
+  return {
+    runId: external_exports.string().trim().min(1).parse(row.run_id),
+    firstDetectedAt: isoTimestampSchema.parse(row.first_detected_at),
+    deadlineAt: isoTimestampSchema.parse(row.deadline_at),
+    reasonCode: external_exports.string().trim().min(1).parse(row.reason_code),
+    rawObservation: row.raw_observation,
+    detectionCount: external_exports.number().int().positive().parse(row.detection_count),
+    resolvedAt: row.resolved_at === null ? null : isoTimestampSchema.parse(row.resolved_at),
+    resolution: row.resolution === null ? null : external_exports.enum(["completed", "blocked", "failed-safe", "no-op"]).parse(row.resolution),
+    resolutionReason: row.resolution_reason === null ? null : external_exports.string().trim().min(1).parse(row.resolution_reason)
+  };
 }
 function questionAnswerFromRow(row) {
   return {
@@ -24487,8 +24773,7 @@ function parseQueue(content, path) {
   return output2;
 }
 function parseCurrentState(content, path) {
-  const lines = content.split(/\r?\n/u);
-  const stateLine = [...lines].reverse().find((line) => line.trim());
+  const stateLine = [...content.split(/\r?\n/u)].reverse().find((line) => line.trim()) ?? null;
   const stateMatch = stateLine?.match(/^state:\s*(success|blocked|failed-safe|no-op)\s*$/u);
   if (!stateMatch) {
     throw new ProtocolError("malformed-protocol", `The last non-empty line in '${path}' must declare state`, { path });
@@ -24501,6 +24786,9 @@ function parseCurrentState(content, path) {
     state: stateMatch[1],
     lastRunAt
   };
+}
+function lastNonEmptyLine(content) {
+  return [...content.split(/\r?\n/u)].reverse().find((line) => line.trim())?.trim() ?? null;
 }
 function splitTableRow(line) {
   const trimmed = line.trim();
@@ -24932,6 +25220,34 @@ var RepositoryProtocolReader = class {
   options;
   async loadSnapshot(configuration) {
     return (await this.loadProjection(configuration)).snapshot;
+  }
+  async loadRevision(configuration) {
+    const normalizedConfiguration = this.validateConfiguration(configuration);
+    const foreman = await this.read(normalizedConfiguration, PROTOCOL_PATHS.foreman);
+    const repo = await this.read(normalizedConfiguration, PROTOCOL_PATHS.repo);
+    const [queue, done, questions, current, dashboard, lock] = await Promise.all([
+      this.read(normalizedConfiguration, PROTOCOL_PATHS.queue),
+      this.readOptionalDone(normalizedConfiguration),
+      this.read(normalizedConfiguration, PROTOCOL_PATHS.questions),
+      this.read(normalizedConfiguration, PROTOCOL_PATHS.current),
+      this.read(normalizedConfiguration, PROTOCOL_PATHS.dashboard),
+      this.readOptionalLock(normalizedConfiguration)
+    ]);
+    const allFiles = [foreman, repo, queue, ...done ? [done] : [], questions, current, dashboard, ...lock ? [{
+      relativePath: PROTOCOL_PATHS.lock,
+      content: lock.content,
+      sha256: lock.sha256
+    }] : []];
+    const mergeReader = this.options.mergeReader ?? unavailableMergeReader();
+    const merge2 = validateMergeProjection(
+      await mergeReader.readMergeProjection(normalizedConfiguration),
+      normalizedConfiguration.repositoryKey
+    );
+    return {
+      gitCommit: merge2.gitCommit,
+      protocolDigest: protocolDigest(allFiles),
+      fileDigests: Object.fromEntries(allFiles.map((file2) => [file2.relativePath, file2.sha256]))
+    };
   }
   async loadProjection(configuration) {
     const normalizedConfiguration = this.validateConfiguration(configuration);
@@ -25397,9 +25713,45 @@ function spawnEnvironment(entry) {
     }
   };
 }
+var workerOperationStates = /* @__PURE__ */ new WeakMap();
+async function withWorkerOperation(ctx, workerThreadId, kind, operation) {
+  let operations = workerOperationStates.get(ctx);
+  if (!operations) {
+    operations = /* @__PURE__ */ new Map();
+    workerOperationStates.set(ctx, operations);
+  }
+  const state = operations.get(workerThreadId) ?? { stop: null, retry: null };
+  operations.set(workerThreadId, state);
+  const previous = kind === "retry" ? state.retry : state.stop;
+  const blockedByStop = kind === "retry" ? state.stop : null;
+  const operationPromise = (async () => {
+    if (previous) await previous;
+    if (blockedByStop && blockedByStop !== previous) await blockedByStop;
+    return operation();
+  })();
+  const completion = operationPromise.then(() => void 0, () => void 0);
+  state[kind] = completion;
+  try {
+    return await operationPromise;
+  } finally {
+    if (state[kind] === completion) state[kind] = null;
+    if (state.stop === null && state.retry === null && operations.get(workerThreadId) === state) {
+      operations.delete(workerThreadId);
+    }
+  }
+}
 var PROVIDER_LIMIT_SECONDS = 6 * 3600;
 var PENDING_RUN_GRACE_MS = 10 * 60 * 1e3;
+var RECONCILIATION_GRACE_MS = 10 * 60 * 1e3;
+var QUARANTINE_ABANDONMENT_GRACE_MS = 10 * 60 * 1e3;
 var MAX_RUN_ATTEMPTS = 3;
+function boundedDiagnostic(value, maxLength) {
+  const normalized = value.replace(/\s+/gu, " ").trim();
+  return (normalized.length > 0 ? normalized : "unknown").slice(0, maxLength);
+}
+function sameJson(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
 function dispatcherNowSeconds(now2) {
   return Math.floor(now2().getTime() / 1e3);
 }
@@ -26605,6 +26957,1043 @@ function createScaffoldProtocolActionExecutor(options) {
 }
 
 // src/dispatch/cancel.ts
+import { randomUUID as randomUUID2 } from "node:crypto";
+
+// src/dispatch/lifecycle.ts
+var ACTIVE_ATTEMPT_STATUSES = ["pending", "started", "cancel-requested", "reconciliation-required"];
+var TERMINAL_RUN_STATUSES = ["completed", "blocked", "failed-safe", "no-op"];
+var LOOKUP_DAY_MS = 24 * 60 * 60 * 1e3;
+function outcomeToStatus(state) {
+  return state === "success" ? "completed" : state;
+}
+function isTerminalThreadStatus(status) {
+  return status === "idle" || status === "error";
+}
+function activeAttemptId(detail) {
+  return [...detail.attempts].reverse().find(
+    (attempt) => attempt.runId === detail.summary.runId && ACTIVE_ATTEMPT_STATUSES.includes(attempt.status)
+  )?.attemptId ?? null;
+}
+function newestActiveAttemptStartMs(detail) {
+  const starts = detail.attempts.filter((attempt) => attempt.runId === detail.summary.runId && ACTIVE_ATTEMPT_STATUSES.includes(attempt.status)).map((attempt) => attempt.startedAt === null ? Number.NaN : Date.parse(attempt.startedAt)).filter((value) => !Number.isNaN(value));
+  const runStart = detail.summary.startedAt === null ? Number.NaN : Date.parse(detail.summary.startedAt);
+  return Math.max(...starts, Number.isNaN(runStart) ? 0 : runStart);
+}
+function secondPrecision(timestampMs) {
+  return Math.floor(timestampMs / 1e3) * 1e3;
+}
+async function readCurrentState(ctx, repositoryKey2, startedAtMs) {
+  const entry = ctx.repositoryLookup(repositoryKey2);
+  if (!entry) {
+    return { state: null, lastRunAt: null, modifiedAtMs: null, sha256: null, fresh: false, kind: "retryable", rawObservation: null, reason: "repository is not configured" };
+  }
+  let content = "";
+  try {
+    const file2 = await readTextFile(
+      { read: (args) => ctx.sdk.files.read(args), listPaths: (args) => ctx.sdk.files.listPaths(args) },
+      {
+        hostId: entry.configuration.connectedHostId,
+        rootPath: entry.configuration.checkoutPath,
+        relativePath: PROTOCOL_PATHS.current,
+        repositoryKey: repositoryKey2
+      }
+    );
+    content = file2.content;
+    if (file2.modifiedAtMs === void 0) {
+      return {
+        state: null,
+        lastRunAt: null,
+        modifiedAtMs: null,
+        sha256: file2.sha256,
+        fresh: false,
+        kind: "retryable",
+        rawObservation: lastNonEmptyLine(content),
+        reason: `${PROTOCOL_PATHS.current} mtime is unavailable`
+      };
+    }
+    const parsed = parseCurrentState(file2.content, PROTOCOL_PATHS.current);
+    const fresh = startedAtMs > 0 && secondPrecision(file2.modifiedAtMs) > secondPrecision(startedAtMs);
+    return {
+      state: parsed.state,
+      lastRunAt: parsed.lastRunAt,
+      modifiedAtMs: file2.modifiedAtMs ?? null,
+      sha256: file2.sha256,
+      fresh,
+      kind: fresh ? "valid" : "invalid",
+      rawObservation: lastNonEmptyLine(content),
+      reason: fresh ? null : `${PROTOCOL_PATHS.current} is not newer than the run start at filesystem-second precision`
+    };
+  } catch (error62) {
+    if (error62 instanceof ProtocolError && error62.code === "file-not-found") {
+      return { state: null, lastRunAt: null, modifiedAtMs: null, sha256: null, fresh: false, kind: "retryable", rawObservation: null, reason: `${PROTOCOL_PATHS.current} is not present` };
+    }
+    return {
+      state: null,
+      lastRunAt: null,
+      modifiedAtMs: null,
+      sha256: null,
+      fresh: false,
+      kind: error62 instanceof ProtocolError && error62.code === "malformed-protocol" ? "invalid" : "retryable",
+      rawObservation: lastNonEmptyLine(content) ?? errorMessage(error62),
+      reason: errorMessage(error62)
+    };
+  }
+}
+async function postRunRecords(ctx, run, threadId, current, attemptStartMs) {
+  const entry = ctx.repositoryLookup(run.repositoryKey);
+  const records = [...run.canonicalRecords];
+  if (!entry) throw new Error("repository is not configured");
+  const files = {
+    read: (args) => ctx.sdk.files.read(args),
+    listPaths: (args) => ctx.sdk.files.listPaths(args)
+  };
+  const timestamps = [
+    current.lastRunAt === null ? null : Date.parse(current.lastRunAt),
+    current.modifiedAtMs,
+    attemptStartMs > 0 ? attemptStartMs : null
+  ].filter((timestamp) => timestamp !== null && !Number.isNaN(timestamp));
+  const relativePaths = /* @__PURE__ */ new Set();
+  const strictPaths = /* @__PURE__ */ new Set();
+  const lookupTimestamps = [...new Set(timestamps.flatMap((timestampMs) => [
+    timestampMs - LOOKUP_DAY_MS,
+    timestampMs,
+    timestampMs + LOOKUP_DAY_MS
+  ]))];
+  for (const timestampMs of lookupTimestamps) {
+    for (const stamp of timestampVariants(timestampMs).stamps) {
+      const relativePath = `${PROTOCOL_PATHS.runs}/${stamp}-${threadId}.md`;
+      relativePaths.add(relativePath);
+      strictPaths.add(relativePath);
+    }
+    for (const prefix of timestampVariants(timestampMs).prefixes) {
+      try {
+        const page = await listFilesPage(files, {
+          hostId: entry.configuration.connectedHostId,
+          rootPath: entry.configuration.checkoutPath,
+          relativePath: PROTOCOL_PATHS.runs,
+          repositoryKey: run.repositoryKey,
+          query: prefix,
+          limit: 256,
+          allowTruncated: true
+        });
+        if (page.truncated) {
+          throw new ProtocolError(
+            "malformed-protocol",
+            `The targeted immutable run-record search for '${prefix}' was truncated`,
+            { path: PROTOCOL_PATHS.runs, repositoryKey: run.repositoryKey }
+          );
+        }
+        for (const relativePath of page.paths) {
+          relativePaths.add(relativePath);
+          strictPaths.add(relativePath);
+        }
+      } catch (error62) {
+        if (!(error62 instanceof ProtocolError && error62.code === "file-not-found")) throw error62;
+      }
+    }
+  }
+  for (const query of [threadId]) {
+    try {
+      const page = await listFilesPage(files, {
+        hostId: entry.configuration.connectedHostId,
+        rootPath: entry.configuration.checkoutPath,
+        relativePath: PROTOCOL_PATHS.runs,
+        repositoryKey: run.repositoryKey,
+        query,
+        limit: 256,
+        allowTruncated: true
+      });
+      if (page.truncated) {
+        throw new ProtocolError(
+          "malformed-protocol",
+          `The worker-targeted immutable run-record search for '${threadId}' was truncated`,
+          { path: PROTOCOL_PATHS.runs, repositoryKey: run.repositoryKey }
+        );
+      }
+      for (const relativePath of page.paths) {
+        relativePaths.add(relativePath);
+        strictPaths.add(relativePath);
+      }
+    } catch (error62) {
+      if (!(error62 instanceof ProtocolError && error62.code === "file-not-found")) throw error62;
+    }
+  }
+  const immutableRecords = [];
+  const invalidImmutablePaths = [];
+  for (const relativePath of [...relativePaths].filter((path) => path.endsWith(".md") && !path.endsWith("/.gitkeep"))) {
+    const identity = recordIdentity(relativePath);
+    if (identity === null && !isMalformedCandidatePath(relativePath, threadId)) continue;
+    try {
+      const file2 = await readTextFile(files, {
+        hostId: entry.configuration.connectedHostId,
+        rootPath: entry.configuration.checkoutPath,
+        relativePath,
+        repositoryKey: run.repositoryKey
+      });
+      immutableRecords.push(parseRunRecord(file2.content, relativePath, file2.sha256));
+      if (strictPaths.has(relativePath) && identity === null) invalidImmutablePaths.push(relativePath);
+    } catch (error62) {
+      if (!(error62 instanceof ProtocolError && error62.code === "file-not-found")) throw error62;
+    }
+  }
+  const postRunRevision = ctx.protocolReader.loadRevision !== void 0 ? await ctx.protocolReader.loadRevision(entry.configuration) : (await ctx.protocolReader.loadSnapshot(entry.configuration)).revision;
+  const revision = refreshedEvidenceRevision({
+    ...postRunRevision,
+    // Historical run records are immutable and were already part of the
+    // pre-run snapshot. Keep those digests while replacing mutable files and
+    // the git commit with the post-run observation from one read.
+    fileDigests: { ...run.repositoryRevision.fileDigests, ...postRunRevision.fileDigests }
+  }, current.sha256, immutableRecords);
+  if (!records.some((record2) => record2.recordType === "current-run")) {
+    records.push({
+      relativePath: PROTOCOL_PATHS.current,
+      recordType: "current-run",
+      recordId: run.runId,
+      repositoryRevision: revision
+    });
+  }
+  return { revision, canonicalRecords: records, immutableRecords, invalidImmutablePaths };
+}
+function timestampVariants(timestampMs) {
+  const date5 = new Date(timestampMs);
+  const iso = date5.toISOString();
+  const datePart = iso.slice(0, 10);
+  const timePart = iso.slice(11, 19);
+  const fraction = iso.slice(19, 23);
+  const compact = `${datePart.replace(/-/gu, "")}T${timePart.replace(/:/gu, "")}`;
+  const dashed = `${datePart}T${timePart}`;
+  const dashedNoColon = `${datePart}T${timePart.replace(/:/gu, "")}`;
+  const legacy = `${datePart}-${timePart.replace(/:/gu, "")}`;
+  return {
+    stamps: [
+      `${compact}Z`,
+      `${compact}${fraction}Z`,
+      `${dashed}Z`,
+      `${dashed}${fraction}Z`,
+      `${dashedNoColon}Z`,
+      `${dashedNoColon}${fraction}Z`,
+      legacy,
+      `${legacy}Z`,
+      `${legacy}${fraction}`
+    ],
+    prefixes: [compact, dashed, dashedNoColon, legacy, datePart.replace(/-/gu, ""), datePart]
+  };
+}
+function sameStringArray(left, right) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+function sameRunGeneration(actual, expected) {
+  return actual !== null && actual.runId === expected.runId && actual.repositoryKey === expected.repositoryKey && actual.requestedAt === expected.requestedAt && actual.startedAt === expected.startedAt && actual.finishedAt === expected.finishedAt && actual.providerId === expected.providerId && actual.workerThreadId === expected.workerThreadId && actual.projectId === expected.projectId && actual.environmentId === expected.environmentId && sameStringArray(actual.queueItemIds, expected.queueItemIds) && sameRevision(actual.repositoryRevision, expected.repositoryRevision) && sameJson(actual.canonicalRecords, expected.canonicalRecords);
+}
+function sameAttemptGeneration(actual, expected) {
+  return actual !== null && expected !== void 0 && actual.attemptId === expected.attemptId && actual.runId === expected.runId && actual.repositoryKey === expected.repositoryKey && actual.providerId === expected.providerId && actual.model === expected.model && actual.reasoningLevel === expected.reasoningLevel && actual.workerThreadId === expected.workerThreadId && actual.status === expected.status && actual.startedAt === expected.startedAt && actual.finishedAt === expected.finishedAt;
+}
+function sameLeaseGeneration(actual, expected) {
+  return actual !== null && expected !== null && actual.leaseId === expected.leaseId && actual.repositoryKey === expected.repositoryKey && actual.runId === expected.runId && sameStringArray(actual.queueItemIds, expected.queueItemIds) && actual.workerThreadId === expected.workerThreadId && sameStringArray(actual.authorizationProvenance, expected.authorizationProvenance) && actual.acquiredAt === expected.acquiredAt && actual.expiresAt === expected.expiresAt && actual.status === expected.status;
+}
+function updateLeaseIfExact(ctx, expected, status, expectedRun) {
+  ctx.store.withTransaction((transaction) => {
+    const current = transaction.getLeaseForRun(expected.runId);
+    if (current === null || !sameLeaseGeneration(current, expected)) return;
+    if (expectedRun !== void 0) {
+      const currentRun = transaction.getRunSummary(expectedRun.runId);
+      if (currentRun === null || !sameRunGeneration(currentRun, expectedRun) || !TERMINAL_RUN_STATUSES.includes(currentRun.status)) return;
+    }
+    transaction.updateOwnershipLease({ ...current, status });
+  });
+}
+function refreshedEvidenceRevision(baseRevision, currentSha256, immutableRecords) {
+  const fileDigests = { ...baseRevision.fileDigests };
+  if (currentSha256 !== null) fileDigests[PROTOCOL_PATHS.current] = currentSha256;
+  for (const record2 of immutableRecords) fileDigests[record2.relativePath] = record2.sha256;
+  const digestInput = Object.entries(fileDigests).sort(([left], [right]) => left.localeCompare(right)).map(([path, sha2562]) => `${path}\0${sha2562}`).join("\n");
+  return {
+    gitCommit: baseRevision.gitCommit,
+    protocolDigest: digestText(digestInput),
+    fileDigests
+  };
+}
+function isMalformedCandidatePath(relativePath, threadId) {
+  const name = relativePath.slice(`${PROTOCOL_PATHS.runs}/`.length);
+  if (recordIdentity(relativePath) !== null) return false;
+  if (/^(?:\d{8}T\d{6}|\d{4}-\d{2}-\d{2}T\d{2}:?\d{2}:?\d{2}|\d{4}-\d{2}-\d{2}-\d{6})/u.test(name)) {
+    return true;
+  }
+  const dateOnly = name.match(/^(\d{4}-\d{2}-\d{2})(?:-(.+))?\.md$/u);
+  if (dateOnly) return dateOnly[2] === void 0 || dateOnly[2] === threadId;
+  return true;
+}
+function finalizeRun(ctx, detail, input2) {
+  const run = detail.summary;
+  const finalReason = boundedDiagnostic(input2.lastState, 128);
+  const expectedAttempt = input2.attemptId === null ? void 0 : detail.attempts.find((attempt) => attempt.attemptId === input2.attemptId);
+  const expectedLease = detail.lease;
+  let applied = false;
+  ctx.store.withTransaction((transaction) => {
+    const currentRun = transaction.getRunSummary(run.runId);
+    if (currentRun === null) throw new Error(`cannot finalize missing run '${run.runId}'`);
+    const currentStatus = currentRun.status;
+    if (currentStatus === input2.status) return;
+    if (["completed", "blocked", "failed-safe", "no-op"].includes(currentStatus)) return;
+    if (!sameRunGeneration(currentRun, run) || input2.expectedRunStatus !== void 0 && currentStatus !== input2.expectedRunStatus) return;
+    const currentAttempt = transaction.getActiveAttempt(run.runId);
+    if (expectedAttempt === void 0) {
+      if (currentAttempt !== null) return;
+    } else {
+      if (!sameAttemptGeneration(currentAttempt, expectedAttempt)) return;
+      if (currentAttempt === null) return;
+    }
+    if (input2.expectedAttemptStatus !== void 0 && currentAttempt?.status !== input2.expectedAttemptStatus) return;
+    const currentLease = transaction.getLeaseForRun(run.runId);
+    if (input2.expectedLeaseId !== void 0 && (currentLease?.leaseId ?? null) !== input2.expectedLeaseId) return;
+    if (input2.expectedLeaseStatus !== void 0 && currentLease?.status !== input2.expectedLeaseStatus) return;
+    if (input2.expectedLeaseId !== void 0 && input2.expectedLeaseId !== null && !sameLeaseGeneration(currentLease, expectedLease)) return;
+    if (run.workerThreadId !== null && input2.workerThreadId !== run.workerThreadId) return;
+    if (currentAttempt !== null && currentAttempt.workerThreadId !== null && currentAttempt.workerThreadId !== input2.workerThreadId) return;
+    const targetLeaseWorker = input2.leaseWorkerThreadId === void 0 ? input2.workerThreadId : input2.leaseWorkerThreadId;
+    if (currentLease !== null && currentLease.workerThreadId !== targetLeaseWorker) return;
+    const failedCountAlreadyIncludesRun = transaction.hasDispatchAttemptStatus(run.runId, "failed-safe");
+    transaction.updateRunDispatch(runDispatchUpdate(currentRun, {
+      status: input2.status,
+      finishedAt: input2.finishedAt,
+      providerId: input2.providerId,
+      workerThreadId: input2.workerThreadId,
+      projectId: input2.projectId,
+      environmentId: input2.environmentId,
+      repositoryRevision: input2.revision,
+      canonicalRecords: input2.canonicalRecords
+    }));
+    if (currentAttempt && ["started", "cancel-requested", "pending", "reconciliation-required"].includes(currentAttempt.status)) {
+      transaction.updateDispatchAttempt({ ...currentAttempt, status: input2.status, finishedAt: input2.finishedAt });
+    }
+    const lease = currentLease;
+    if (lease && lease.runId === run.runId && lease.repositoryKey === run.repositoryKey && lease.status !== "released") {
+      transaction.updateOwnershipLease({
+        ...lease,
+        workerThreadId: input2.leaseWorkerThreadId === void 0 ? input2.workerThreadId : input2.leaseWorkerThreadId,
+        status: input2.releaseLease ? "released" : "reconciliation-required"
+      });
+    }
+    const state = nightState(
+      ctx.store.getDispatcherState(run.repositoryKey),
+      nightKeyAt(ctx.now(), ctx.settings.nightWindowEndHour)
+    );
+    const limits = { ...state.limits };
+    if (input2.limitProviderSeconds !== void 0) {
+      limits[input2.providerId] = dispatcherNowSeconds(ctx.now) + input2.limitProviderSeconds;
+    }
+    transaction.saveDispatcherState({
+      ...state,
+      lastState: finalReason,
+      failedCount: state.failedCount + (input2.bumpFailed && !failedCountAlreadyIncludesRun ? 1 : 0),
+      noopCount: state.noopCount + (input2.bumpNoop ? 1 : 0),
+      limits
+    });
+    transaction.resolveReconciliation({
+      runId: run.runId,
+      resolvedAt: input2.finishedAt,
+      resolution: input2.status,
+      reasonCode: finalReason
+    });
+    applied = true;
+  });
+  return applied;
+}
+function markRunForReconciliation(ctx, detail, reason, rawObservation = null, expectedAttemptId = activeAttemptId(detail)) {
+  ctx.log?.(`run ${detail.summary.runId}: ${reason}`);
+  const run = detail.summary;
+  const entry = ctx.repositoryLookup(run.repositoryKey);
+  const detectedAt = ctx.now();
+  const detectedAtIso = detectedAt.toISOString();
+  const deadlineAt = new Date(detectedAt.getTime() + RECONCILIATION_GRACE_MS).toISOString();
+  const expectedAttempt = expectedAttemptId === null ? void 0 : detail.attempts.find((attempt) => attempt.attemptId === expectedAttemptId);
+  const expectedLease = detail.lease ?? ctx.store.getLeaseForRun(run.runId);
+  const orphanPending = run.status === "pending" && expectedAttemptId === null && expectedLease === null;
+  const boundedReason = boundedDiagnostic(reason, 128);
+  const boundedObservation = rawObservation === null ? null : boundedDiagnostic(rawObservation, 512);
+  ctx.store.withTransaction((transaction) => {
+    const currentRun = transaction.getRunSummary(run.runId);
+    if (currentRun === null) throw new Error(`cannot reconcile missing run '${run.runId}'`);
+    if (["completed", "blocked", "failed-safe", "no-op"].includes(currentRun.status)) return;
+    if (!sameRunGeneration(currentRun, run) || currentRun.status !== run.status) return;
+    const currentAttempt = transaction.getActiveAttempt(run.runId);
+    if (orphanPending) {
+      if (currentAttempt !== null || transaction.getLeaseForRun(run.runId) !== null) return;
+    } else {
+      if (!sameAttemptGeneration(currentAttempt, expectedAttempt)) return;
+      if (currentAttempt === null) return;
+    }
+    const currentLease = transaction.getLeaseForRun(run.runId);
+    if (expectedLease === null) {
+      if (currentLease !== null) return;
+    } else if (currentLease === null || !sameLeaseGeneration(currentLease, expectedLease)) return;
+    transaction.recordReconciliation({
+      runId: run.runId,
+      firstDetectedAt: detectedAtIso,
+      deadlineAt,
+      reasonCode: boundedReason,
+      rawObservation: boundedObservation
+    });
+    transaction.updateRunDispatch(runDispatchUpdate(currentRun, {
+      status: "reconciliation-required",
+      finishedAt: currentRun.finishedAt ?? detectedAtIso,
+      projectId: currentRun.projectId ?? entry?.projectId ?? "unknown",
+      environmentId: currentRun.environmentId ?? entry?.environmentId ?? null
+    }));
+    if (currentAttempt && ["started", "cancel-requested", "pending"].includes(currentAttempt.status)) {
+      transaction.updateDispatchAttempt({ ...currentAttempt, status: "reconciliation-required", finishedAt: currentAttempt.finishedAt ?? detectedAtIso });
+    }
+    if (currentLease && currentLease.status !== "released") {
+      transaction.updateOwnershipLease({ ...currentLease, status: "reconciliation-required" });
+    }
+  });
+}
+function recordIdentity(relativePath) {
+  const match = relativePath.match(/^plans\/factory\/runs\/(\d{8}T\d{6}(?:\.\d{1,9})?Z|\d{4}-\d{2}-\d{2}T\d{2}:?\d{2}:?\d{2}(?:\.\d{1,9})?Z|\d{4}-\d{2}-\d{2}-\d{6}(?:\.\d{1,9})?Z?)-(.+)\.md$/u);
+  if (!match) return null;
+  const stamp = match[1];
+  const compact = stamp.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(\.\d+)?Z$/u);
+  const dashed = stamp.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):?(\d{2}):?(\d{2})(\.\d+)?Z$/u);
+  const legacyDashed = stamp.match(/^(\d{4})-(\d{2})-(\d{2})-(\d{2})(\d{2})(\d{2})(\.\d+)?Z?$/u);
+  const parts = compact ?? dashed ?? legacyDashed;
+  const fraction = parts?.[7] === void 0 ? ".000" : `${parts[7]}000`.slice(0, 4);
+  const timestampMs = parts ? Date.parse(`${parts[1]}-${parts[2]}-${parts[3]}T${parts[4]}:${parts[5]}:${parts[6]}${fraction}Z`) : Number.NaN;
+  return Number.isNaN(timestampMs) ? null : { workerThreadId: match[2], timestampMs, hasFraction: parts?.[7] !== void 0 };
+}
+function evidenceIsFresh(identity, attemptStartMs) {
+  if (attemptStartMs <= 0) return true;
+  if (identity.hasFraction) return identity.timestampMs >= attemptStartMs;
+  return secondPrecision(identity.timestampMs) > secondPrecision(attemptStartMs);
+}
+function validateCompletion(ctx, detail, threadId, current, evidence) {
+  const run = detail.summary;
+  const rawObservation = current.rawObservation ?? evidence.immutableRecords[0]?.content.trim().slice(-512) ?? null;
+  const activeAttempt = detail.attempts.find(
+    (attempt) => attempt.runId === run.runId && ACTIVE_ATTEMPT_STATUSES.includes(attempt.status) && (attempt.workerThreadId === null || attempt.workerThreadId === threadId)
+  );
+  if (!activeAttempt) return { kind: "invalid", reason: "no active attempt is correlated to this run", rawObservation };
+  const lease = ctx.store.getLeaseForRun(run.runId);
+  const currentLease = ctx.store.getCurrentOwnership(run.repositoryKey);
+  if (!lease || lease.repositoryKey !== run.repositoryKey || lease.runId !== run.runId || !currentLease || currentLease.leaseId !== lease.leaseId || currentLease.runId !== run.runId) {
+    return { kind: "invalid", reason: "the current lease is not correlated to this run", rawObservation };
+  }
+  if (current.kind === "retryable") return { kind: "retryable", reason: current.reason ?? "terminal state is not readable", rawObservation };
+  if (current.kind === "invalid" || current.state === null || !current.fresh) {
+    return { kind: "invalid", reason: current.reason ?? "terminal state is stale or malformed", rawObservation };
+  }
+  if (run.workerThreadId !== threadId) {
+    return { kind: "invalid", reason: "observed terminal worker does not match the recorded run worker", rawObservation };
+  }
+  if (evidence.invalidImmutablePaths.length > 0) {
+    return { kind: "invalid", reason: `immutable run record filename is malformed: ${evidence.invalidImmutablePaths[0]}`, rawObservation };
+  }
+  const startedAtMs = newestActiveAttemptStartMs(detail);
+  const identifiedRecords = evidence.immutableRecords.map((record3) => ({ record: record3, identity: recordIdentity(record3.relativePath) })).filter((entry) => entry.identity !== null).sort((left, right) => right.identity.timestampMs - left.identity.timestampMs);
+  const records = identifiedRecords.filter(({ identity: identity2 }) => evidenceIsFresh(identity2, startedAtMs));
+  const candidateForeignRecord = identifiedRecords.find(
+    ({ identity: identity2 }) => identity2.workerThreadId !== threadId && secondPrecision(identity2.timestampMs) >= secondPrecision(startedAtMs)
+  );
+  if (current.state === "failed-safe" && candidateForeignRecord && !records.some(({ identity: identity2 }) => identity2.workerThreadId === threadId)) {
+    return { kind: "invalid", reason: "immutable run record belongs to a different worker thread", rawObservation };
+  }
+  const latestTimestampMs = records[0]?.identity.timestampMs;
+  const latestRecords = latestTimestampMs === void 0 ? [] : records.filter(({ identity: identity2 }) => identity2.timestampMs === latestTimestampMs);
+  if (latestRecords.some(({ identity: identity2 }) => identity2.workerThreadId !== threadId)) {
+    return { kind: "invalid", reason: "latest immutable run record belongs to a different worker thread", rawObservation };
+  }
+  const recordsForRun = records.filter(({ identity: identity2 }) => identity2.workerThreadId === threadId).sort((left, right) => right.identity.timestampMs - left.identity.timestampMs);
+  if (recordsForRun.length === 0 && records.length > 0) {
+    return { kind: "invalid", reason: "immutable run record belongs to a different worker thread", rawObservation };
+  }
+  if (current.state === "failed-safe" && recordsForRun.length === 0) {
+    const firstAttempt = detail.attempts.find((attempt) => attempt.runId === run.runId);
+    if (firstAttempt?.attemptId !== activeAttempt.attemptId) {
+      return { kind: "invalid", reason: "legacy failed-safe evidence predates the active retry generation", rawObservation };
+    }
+    return { kind: "accepted", reason: "failed-safe current state is correlated to the terminal worker", rawObservation, state: current.state };
+  }
+  const record2 = recordsForRun[0]?.record;
+  if (!record2) return { kind: "invalid", reason: "no immutable run record is attributable to this terminal outcome", rawObservation };
+  const identity = recordIdentity(record2.relativePath);
+  if (!identity) return { kind: "invalid", reason: "immutable run record filename is not a supported UTC timestamp format", rawObservation };
+  if (!evidenceIsFresh(identity, startedAtMs)) {
+    return { kind: "invalid", reason: "immutable run record predates the run start", rawObservation };
+  }
+  try {
+    const parsedRecord = parseCurrentState(record2.content, record2.relativePath);
+    if (parsedRecord.state !== current.state || record2.state !== current.state) {
+      return { kind: "invalid", reason: "immutable run record and current state disagree", rawObservation };
+    }
+  } catch (error62) {
+    return { kind: "invalid", reason: errorMessage(error62), rawObservation };
+  }
+  return { kind: "accepted", reason: "correlated terminal evidence accepted", rawObservation, state: current.state, record: record2 };
+}
+function finalizationInput(run, revision, canonicalRecords, workerThreadId, finishedAt, status, lastState, limitProviderSeconds, bumpFailed = status === "failed-safe", attemptId = null, releaseLease = true) {
+  return {
+    status,
+    providerId: run.providerId ?? "unknown",
+    workerThreadId,
+    projectId: run.projectId ?? "unknown",
+    environmentId: run.environmentId,
+    revision,
+    canonicalRecords,
+    finishedAt,
+    lastState,
+    bumpFailed,
+    bumpNoop: status === "no-op",
+    attemptId,
+    releaseLease,
+    expectedRunStatus: run.status,
+    ...limitProviderSeconds === void 0 ? {} : { limitProviderSeconds }
+  };
+}
+function finalizeCancelledRun(ctx, detail, options) {
+  const run = detail.summary;
+  const attempt = [...detail.attempts].reverse().find(
+    (candidate) => candidate.runId === run.runId && ACTIVE_ATTEMPT_STATUSES.includes(candidate.status)
+  );
+  if (!attempt) return false;
+  const input2 = finalizationInput(
+    run,
+    run.repositoryRevision,
+    [...run.canonicalRecords],
+    options.workerThreadId,
+    ctx.now().toISOString(),
+    "no-op",
+    "cancelled",
+    void 0,
+    false,
+    attempt.attemptId,
+    options.releaseLease
+  );
+  return finalizeRun(ctx, detail, {
+    ...input2,
+    expectedAttemptStatus: attempt.status,
+    expectedLeaseId: detail.lease?.leaseId ?? null,
+    expectedLeaseStatus: detail.lease?.status,
+    ...options.releaseLease ? {} : { leaseWorkerThreadId: null }
+  });
+}
+function finalizeCancellationDeadline(ctx, detail, workerThreadId, reason) {
+  const run = detail.summary;
+  const attempt = [...detail.attempts].reverse().find(
+    (candidate) => candidate.runId === run.runId && candidate.status === "cancel-requested"
+  );
+  if (!attempt) return;
+  finalizeRun(ctx, detail, {
+    ...finalizationInput(
+      run,
+      run.repositoryRevision,
+      [...run.canonicalRecords],
+      workerThreadId,
+      ctx.now().toISOString(),
+      "failed-safe",
+      reason,
+      void 0,
+      true,
+      attempt.attemptId,
+      false
+    ),
+    expectedAttemptStatus: "cancel-requested",
+    expectedLeaseId: detail.lease?.leaseId ?? null,
+    expectedLeaseStatus: "release-requested"
+  });
+}
+async function settlePendingAttemptAtDeadline(ctx, detail, activeAttempt, lease) {
+  const run = detail.summary;
+  const workerThreadId = activeAttempt.workerThreadId ?? run.workerThreadId;
+  if (!workerThreadId) {
+    finalizeRun(ctx, detail, {
+      ...finalizationInput(
+        run,
+        run.repositoryRevision,
+        [...run.canonicalRecords],
+        "unknown-thread",
+        ctx.now().toISOString(),
+        "failed-safe",
+        "retry-settlement-deadline-expired",
+        void 0,
+        true,
+        activeAttempt.attemptId,
+        false
+      ),
+      expectedAttemptStatus: "pending",
+      expectedLeaseId: lease?.leaseId ?? null,
+      expectedLeaseStatus: lease?.status,
+      leaseWorkerThreadId: lease?.workerThreadId ?? null
+    });
+    return;
+  }
+  let threadStatus;
+  try {
+    threadStatus = (await ctx.sdk.threads.get({ threadId: workerThreadId })).status;
+  } catch (error62) {
+    finalizeRun(ctx, detail, {
+      ...finalizationInput(
+        run,
+        run.repositoryRevision,
+        [...run.canonicalRecords],
+        workerThreadId,
+        ctx.now().toISOString(),
+        "failed-safe",
+        `retry settlement could not read worker: ${errorMessage(error62)}`,
+        void 0,
+        true,
+        activeAttempt.attemptId,
+        false
+      ),
+      expectedAttemptStatus: "pending",
+      expectedLeaseId: lease?.leaseId ?? null,
+      expectedLeaseStatus: lease?.status,
+      leaseWorkerThreadId: lease?.workerThreadId ?? null
+    });
+    return;
+  }
+  if (!isTerminalThreadStatus(threadStatus)) {
+    try {
+      await withWorkerOperation(ctx, workerThreadId, "stop", () => ctx.sdk.threads.stop({ threadId: workerThreadId }));
+    } catch (error62) {
+      finalizeRun(ctx, detail, {
+        ...finalizationInput(
+          run,
+          run.repositoryRevision,
+          [...run.canonicalRecords],
+          workerThreadId,
+          ctx.now().toISOString(),
+          "failed-safe",
+          `retry settlement stop failed: ${errorMessage(error62)}`,
+          void 0,
+          true,
+          activeAttempt.attemptId,
+          false
+        ),
+        expectedAttemptStatus: "pending",
+        expectedLeaseId: lease?.leaseId ?? null,
+        expectedLeaseStatus: lease?.status,
+        leaseWorkerThreadId: lease?.workerThreadId ?? null
+      });
+      return;
+    }
+    finalizeRun(ctx, detail, {
+      ...finalizationInput(
+        run,
+        run.repositoryRevision,
+        [...run.canonicalRecords],
+        workerThreadId,
+        ctx.now().toISOString(),
+        "failed-safe",
+        `retry settlement deadline expired while worker was ${threadStatus}`,
+        void 0,
+        true,
+        activeAttempt.attemptId,
+        false
+      ),
+      expectedAttemptStatus: "pending",
+      expectedLeaseId: lease?.leaseId ?? null,
+      expectedLeaseStatus: lease?.status,
+      leaseWorkerThreadId: lease?.workerThreadId ?? null
+    });
+    return;
+  }
+  finalizeRun(ctx, detail, {
+    ...finalizationInput(
+      run,
+      run.repositoryRevision,
+      [...run.canonicalRecords],
+      workerThreadId,
+      ctx.now().toISOString(),
+      "failed-safe",
+      `retry settlement deadline expired after worker became ${threadStatus}`,
+      void 0,
+      true,
+      activeAttempt.attemptId,
+      false
+    ),
+    expectedAttemptStatus: "pending",
+    expectedLeaseId: lease?.leaseId ?? null,
+    expectedLeaseStatus: lease?.status,
+    leaseWorkerThreadId: lease?.workerThreadId ?? null
+  });
+}
+async function reconcileTerminalRun(ctx, detail, threadId, threadStatus) {
+  const run = detail.summary;
+  const startedAtMs = newestActiveAttemptStartMs(detail);
+  const current = await readCurrentState(ctx, run.repositoryKey, startedAtMs);
+  let evidence;
+  try {
+    evidence = await postRunRecords(ctx, run, threadId, current, startedAtMs);
+  } catch (error62) {
+    markRunForReconciliation(ctx, detail, `could not read immutable terminal evidence: ${errorMessage(error62)}`, current.rawObservation);
+    return false;
+  }
+  const validation = validateCompletion(ctx, detail, threadId, current, evidence);
+  if (validation.kind !== "accepted") {
+    const firstAttempt = detail.attempts.find((attempt) => attempt.runId === run.runId);
+    const initialGeneration = activeAttemptId(detail) === (firstAttempt?.attemptId ?? null);
+    const reason = threadStatus === "error" && current.kind !== "retryable" && initialGeneration ? `dead-start: ${validation.reason}` : validation.reason;
+    markRunForReconciliation(ctx, detail, reason, validation.rawObservation);
+    return false;
+  }
+  const state = validation.state;
+  const finishedAt = ctx.now().toISOString();
+  const reconciliation = ctx.store.getReconciliation(run.runId);
+  const deadStart = state === "failed-safe" && reconciliation?.reasonCode.startsWith("dead-start") === true;
+  const canonicalRecords = [...evidence.canonicalRecords];
+  if (validation.record && !canonicalRecords.some((record2) => record2.relativePath === validation.record.relativePath)) {
+    canonicalRecords.push({
+      relativePath: validation.record.relativePath,
+      recordType: "immutable-run",
+      recordId: validation.record.relativePath.split("/").pop() ?? run.runId,
+      repositoryRevision: evidence.revision
+    });
+  }
+  const status = outcomeToStatus(state);
+  const terminalAttempt = [...detail.attempts].reverse().find(
+    (attempt) => attempt.runId === run.runId && ACTIVE_ATTEMPT_STATUSES.includes(attempt.status)
+  );
+  finalizeRun(ctx, detail, {
+    ...finalizationInput(
+      run,
+      evidence.revision,
+      canonicalRecords,
+      threadId,
+      finishedAt,
+      status,
+      deadStart ? "dead-start" : state,
+      deadStart ? PROVIDER_LIMIT_SECONDS : void 0,
+      deadStart ? false : status === "failed-safe",
+      activeAttemptId(detail)
+    ),
+    expectedAttemptStatus: terminalAttempt?.status,
+    expectedLeaseId: detail.lease?.leaseId ?? null,
+    expectedLeaseStatus: detail.lease?.status
+  });
+  ctx.log?.(`run ${run.runId}: finished ${state} on ${threadStatus}`);
+  return true;
+}
+async function reconcileStartedRun(ctx, detail) {
+  const run = detail.summary;
+  if (["completed", "blocked", "failed-safe", "no-op"].includes(run.status)) return;
+  const activeAttempt = [...detail.attempts].reverse().find(
+    (attempt) => attempt.runId === run.runId && ACTIVE_ATTEMPT_STATUSES.includes(attempt.status)
+  );
+  const lease = detail.lease ?? ctx.store.getLeaseForRun(run.runId);
+  if (activeAttempt?.status === "pending") {
+    if (activeAttempt.startedAt === null) return;
+    const pendingDeadline = lease === null ? Number.NaN : Date.parse(lease.expiresAt);
+    if (!Number.isFinite(pendingDeadline) || ctx.now().getTime() < pendingDeadline) return;
+    await settlePendingAttemptAtDeadline(ctx, detail, activeAttempt, lease);
+    return;
+  }
+  if (!activeAttempt || activeAttempt.startedAt === null) return;
+  const threadId = run.workerThreadId;
+  if (!threadId || threadId === "spawn-ambiguous" || threadId === "unknown-thread") {
+    markRunForReconciliation(ctx, detail, "has no recorded worker thread to observe");
+    return;
+  }
+  let threadStatus;
+  try {
+    const thread = await ctx.sdk.threads.get({ threadId });
+    threadStatus = thread.status;
+  } catch (error62) {
+    if (run.status === "cancel-requested" && lease !== null && Date.parse(lease.expiresAt) <= ctx.now().getTime()) {
+      finalizeCancellationDeadline(ctx, detail, threadId, `cancellation deadline expired while worker was unreadable: ${errorMessage(error62)}`);
+      return;
+    }
+    markRunForReconciliation(ctx, detail, `could not read worker thread '${threadId}': ${errorMessage(error62)}`);
+    return;
+  }
+  if (run.status === "cancel-requested") {
+    if (isTerminalThreadStatus(threadStatus)) {
+      finalizeCancelledRun(ctx, detail, { releaseLease: true, workerThreadId: threadId });
+      return;
+    }
+    const expired = lease !== null && Date.parse(lease.expiresAt) <= ctx.now().getTime();
+    if (!expired) return;
+    try {
+      await withWorkerOperation(ctx, threadId, "stop", () => ctx.sdk.threads.stop({ threadId }));
+    } catch (error62) {
+      finalizeCancellationDeadline(ctx, detail, threadId, `cancellation deadline expired; stop failed: ${errorMessage(error62)}`);
+      return;
+    }
+    finalizeCancellationDeadline(ctx, detail, threadId, `cancellation deadline expired while worker was ${threadStatus}`);
+    return;
+  }
+  const nowMs = ctx.now().getTime();
+  if (!isTerminalThreadStatus(threadStatus)) {
+    const expired = lease !== null && Date.parse(lease.expiresAt) <= nowMs;
+    if (!expired) return;
+    try {
+      await withWorkerOperation(ctx, threadId, "stop", () => ctx.sdk.threads.stop({ threadId }));
+    } catch (error62) {
+      markRunForReconciliation(ctx, detail, `stop request for '${threadId}' failed: ${errorMessage(error62)}`);
+      return;
+    }
+    const transitioned = transitionRuntimeExpiryToCancelRequested(ctx, detail, activeAttempt, lease, threadId);
+    if (!transitioned) {
+      ctx.log?.(`run ${run.runId}: ignored stale runtime-cap stop result for generation ${activeAttempt.attemptId}`);
+      return;
+    }
+    ctx.log?.(`run ${run.runId}: runtime cap reached; stop requested on '${threadId}'`);
+    return;
+  }
+  await reconcileTerminalRun(ctx, detail, threadId, threadStatus);
+}
+function transitionRuntimeExpiryToCancelRequested(ctx, detail, expectedAttempt, expectedLease, workerThreadId) {
+  const run = detail.summary;
+  if (!expectedLease) return false;
+  return ctx.store.withTransaction((transaction) => {
+    const currentRun = transaction.getRunSummary(run.runId);
+    const currentAttempt = transaction.getActiveAttempt(run.runId);
+    const currentLease = transaction.getLeaseForRun(run.runId);
+    if (currentRun === null || !sameRunGeneration(currentRun, run) || currentRun.status !== "started" || !sameAttemptGeneration(currentAttempt, expectedAttempt) || currentAttempt?.status !== "started" || currentAttempt.workerThreadId !== workerThreadId || !sameLeaseGeneration(currentLease, expectedLease) || currentLease?.status !== "held" || currentLease.workerThreadId !== workerThreadId) return false;
+    transaction.updateRunDispatch(runDispatchUpdate(currentRun, {
+      status: "cancel-requested",
+      finishedAt: null,
+      workerThreadId
+    }));
+    transaction.updateDispatchAttempt({ ...currentAttempt, status: "cancel-requested" });
+    transaction.updateOwnershipLease({ ...currentLease, status: "release-requested" });
+    return true;
+  });
+}
+async function reconcileReconciliationRun(ctx, detail) {
+  const run = detail.summary;
+  if (["completed", "blocked", "failed-safe", "no-op"].includes(run.status)) return;
+  const metadata = ctx.store.getReconciliation(run.runId);
+  if (!metadata) {
+    markRunForReconciliation(ctx, detail, "entered reconciliation without persisted metadata");
+    return;
+  }
+  const deadlinePassed = ctx.now().getTime() >= Date.parse(metadata.deadlineAt);
+  const threadId = run.workerThreadId;
+  if (!threadId || threadId === "spawn-ambiguous" || threadId === "unknown-thread") {
+    if (deadlinePassed) {
+      finalizeAtReconciliationDeadline(ctx, detail, metadata, threadId ?? "unknown-thread", false);
+      ctx.log?.(`run ${run.runId}: reconciliation deadline expired; finalized failed-safe`);
+      return;
+    }
+    markRunForReconciliation(ctx, detail, "has no recorded worker thread to observe");
+    return;
+  }
+  let threadStatus;
+  try {
+    const thread = await ctx.sdk.threads.get({ threadId });
+    threadStatus = thread.status;
+  } catch (error62) {
+    const reason = `could not read worker thread '${threadId}': ${errorMessage(error62)}`;
+    if (deadlinePassed) {
+      finalizeAtReconciliationDeadline(ctx, detail, metadata, threadId, false, reason);
+    } else {
+      markRunForReconciliation(ctx, detail, reason);
+    }
+    return;
+  }
+  if (!isTerminalThreadStatus(threadStatus)) {
+    if (!deadlinePassed) return;
+    try {
+      await withWorkerOperation(ctx, threadId, "stop", () => ctx.sdk.threads.stop({ threadId }));
+    } catch (error62) {
+      const reason = `stop request for '${threadId}' failed: ${errorMessage(error62)}`;
+      finalizeAtReconciliationDeadline(ctx, detail, metadata, threadId, false, reason);
+      return;
+    }
+    finalizeAtReconciliationDeadline(ctx, detail, metadata, threadId, false, `worker '${threadId}' was still ${threadStatus} at the reconciliation deadline`);
+    ctx.log?.(`run ${run.runId}: reconciliation deadline reached; finalized failed-safe and quarantined the lease after stop request on '${threadId}'`);
+    return;
+  }
+  if (deadlinePassed) {
+    finalizeAtReconciliationDeadline(
+      ctx,
+      detail,
+      ctx.store.getReconciliation(run.runId) ?? metadata,
+      threadId,
+      true,
+      "reconciliation deadline expired after terminal worker re-observation"
+    );
+    ctx.log?.(`run ${run.runId}: reconciliation deadline expired after terminal re-observation; finalized failed-safe`);
+    return;
+  }
+  await reconcileTerminalRun(ctx, detail, threadId, threadStatus);
+}
+function finalizeAtReconciliationDeadline(ctx, detail, metadata, workerThreadId, releaseLease, resolutionReason) {
+  const run = detail.summary;
+  const deadStart = metadata.reasonCode.startsWith("dead-start");
+  const finalReason = boundedDiagnostic(deadStart ? "dead-start" : resolutionReason ?? "reconciliation-deadline-expired", 128);
+  const terminalAttempt = [...detail.attempts].reverse().find(
+    (attempt) => attempt.runId === run.runId && ACTIVE_ATTEMPT_STATUSES.includes(attempt.status)
+  );
+  finalizeRun(ctx, detail, {
+    ...finalizationInput(
+      run,
+      run.repositoryRevision,
+      [...run.canonicalRecords],
+      workerThreadId,
+      ctx.now().toISOString(),
+      "failed-safe",
+      finalReason,
+      deadStart || workerThreadId === "spawn-ambiguous" ? PROVIDER_LIMIT_SECONDS : void 0,
+      deadStart ? false : true,
+      activeAttemptId(detail),
+      releaseLease
+    ),
+    expectedAttemptStatus: terminalAttempt?.status,
+    expectedLeaseId: detail.lease?.leaseId ?? null,
+    expectedLeaseStatus: detail.lease?.status,
+    leaseWorkerThreadId: detail.lease?.workerThreadId ?? null
+  });
+}
+async function reconcileQuarantinedLease(ctx, lease, detail) {
+  const threadId = lease.workerThreadId;
+  if (!threadId || threadId === "spawn-ambiguous" || threadId === "unknown-thread") return;
+  let threadStatus;
+  try {
+    threadStatus = (await ctx.sdk.threads.get({ threadId })).status;
+  } catch {
+    return;
+  }
+  if (!isTerminalThreadStatus(threadStatus)) {
+    const stillOwnsWorker = ctx.store.withTransaction((transaction) => {
+      const currentLease = transaction.getLeaseForRun(lease.runId);
+      return sameLeaseGeneration(currentLease, lease) && currentLease?.status === "reconciliation-required" && currentLease.workerThreadId === threadId;
+    });
+    if (!stillOwnsWorker) return;
+    try {
+      await withWorkerOperation(ctx, threadId, "stop", () => ctx.sdk.threads.stop({ threadId }));
+    } catch {
+    }
+    return;
+  }
+  ctx.store.withTransaction((transaction) => {
+    const expectedRun = detail.summary;
+    const currentLease = transaction.getLeaseForRun(lease.runId);
+    if (currentLease === null || !sameLeaseGeneration(currentLease, lease) || currentLease.status !== "reconciliation-required") return;
+    const currentRun = transaction.getRunSummary(expectedRun.runId);
+    if (!sameRunGeneration(currentRun, expectedRun) || currentLease.repositoryKey !== lease.repositoryKey || currentLease.workerThreadId !== threadId || !currentRun || !TERMINAL_RUN_STATUSES.includes(currentRun.status)) return;
+    const expectedAttempt = [...detail.attempts].reverse().find((attempt) => attempt.runId === expectedRun.runId);
+    if (expectedAttempt !== void 0) {
+      const currentAttempt = transaction.getDispatchAttempt(expectedAttempt.attemptId);
+      if (currentAttempt === null || currentAttempt.attemptId !== expectedAttempt.attemptId || currentAttempt.runId !== expectedAttempt.runId || currentAttempt.repositoryKey !== expectedAttempt.repositoryKey || currentAttempt.providerId !== expectedAttempt.providerId || currentAttempt.model !== expectedAttempt.model || currentAttempt.reasoningLevel !== expectedAttempt.reasoningLevel || currentAttempt.workerThreadId !== expectedAttempt.workerThreadId || currentAttempt.status !== expectedAttempt.status || currentAttempt.startedAt !== expectedAttempt.startedAt || currentAttempt.finishedAt !== expectedAttempt.finishedAt) return;
+    }
+    transaction.updateOwnershipLease({ ...currentLease, workerThreadId: threadId, status: "released" });
+  });
+}
+function releaseQuarantinedOwnership(ctx, repositoryKey2) {
+  const entry = ctx.repositoryLookup(repositoryKey2);
+  if (!entry?.dispatchPaused) return false;
+  const lease = ctx.store.getCurrentOwnership(repositoryKey2);
+  if (!lease || lease.status !== "reconciliation-required") return false;
+  const metadata = ctx.store.getReconciliation(lease.runId);
+  if (!metadata || metadata.resolution !== "failed-safe" || metadata.resolvedAt === null) return false;
+  const deadline = Date.parse(metadata.deadlineAt);
+  if (!Number.isFinite(deadline) || ctx.now().getTime() < deadline + QUARANTINE_ABANDONMENT_GRACE_MS) return false;
+  if (lease.workerThreadId !== null && lease.workerThreadId !== "spawn-ambiguous" && lease.workerThreadId !== "unknown-thread" && lease.workerThreadId !== "never-dispatched") return false;
+  return ctx.store.withTransaction((transaction) => {
+    const currentLease = transaction.getLeaseForRun(lease.runId);
+    const currentRun = transaction.getRunSummary(lease.runId);
+    const currentMetadata = transaction.getReconciliation(lease.runId);
+    if (!sameLeaseGeneration(currentLease, lease) || currentRun === null || currentRun.repositoryKey !== repositoryKey2 || currentRun.status !== "failed-safe" || currentMetadata?.resolution !== "failed-safe" || currentMetadata.resolvedAt !== metadata.resolvedAt || currentMetadata.deadlineAt !== metadata.deadlineAt || currentMetadata.reasonCode !== metadata.reasonCode || currentLease === null || currentLease.status !== "reconciliation-required") return false;
+    transaction.updateOwnershipLease({ ...currentLease, status: "released" });
+    return true;
+  });
+}
+async function reconcileRepository(ctx, repositoryKey2) {
+  for (const run of ctx.store.listActiveRuns(repositoryKey2)) {
+    const detail = (await ctx.store.getRun({ repositoryKey: repositoryKey2, runId: run.runId })).run;
+    if (!detail) continue;
+    const currentStatus = detail.summary.status;
+    if (["completed", "blocked", "failed-safe", "no-op"].includes(currentStatus)) continue;
+    if (currentStatus === "pending") {
+      const ageMs = ctx.now().getTime() - Date.parse(detail.summary.requestedAt);
+      if (ageMs > PENDING_RUN_GRACE_MS) {
+        markRunForReconciliation(ctx, detail, "was never dispatched within the start grace period");
+      }
+      continue;
+    }
+    if (currentStatus === "reconciliation-required") {
+      await reconcileReconciliationRun(ctx, detail);
+      continue;
+    }
+    await reconcileStartedRun(ctx, detail);
+  }
+  const lease = ctx.store.getCurrentOwnership(repositoryKey2);
+  if (lease && lease.status === "reconciliation-required") {
+    const detail = (await ctx.store.getRun({ repositoryKey: repositoryKey2, runId: lease.runId })).run;
+    if (detail && TERMINAL_RUN_STATUSES.includes(detail.summary.status)) {
+      await reconcileQuarantinedLease(ctx, lease, detail);
+    }
+  } else if (lease && lease.status !== "released") {
+    const detail = (await ctx.store.getRun({ repositoryKey: repositoryKey2, runId: lease.runId })).run;
+    if (detail === null) {
+      updateLeaseIfExact(ctx, lease, "reconciliation-required");
+    } else if (!["pending", "started", "cancel-requested", "reconciliation-required"].includes(detail.summary.status)) {
+      updateLeaseIfExact(ctx, lease, "reconciliation-required", detail.summary);
+      const quarantined = ctx.store.getCurrentOwnership(repositoryKey2);
+      if (quarantined?.leaseId === lease.leaseId) {
+        await reconcileQuarantinedLease(ctx, quarantined, detail);
+      }
+    }
+  }
+}
+
+// src/dispatch/cancel.ts
+function ownsQuarantinedWorker(ctx, detail, lease, threadId) {
+  const run = detail.summary;
+  const attempt = [...detail.attempts].reverse().find((candidate) => candidate.runId === run.runId);
+  if (!attempt) return false;
+  return ctx.store.withTransaction((transaction) => {
+    const currentRun = transaction.getRunSummary(run.runId);
+    const currentLease = transaction.getLeaseForRun(run.runId);
+    const currentAttempt = transaction.getDispatchAttempt(attempt.attemptId);
+    return currentRun !== null && currentRun.runId === run.runId && currentRun.repositoryKey === run.repositoryKey && currentRun.requestedAt === run.requestedAt && currentRun.startedAt === run.startedAt && currentRun.finishedAt === run.finishedAt && currentRun.providerId === run.providerId && currentRun.workerThreadId === run.workerThreadId && currentRun.projectId === run.projectId && currentRun.environmentId === run.environmentId && sameJson(currentRun.queueItemIds, run.queueItemIds) && sameRevision(currentRun.repositoryRevision, run.repositoryRevision) && sameJson(currentRun.canonicalRecords, run.canonicalRecords) && ["completed", "blocked", "failed-safe", "no-op"].includes(currentRun.status) && currentAttempt !== null && currentAttempt.attemptId === attempt.attemptId && currentAttempt.runId === attempt.runId && currentAttempt.repositoryKey === attempt.repositoryKey && currentAttempt.providerId === attempt.providerId && currentAttempt.model === attempt.model && currentAttempt.reasoningLevel === attempt.reasoningLevel && currentAttempt.workerThreadId === threadId && currentAttempt.status === attempt.status && currentAttempt.startedAt === attempt.startedAt && currentAttempt.finishedAt === attempt.finishedAt && currentLease !== null && currentLease.leaseId === lease.leaseId && currentLease.repositoryKey === lease.repositoryKey && currentLease.runId === lease.runId && sameJson(currentLease.queueItemIds, lease.queueItemIds) && sameJson(currentLease.authorizationProvenance, lease.authorizationProvenance) && currentLease.workerThreadId === threadId && currentLease.acquiredAt === lease.acquiredAt && currentLease.expiresAt === lease.expiresAt && currentLease.status === "reconciliation-required";
+  });
+}
+function transitionToCancelRequested(ctx, detail, lease, expectedRunStatus, expectedAttemptStatus, workerThreadId) {
+  const run = detail.summary;
+  const attempt = [...detail.attempts].reverse().find(
+    (candidate) => candidate.runId === run.runId && ["pending", "started"].includes(candidate.status)
+  );
+  if (!attempt || workerThreadId === null) return null;
+  return ctx.store.withTransaction((transaction) => {
+    const currentRun = transaction.getRunSummary(run.runId);
+    if (!currentRun || currentRun.repositoryKey !== run.repositoryKey || currentRun.requestedAt !== run.requestedAt || currentRun.startedAt !== run.startedAt || currentRun.finishedAt !== run.finishedAt || currentRun.workerThreadId !== run.workerThreadId || currentRun.status !== expectedRunStatus) return null;
+    const currentAttempt = transaction.getActiveAttempt(run.runId);
+    const currentLease = transaction.getLeaseForRun(run.runId);
+    if (!currentAttempt || currentAttempt.attemptId !== attempt.attemptId || currentAttempt.runId !== attempt.runId || currentAttempt.repositoryKey !== attempt.repositoryKey || currentAttempt.providerId !== attempt.providerId || currentAttempt.model !== attempt.model || currentAttempt.reasoningLevel !== attempt.reasoningLevel || currentAttempt.status !== expectedAttemptStatus || currentAttempt.workerThreadId !== workerThreadId || currentAttempt.startedAt !== attempt.startedAt || currentAttempt.finishedAt !== attempt.finishedAt || !currentLease || currentLease.leaseId !== lease.leaseId || currentLease.repositoryKey !== run.repositoryKey || currentLease.runId !== run.runId || sameJson(currentLease.queueItemIds, lease.queueItemIds) === false || sameJson(currentLease.authorizationProvenance, lease.authorizationProvenance) === false || currentLease.acquiredAt !== lease.acquiredAt || currentLease.expiresAt !== lease.expiresAt || currentLease.status !== "held" || currentLease.workerThreadId !== workerThreadId) return null;
+    if (currentRun.providerId !== run.providerId || currentRun.projectId !== run.projectId || currentRun.environmentId !== run.environmentId || !sameJson(currentRun.queueItemIds, run.queueItemIds) || !sameRevision(currentRun.repositoryRevision, run.repositoryRevision) || !sameJson(currentRun.canonicalRecords, run.canonicalRecords)) return null;
+    transaction.updateRunDispatch(runDispatchUpdate(currentRun, {
+      status: "cancel-requested",
+      finishedAt: null,
+      workerThreadId
+    }));
+    transaction.updateDispatchAttempt({ ...currentAttempt, status: "cancel-requested" });
+    transaction.updateOwnershipLease({ ...currentLease, status: "release-requested" });
+    const intent = {
+      token: randomUUID2(),
+      runId: run.runId,
+      attemptId: currentAttempt.attemptId,
+      leaseId: currentLease.leaseId,
+      repositoryKey: run.repositoryKey,
+      workerThreadId,
+      createdAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    transaction.createStopIntent(intent);
+    return { intent, run: currentRun, attempt: currentAttempt, lease: currentLease, workerThreadId };
+  });
+}
+function settleStopIntent(ctx, generation) {
+  return ctx.store.withTransaction((transaction) => {
+    const intent = transaction.getStopIntent(generation.run.runId);
+    const currentRun = transaction.getRunSummary(generation.run.runId);
+    const currentAttempt = transaction.getDispatchAttempt(generation.attempt.attemptId);
+    const currentLease = transaction.getLeaseForRun(generation.run.runId);
+    const stillOwns = intent?.token === generation.intent.token && intent.attemptId === generation.attempt.attemptId && intent.leaseId === generation.lease.leaseId && intent.repositoryKey === generation.run.repositoryKey && intent.workerThreadId === generation.workerThreadId && currentRun?.runId === generation.run.runId && currentRun.repositoryKey === generation.run.repositoryKey && currentRun.requestedAt === generation.run.requestedAt && currentRun.startedAt === generation.run.startedAt && currentRun.finishedAt === null && currentRun.providerId === generation.run.providerId && currentRun.workerThreadId === generation.workerThreadId && currentRun.projectId === generation.run.projectId && currentRun.environmentId === generation.run.environmentId && sameJson(currentRun.queueItemIds, generation.run.queueItemIds) && sameRevision(currentRun.repositoryRevision, generation.run.repositoryRevision) && sameJson(currentRun.canonicalRecords, generation.run.canonicalRecords) && currentRun.status === "cancel-requested" && currentAttempt?.attemptId === generation.attempt.attemptId && currentAttempt.runId === generation.attempt.runId && currentAttempt.repositoryKey === generation.attempt.repositoryKey && currentAttempt.providerId === generation.attempt.providerId && currentAttempt.model === generation.attempt.model && currentAttempt.reasoningLevel === generation.attempt.reasoningLevel && currentAttempt.workerThreadId === generation.workerThreadId && currentAttempt.status === "cancel-requested" && currentAttempt.startedAt === generation.attempt.startedAt && currentAttempt.finishedAt === null && currentLease?.leaseId === generation.lease.leaseId && currentLease.repositoryKey === generation.lease.repositoryKey && currentLease.runId === generation.lease.runId && sameJson(currentLease.queueItemIds, generation.lease.queueItemIds) && sameJson(currentLease.authorizationProvenance, generation.lease.authorizationProvenance) && currentLease.workerThreadId === generation.workerThreadId && currentLease.acquiredAt === generation.lease.acquiredAt && currentLease.expiresAt === generation.lease.expiresAt && currentLease.status === "release-requested";
+    if (!stillOwns) return false;
+    transaction.deleteStopIntent(generation.intent.token);
+    return true;
+  });
+}
 async function stopRun(ctx, input2) {
   const lease = ctx.store.getCurrentOwnership(input2.repositoryKey);
   if (!lease || lease.status === "released") {
@@ -26625,6 +28014,48 @@ async function stopRun(ctx, input2) {
     return actionError("internal", `Run '${lease.runId}' referenced by lease '${lease.leaseId}' is missing.`);
   }
   const run = detail.summary;
+  if (run.status === "failed-safe" && lease.status === "reconciliation-required") {
+    const workerThreadId = lease.workerThreadId;
+    if (workerThreadId === null || workerThreadId === "spawn-ambiguous" || workerThreadId === "unknown-thread" || workerThreadId === "never-dispatched") {
+      const released = releaseQuarantinedOwnership(ctx, input2.repositoryKey);
+      if (!released) {
+        return actionError(
+          "conflict",
+          `Run '${run.runId}' is failed-safe but its unknown worker lease can be released only after the durable quarantine timeout while repository dispatch is paused.`
+        );
+      }
+      return actionSuccess({
+        status: "accepted",
+        message: `Released the quarantined repository lease for failed-safe run '${run.runId}'.`,
+        revision: run.repositoryRevision,
+        runId: run.runId,
+        leaseId: lease.leaseId,
+        queueItemId: null,
+        action: "stop",
+        questionId: null,
+        interactionId: null
+      }, run.repositoryRevision);
+    }
+    if (!ownsQuarantinedWorker(ctx, detail, lease, workerThreadId)) {
+      return actionError("conflict", `The quarantined worker for run '${run.runId}' is no longer owned by this lease.`);
+    }
+    try {
+      await withWorkerOperation(ctx, workerThreadId, "stop", () => ctx.sdk.threads.stop({ threadId: workerThreadId }));
+    } catch (error62) {
+      return actionError("internal", `Could not stop quarantined worker thread '${workerThreadId}': ${errorMessage(error62)}`);
+    }
+    return actionSuccess({
+      status: "accepted",
+      message: `Stop requested for quarantined worker '${workerThreadId}'. Ownership remains quarantined until termination is observed.`,
+      revision: run.repositoryRevision,
+      runId: run.runId,
+      leaseId: lease.leaseId,
+      queueItemId: null,
+      action: "stop",
+      questionId: null,
+      interactionId: null
+    }, run.repositoryRevision);
+  }
   if (run.status === "cancel-requested") {
     return actionSuccess({
       status: "already-applied",
@@ -26645,30 +28076,14 @@ async function stopRun(ctx, input2) {
       `Run '${run.runId}' is marked for reconciliation; its worker state must be resolved before ownership can be released.`
     );
   }
-  if (run.status !== "started" || !threadId) {
-    if (run.status === "pending" && threadId && threadId !== "spawn-ambiguous") {
-      ctx.store.withTransaction((transaction) => {
-        transaction.updateRunDispatch(runDispatchUpdate(run, { status: "reconciliation-required", finishedAt: null, workerThreadId: threadId }));
-        transaction.updateOwnershipLease({ ...lease, status: "reconciliation-required" });
-      });
-      return actionError(
-        "conflict",
-        `Run '${run.runId}' has a recorded worker thread but no confirmed start; it was marked for reconciliation instead of releasing ownership.`
-      );
+  if (run.status === "pending" && !threadId) {
+    const applied = finalizeCancelledRun(ctx, detail, { releaseLease: false, workerThreadId: "never-dispatched" });
+    if (!applied) {
+      return actionError("conflict", `Cancellation for run '${run.runId}' was stale and was not applied.`);
     }
-    ctx.store.withTransaction((transaction) => {
-      transaction.updateRunDispatch(runDispatchUpdate(run, {
-        status: run.status === "pending" ? "no-op" : run.status,
-        finishedAt: ctx.now().toISOString(),
-        workerThreadId: threadId ?? "never-dispatched"
-      }));
-      if (lease.status !== "released") {
-        transaction.updateOwnershipLease({ ...lease, status: "released" });
-      }
-    });
     return actionSuccess({
       status: "accepted",
-      message: `Run '${run.runId}' had no live worker; its lease was released.`,
+      message: `Cancellation recorded for run '${run.runId}'; its repository lease remains quarantined until the spawn attempt is settled.`,
       revision: run.repositoryRevision,
       runId: run.runId,
       leaseId: lease.leaseId,
@@ -26678,20 +28093,44 @@ async function stopRun(ctx, input2) {
       interactionId: null
     }, run.repositoryRevision);
   }
-  try {
-    await ctx.sdk.threads.stop({ threadId });
-  } catch (error62) {
-    return actionError("internal", `Could not stop worker thread '${threadId}': ${errorMessage(error62)}`);
+  if (run.status !== "started" && run.status !== "pending" || !threadId) {
+    return actionSuccess({
+      status: "already-applied",
+      message: `Run '${run.runId}' is already settled; ownership reconciliation will release the lease when safe.`,
+      revision: run.repositoryRevision,
+      runId: run.runId,
+      leaseId: lease.leaseId,
+      queueItemId: null,
+      action: "stop",
+      questionId: null,
+      interactionId: null
+    }, run.repositoryRevision);
   }
-  ctx.store.withTransaction((transaction) => {
-    transaction.updateRunDispatch(runDispatchUpdate(run, { status: "cancel-requested", finishedAt: null, workerThreadId: threadId }));
-    for (const attempt of detail.attempts) {
-      if (attempt.status === "started") {
-        transaction.updateDispatchAttempt({ ...attempt, status: "cancel-requested" });
-      }
-    }
-    transaction.updateOwnershipLease({ ...lease, status: "release-requested" });
-  });
+  const expectedRunStatus = run.status;
+  const expectedAttemptStatus = attemptStatusForCancellation(detail);
+  const generation = transitionToCancelRequested(
+    ctx,
+    detail,
+    lease,
+    expectedRunStatus,
+    expectedAttemptStatus,
+    threadId
+  );
+  if (generation === null) {
+    return actionError("conflict", `Cancellation for run '${run.runId}' was stale and was not applied.`);
+  }
+  let stopError = null;
+  try {
+    await withWorkerOperation(ctx, threadId, "stop", () => ctx.sdk.threads.stop({ threadId }));
+  } catch (error62) {
+    stopError = error62;
+  }
+  if (!settleStopIntent(ctx, generation)) {
+    return actionError("conflict", `Cancellation for run '${run.runId}' was stale and was not applied.`);
+  }
+  if (stopError !== null) {
+    return actionError("internal", `Could not stop worker thread '${threadId}': ${errorMessage(stopError)}`);
+  }
   return actionSuccess({
     status: "accepted",
     message: `Cancellation requested for run '${run.runId}'. Ownership releases when the worker stops.`,
@@ -26704,256 +28143,11 @@ async function stopRun(ctx, input2) {
     interactionId: null
   }, run.repositoryRevision);
 }
-
-// src/dispatch/ownership.ts
-var OwnershipHeldError = class extends Error {
-  existing;
-  constructor(existing) {
-    super(`Repository '${existing.repositoryKey}' already has an active run under lease ${existing.leaseId}.`);
-    this.name = "OwnershipHeldError";
-    this.existing = existing;
-  }
-};
-function confirmRelease(store, lease, workerThreadId) {
-  const updated = {
-    ...lease,
-    workerThreadId: workerThreadId === void 0 ? lease.workerThreadId : workerThreadId,
-    status: "released"
-  };
-  store.updateOwnershipLease(updated);
-  return updated;
-}
-function flagLeaseForReconciliation(store, lease) {
-  if (lease.status === "released") return lease;
-  const updated = { ...lease, status: "reconciliation-required" };
-  store.updateOwnershipLease(updated);
-  return updated;
-}
-
-// src/dispatch/lifecycle.ts
-function outcomeToStatus(state) {
-  return state === "success" ? "completed" : state;
-}
-function isTerminalThreadStatus(status) {
-  return status === "idle" || status === "error";
-}
-async function readCurrentState(ctx, repositoryKey2, startedAtMs) {
-  const entry = ctx.repositoryLookup(repositoryKey2);
-  if (!entry) return { state: null, fresh: false };
-  try {
-    const file2 = await readTextFile(
-      { read: (args) => ctx.sdk.files.read(args), listPaths: (args) => ctx.sdk.files.listPaths(args) },
-      {
-        hostId: entry.configuration.connectedHostId,
-        rootPath: entry.configuration.checkoutPath,
-        relativePath: PROTOCOL_PATHS.current,
-        repositoryKey: repositoryKey2
-      }
-    );
-    const parsed = parseCurrentState(file2.content, PROTOCOL_PATHS.current);
-    const fresh = file2.modifiedAtMs !== void 0 && startedAtMs > 0 && file2.modifiedAtMs >= startedAtMs;
-    return { state: parsed.state, fresh };
-  } catch (error62) {
-    if (error62 instanceof ProtocolError && error62.code === "file-not-found") {
-      return { state: null, fresh: false };
-    }
-    throw error62;
-  }
-}
-async function postRunRecords(ctx, run) {
-  const entry = ctx.repositoryLookup(run.repositoryKey);
-  const records = [...run.canonicalRecords];
-  if (!entry) return { revision: run.repositoryRevision, canonicalRecords: records };
-  try {
-    const snapshot = await ctx.protocolReader.loadSnapshot(entry.configuration);
-    const revision = snapshot.revision;
-    const latestRunPath = snapshot.currentRun.latestRunPath;
-    if (latestRunPath && !records.some((record2) => record2.relativePath === latestRunPath)) {
-      records.push({
-        relativePath: latestRunPath,
-        recordType: "immutable-run",
-        recordId: latestRunPath.split("/").pop() ?? run.runId,
-        repositoryRevision: revision
-      });
-    }
-    if (!records.some((record2) => record2.recordType === "current-run")) {
-      records.push({
-        relativePath: PROTOCOL_PATHS.current,
-        recordType: "current-run",
-        recordId: run.runId,
-        repositoryRevision: revision
-      });
-    }
-    return { revision, canonicalRecords: records };
-  } catch {
-    return { revision: run.repositoryRevision, canonicalRecords: records };
-  }
-}
-function finalizeRun(ctx, detail, input2) {
-  const run = detail.summary;
-  ctx.store.withTransaction((transaction) => {
-    transaction.updateRunDispatch(runDispatchUpdate(run, {
-      status: input2.status,
-      finishedAt: input2.finishedAt,
-      providerId: input2.providerId,
-      workerThreadId: input2.workerThreadId,
-      projectId: input2.projectId,
-      environmentId: input2.environmentId,
-      repositoryRevision: input2.revision,
-      canonicalRecords: input2.canonicalRecords
-    }));
-    for (const attempt of detail.attempts) {
-      if (attempt.status === "started" || attempt.status === "cancel-requested" || attempt.status === "pending") {
-        transaction.updateDispatchAttempt({ ...attempt, status: input2.status, finishedAt: input2.finishedAt });
-      }
-    }
-    const lease = detail.lease ?? ctx.store.getCurrentOwnership(run.repositoryKey);
-    if (lease && lease.status !== "released") {
-      transaction.updateOwnershipLease({ ...lease, workerThreadId: input2.workerThreadId, status: "released" });
-    }
-    const state = nightState(
-      ctx.store.getDispatcherState(run.repositoryKey),
-      nightKeyAt(ctx.now(), ctx.settings.nightWindowEndHour)
-    );
-    const limits = { ...state.limits };
-    if (input2.limitProviderSeconds !== void 0) {
-      limits[input2.providerId] = dispatcherNowSeconds(ctx.now) + input2.limitProviderSeconds;
-    }
-    transaction.saveDispatcherState({
-      ...state,
-      lastState: input2.lastState,
-      failedCount: state.failedCount + (input2.bumpFailed ? 1 : 0),
-      noopCount: state.noopCount + (input2.bumpNoop ? 1 : 0),
-      limits
-    });
-  });
-}
-function markRunForReconciliation(ctx, detail, reason) {
-  ctx.log?.(`run ${detail.summary.runId}: ${reason}`);
-  const run = detail.summary;
-  const entry = ctx.repositoryLookup(run.repositoryKey);
-  const finishedAt = ctx.now().toISOString();
-  ctx.store.withTransaction((transaction) => {
-    transaction.updateRunDispatch(runDispatchUpdate(run, {
-      status: "reconciliation-required",
-      finishedAt: run.finishedAt ?? finishedAt,
-      projectId: run.projectId ?? entry?.projectId ?? "unknown",
-      environmentId: run.environmentId ?? entry?.environmentId ?? null
-    }));
-    for (const attempt of detail.attempts) {
-      if (attempt.status === "started" || attempt.status === "cancel-requested" || attempt.status === "pending") {
-        transaction.updateDispatchAttempt({ ...attempt, status: "reconciliation-required", finishedAt: attempt.finishedAt ?? finishedAt });
-      }
-    }
-    const lease = detail.lease ?? ctx.store.getCurrentOwnership(run.repositoryKey);
-    if (lease && lease.status !== "released") {
-      transaction.updateOwnershipLease({ ...lease, status: "reconciliation-required" });
-    }
-  });
-}
-async function reconcileStartedRun(ctx, detail) {
-  const run = detail.summary;
-  const lease = detail.lease ?? ctx.store.getCurrentOwnership(run.repositoryKey);
-  const threadId = run.workerThreadId;
-  if (!threadId || threadId === "spawn-ambiguous" || threadId === "unknown-thread") {
-    markRunForReconciliation(ctx, detail, "has no recorded worker thread to observe");
-    return;
-  }
-  let threadStatus;
-  try {
-    const thread = await ctx.sdk.threads.get({ threadId });
-    threadStatus = thread.status;
-  } catch (error62) {
-    ctx.log?.(`run ${run.runId}: could not read worker thread '${threadId}': ${errorMessage(error62)}; retrying next reconcile`);
-    return;
-  }
-  const now2 = ctx.now();
-  const nowMs = now2.getTime();
-  const startedAtMs = run.startedAt ? Date.parse(run.startedAt) : 0;
-  if (!isTerminalThreadStatus(threadStatus)) {
-    const expired = lease !== null && Date.parse(lease.expiresAt) <= nowMs;
-    if (run.status === "cancel-requested" || !expired) return;
-    try {
-      await ctx.sdk.threads.stop({ threadId });
-    } catch (error62) {
-      ctx.log?.(`run ${run.runId}: stop request for '${threadId}' failed: ${errorMessage(error62)}; retrying next reconcile`);
-      return;
-    }
-    ctx.store.withTransaction((transaction) => {
-      transaction.updateRunDispatch(runDispatchUpdate(run, { status: "cancel-requested", finishedAt: null, workerThreadId: threadId }));
-      for (const attempt of detail.attempts) {
-        if (attempt.status === "started") {
-          transaction.updateDispatchAttempt({ ...attempt, status: "cancel-requested" });
-        }
-      }
-      if (lease) transaction.updateOwnershipLease({ ...lease, status: "release-requested" });
-    });
-    ctx.log?.(`run ${run.runId}: runtime cap reached; stop requested on '${threadId}'`);
-    return;
-  }
-  let current;
-  try {
-    current = await readCurrentState(ctx, run.repositoryKey, startedAtMs);
-  } catch (error62) {
-    markRunForReconciliation(ctx, detail, `could not read ${PROTOCOL_PATHS.current}: ${errorMessage(error62)}`);
-    return;
-  }
-  const wasCancelRequested = run.status === "cancel-requested";
-  const { revision, canonicalRecords } = await postRunRecords(ctx, run);
-  const finishedAt = now2.toISOString();
-  const identity = {
-    providerId: run.providerId,
-    workerThreadId: threadId,
-    projectId: run.projectId,
-    environmentId: run.environmentId,
-    revision,
-    canonicalRecords,
-    finishedAt
-  };
-  if (current.state !== null && current.fresh) {
-    finalizeRun(ctx, detail, {
-      ...identity,
-      status: outcomeToStatus(current.state),
-      lastState: current.state,
-      bumpFailed: current.state === "failed-safe",
-      bumpNoop: current.state === "no-op"
-    });
-    ctx.log?.(`run ${run.runId}: finished ${current.state}`);
-    return;
-  }
-  finalizeRun(ctx, detail, {
-    ...identity,
-    status: "failed-safe",
-    lastState: wasCancelRequested ? "failed-safe" : "dead-start",
-    bumpFailed: false,
-    bumpNoop: false,
-    ...wasCancelRequested ? {} : { limitProviderSeconds: PROVIDER_LIMIT_SECONDS }
-  });
-  ctx.log?.(`run ${run.runId}: ${wasCancelRequested ? "cancelled" : "dead start"} on ${run.providerId}`);
-}
-async function reconcileRepository(ctx, repositoryKey2) {
-  for (const run of ctx.store.listActiveRuns(repositoryKey2)) {
-    const detail = (await ctx.store.getRun({ repositoryKey: repositoryKey2, runId: run.runId })).run;
-    if (!detail) continue;
-    if (run.status === "pending") {
-      const ageMs = ctx.now().getTime() - Date.parse(run.requestedAt);
-      if (ageMs > PENDING_RUN_GRACE_MS) {
-        markRunForReconciliation(ctx, detail, "was never dispatched within the start grace period");
-      }
-      continue;
-    }
-    if (run.status === "reconciliation-required") continue;
-    await reconcileStartedRun(ctx, detail);
-  }
-  const lease = ctx.store.getCurrentOwnership(repositoryKey2);
-  if (lease && lease.status !== "released") {
-    const detail = (await ctx.store.getRun({ repositoryKey: repositoryKey2, runId: lease.runId })).run;
-    if (detail === null) {
-      flagLeaseForReconciliation(ctx.store, lease);
-    } else if (!["pending", "started", "cancel-requested", "reconciliation-required"].includes(detail.summary.status)) {
-      confirmRelease(ctx.store, lease);
-    }
-  }
+function attemptStatusForCancellation(detail) {
+  const attempt = [...detail.attempts].reverse().find(
+    (candidate) => candidate.runId === detail.summary.runId && ["pending", "started"].includes(candidate.status)
+  );
+  return attempt?.status === "pending" ? "pending" : "started";
 }
 
 // src/dispatch/recovery.ts
@@ -26968,7 +28162,13 @@ async function reconcileAll(ctx, repositoryKeys) {
 }
 
 // src/dispatch/retry.ts
-import { randomUUID as randomUUID2 } from "node:crypto";
+import { randomUUID as randomUUID3 } from "node:crypto";
+function ownsPendingRetryGeneration(transaction, generation) {
+  const run = transaction.getRunSummary(generation.runId);
+  const attempt = transaction.getActiveAttempt(generation.runId);
+  const lease = transaction.getLeaseForRun(generation.runId);
+  return run?.runId === generation.runId && run.repositoryKey === generation.repositoryKey && run.status === "started" && run.requestedAt === generation.runRequestedAt && run.startedAt === generation.runStartedAt && run.finishedAt === null && run.providerId === generation.runProviderId && run.workerThreadId === generation.workerThreadId && run.projectId === generation.runProjectId && run.environmentId === generation.runEnvironmentId && sameJson(run.queueItemIds, generation.runQueueItemIds) && sameRevision(run.repositoryRevision, generation.runRepositoryRevision) && sameJson(run.canonicalRecords, generation.runCanonicalRecords) && attempt?.attemptId === generation.attemptId && attempt.runId === generation.runId && attempt.repositoryKey === generation.repositoryKey && attempt.status === "pending" && attempt.providerId === generation.attemptProviderId && attempt.model === generation.attemptModel && attempt.reasoningLevel === generation.attemptReasoningLevel && attempt.workerThreadId === generation.workerThreadId && attempt.startedAt === generation.attemptStartedAt && attempt.finishedAt === null && lease?.leaseId === generation.leaseId && lease.repositoryKey === generation.repositoryKey && lease.runId === generation.runId && lease.status === "held" && sameJson(lease.queueItemIds, generation.leaseQueueItemIds) && sameJson(lease.authorizationProvenance, generation.leaseAuthorizationProvenance) && lease.workerThreadId === generation.workerThreadId && lease.acquiredAt === generation.leaseAcquiredAt && lease.expiresAt === generation.leaseExpiresAt;
+}
 async function retryAttempt(ctx, input2) {
   const attempt = ctx.store.getDispatchAttempt(input2.attemptId);
   if (!attempt) {
@@ -26985,6 +28185,9 @@ async function retryAttempt(ctx, input2) {
   if (run.status !== "failed-safe") {
     return actionError("conflict", `Run '${run.runId}' is '${run.status}', not failed-safe; only failed runs can be retried.`);
   }
+  if (detail.attempts.some((candidate) => ["pending", "started", "cancel-requested", "reconciliation-required"].includes(candidate.status))) {
+    return actionError("conflict", `Run '${run.runId}' already has an active retry attempt.`);
+  }
   if (detail.attempts.filter((candidate) => candidate.status !== "pending").length >= MAX_RUN_ATTEMPTS) {
     return actionError("conflict", `Run '${run.runId}' has used its retry budget of ${MAX_RUN_ATTEMPTS} attempts.`);
   }
@@ -26995,6 +28198,9 @@ async function retryAttempt(ctx, input2) {
   const existingLease = ctx.store.getLeaseForRun(run.runId);
   if (!existingLease) {
     return actionError("internal", `Run '${run.runId}' has no ownership lease to resume.`);
+  }
+  if (existingLease.status !== "released") {
+    return actionError("conflict", `Run '${run.runId}' cannot be retried while its repository lease is quarantined.`);
   }
   const current = ctx.store.getCurrentOwnership(input2.repositoryKey);
   if (current && current.runId !== run.runId) {
@@ -27026,40 +28232,128 @@ async function retryAttempt(ctx, input2) {
   if (threadStatus !== "error") {
     return actionError("conflict", `Worker thread '${threadId}' is '${threadStatus}', not in a retryable error state.`);
   }
+  const retryAttemptId = `attempt-${randomUUID3()}`;
+  const retryGenerationStartedAt = ctx.now().toISOString();
+  const pendingAttempt = {
+    attemptId: retryAttemptId,
+    runId: run.runId,
+    repositoryKey: input2.repositoryKey,
+    providerId: attempt.providerId,
+    model: attempt.model,
+    reasoningLevel: attempt.reasoningLevel,
+    workerThreadId: threadId,
+    status: "pending",
+    // This is the generation fence timestamp, not proof that the provider
+    // already accepted the retry. The pending status remains the in-flight
+    // guard while the external call is unresolved.
+    startedAt: retryGenerationStartedAt,
+    finishedAt: null
+  };
   const resumedExpiresAt = new Date(ctx.now().getTime() + ctx.settings.runtimeCapSeconds * 1e3).toISOString();
+  const retryGeneration = {
+    repositoryKey: input2.repositoryKey,
+    runId: run.runId,
+    attemptId: retryAttemptId,
+    leaseId: existingLease.leaseId,
+    workerThreadId: threadId,
+    runRequestedAt: run.requestedAt,
+    runStartedAt: run.startedAt,
+    runProviderId: run.providerId,
+    runProjectId: run.projectId,
+    runEnvironmentId: run.environmentId,
+    runQueueItemIds: run.queueItemIds,
+    runRepositoryRevision: run.repositoryRevision,
+    runCanonicalRecords: run.canonicalRecords,
+    attemptStartedAt: retryGenerationStartedAt,
+    attemptProviderId: pendingAttempt.providerId,
+    attemptModel: pendingAttempt.model,
+    attemptReasoningLevel: pendingAttempt.reasoningLevel,
+    leaseAcquiredAt: existingLease.acquiredAt,
+    leaseExpiresAt: resumedExpiresAt,
+    leaseQueueItemIds: existingLease.queueItemIds,
+    leaseAuthorizationProvenance: existingLease.authorizationProvenance
+  };
   try {
-    ctx.store.updateOwnershipLease({
-      ...existingLease,
-      workerThreadId: threadId,
-      expiresAt: resumedExpiresAt,
-      status: "held"
+    ctx.store.withTransaction((transaction) => {
+      const currentLease = transaction.getLeaseForRun(run.runId);
+      const currentRun = transaction.getRunSummary(run.runId);
+      if (!currentLease || currentLease.leaseId !== existingLease.leaseId || currentLease.repositoryKey !== existingLease.repositoryKey || currentLease.runId !== existingLease.runId || currentLease.status !== existingLease.status || !sameJson(currentLease.queueItemIds, existingLease.queueItemIds) || !sameJson(currentLease.authorizationProvenance, existingLease.authorizationProvenance) || currentLease.workerThreadId !== existingLease.workerThreadId || currentLease.acquiredAt !== existingLease.acquiredAt || currentLease.expiresAt !== existingLease.expiresAt) {
+        throw new Error(`ownership for run '${run.runId}' changed before retry`);
+      }
+      if (!currentRun || currentRun.repositoryKey !== run.repositoryKey || currentRun.requestedAt !== run.requestedAt || currentRun.startedAt !== run.startedAt || currentRun.finishedAt !== run.finishedAt || currentRun.providerId !== run.providerId || currentRun.workerThreadId !== run.workerThreadId || currentRun.projectId !== run.projectId || currentRun.environmentId !== run.environmentId || !sameJson(currentRun.queueItemIds, run.queueItemIds) || !sameRevision(currentRun.repositoryRevision, run.repositoryRevision) || !sameJson(currentRun.canonicalRecords, run.canonicalRecords) || currentRun.status !== "failed-safe") {
+        throw new Error(`run '${run.runId}' changed before retry`);
+      }
+      if (transaction.getActiveAttempt(run.runId) !== null) {
+        throw new Error(`run '${run.runId}' already has an active retry attempt`);
+      }
+      transaction.assertGlobalCapacity(ctx.settings.concurrencyLimit, run.runId);
+      transaction.resetReconciliation(run.runId);
+      transaction.updateRunDispatch(runDispatchUpdate(currentRun, {
+        status: "started",
+        finishedAt: null,
+        workerThreadId: threadId
+      }));
+      transaction.createDispatchAttempt(pendingAttempt);
+      transaction.updateOwnershipLease({
+        ...currentLease,
+        workerThreadId: threadId,
+        expiresAt: resumedExpiresAt,
+        status: "held"
+      });
     });
   } catch (error62) {
+    if (error62 instanceof GlobalConcurrencyLimitError) {
+      return actionError("conflict", errorMessage(error62));
+    }
     return actionError("conflict", `Could not re-acquire ownership for run '${run.runId}': ${errorMessage(error62)}`);
   }
   try {
-    await ctx.sdk.threads.retry({ threadId, reason: `factory retry of attempt '${input2.attemptId}'` });
+    await withWorkerOperation(ctx, threadId, "retry", () => ctx.sdk.threads.retry({ threadId, reason: `factory retry of attempt '${input2.attemptId}'` }));
   } catch (error62) {
-    ctx.store.updateOwnershipLease({ ...existingLease, status: "released" });
-    return actionError("internal", `Retry of worker thread '${threadId}' failed: ${errorMessage(error62)}`);
-  }
-  const retryAttemptId = `attempt-${randomUUID2()}`;
-  const startedAt = ctx.now().toISOString();
-  ctx.store.withTransaction((transaction) => {
-    transaction.createDispatchAttempt({
-      attemptId: retryAttemptId,
-      runId: run.runId,
-      repositoryKey: input2.repositoryKey,
-      providerId: attempt.providerId,
-      model: attempt.model,
-      reasoningLevel: attempt.reasoningLevel,
-      workerThreadId: threadId,
-      status: "started",
-      startedAt,
-      finishedAt: null
+    const applied2 = ctx.store.withTransaction((transaction) => {
+      if (!ownsPendingRetryGeneration(transaction, retryGeneration)) return false;
+      const currentRun = transaction.getRunSummary(run.runId);
+      const currentAttempt = transaction.getActiveAttempt(run.runId);
+      const currentLease = transaction.getLeaseForRun(run.runId);
+      if (!currentRun || !currentAttempt || !currentLease || currentAttempt.attemptId !== retryAttemptId) return false;
+      const detectedAt = ctx.now();
+      const detectedAtIso = detectedAt.toISOString();
+      transaction.recordReconciliation({
+        runId: run.runId,
+        firstDetectedAt: detectedAtIso,
+        deadlineAt: new Date(detectedAt.getTime() + RECONCILIATION_GRACE_MS).toISOString(),
+        reasonCode: "retry-ambiguous",
+        rawObservation: boundedDiagnostic(`retry of '${threadId}' failed ambiguously: ${errorMessage(error62)}`, 512)
+      });
+      transaction.updateRunDispatch(runDispatchUpdate(currentRun, {
+        status: "reconciliation-required",
+        finishedAt: detectedAtIso,
+        workerThreadId: threadId
+      }));
+      transaction.updateDispatchAttempt({ ...currentAttempt, status: "reconciliation-required", finishedAt: detectedAtIso });
+      transaction.updateOwnershipLease({ ...currentLease, status: "reconciliation-required" });
+      return true;
     });
-    transaction.updateRunDispatch(runDispatchUpdate(run, { status: "started", finishedAt: null, workerThreadId: threadId }));
+    if (!applied2) {
+      ctx.log?.(`run ${run.runId}: ignored stale retry failure for generation ${retryAttemptId}`);
+    }
+    return actionError("internal", boundedDiagnostic(`Retry of worker thread '${threadId}' failed: ${errorMessage(error62)}`, 512));
+  }
+  const startedAt = ctx.now().toISOString();
+  const applied = ctx.store.withTransaction((transaction) => {
+    if (!ownsPendingRetryGeneration(transaction, retryGeneration)) return false;
+    const currentAttempt = transaction.getActiveAttempt(run.runId);
+    if (!currentAttempt || currentAttempt.attemptId !== retryAttemptId) return false;
+    transaction.updateDispatchAttempt({ ...currentAttempt, status: "started", startedAt });
+    const currentRun = transaction.getRunSummary(run.runId);
+    if (!currentRun) return false;
+    transaction.updateRunDispatch(runDispatchUpdate(currentRun, { status: "started", finishedAt: null, workerThreadId: threadId }));
+    return true;
   });
+  if (!applied) {
+    ctx.log?.(`run ${run.runId}: ignored stale retry success for generation ${retryAttemptId}`);
+    return actionError("conflict", `The retry result for run '${run.runId}' was stale and was ignored.`);
+  }
   return actionSuccess({
     status: "accepted",
     message: `Retry dispatched on worker thread '${threadId}' as attempt '${retryAttemptId}'.`,
@@ -27074,7 +28368,17 @@ async function retryAttempt(ctx, input2) {
 }
 
 // src/dispatch/start.ts
-import { randomUUID as randomUUID3 } from "node:crypto";
+import { randomUUID as randomUUID4 } from "node:crypto";
+
+// src/dispatch/ownership.ts
+var OwnershipHeldError = class extends Error {
+  existing;
+  constructor(existing) {
+    super(`Repository '${existing.repositoryKey}' already has an active run under lease ${existing.leaseId}.`);
+    this.name = "OwnershipHeldError";
+    this.existing = existing;
+  }
+};
 
 // src/provider-status.ts
 function hasFullPermission(provider) {
@@ -27158,10 +28462,90 @@ function runTitle(repositoryKey2, displayName, providerId) {
 function noSpawn(result) {
   return { result, runId: null, leaseId: null };
 }
+function ownsPendingSpawnGeneration(transaction, generation) {
+  const run = transaction.getRunSummary(generation.runId);
+  const attempt = transaction.getActiveAttempt(generation.runId);
+  const lease = transaction.getLeaseForRun(generation.runId);
+  const matched = run?.runId === generation.runId && run.repositoryKey === generation.repositoryKey && run.requestedAt === generation.requestedAt && run.status === "pending" && run.startedAt === null && run.finishedAt === null && run.workerThreadId === null && run.providerId === null && run.projectId === generation.projectId && run.environmentId === generation.environmentId && sameRevision(run.repositoryRevision, generation.repositoryRevision) && sameJson(run.canonicalRecords, generation.canonicalRecords) && sameJson(run.queueItemIds, generation.queueItemIds) && attempt?.attemptId === generation.attemptId && attempt.runId === generation.runId && attempt.repositoryKey === generation.repositoryKey && attempt.status === "pending" && attempt.workerThreadId === null && attempt.providerId === generation.providerId && attempt.model === generation.model && attempt.reasoningLevel === generation.reasoningLevel && lease?.leaseId === generation.leaseId && lease.repositoryKey === generation.repositoryKey && lease.runId === generation.runId && sameJson(lease.queueItemIds, generation.queueItemIds) && sameJson(lease.authorizationProvenance, generation.leaseAuthorizationProvenance) && lease.acquiredAt === generation.acquiredAt && lease.expiresAt === generation.expiresAt && lease.status === "held" && lease.workerThreadId === null;
+  return matched;
+}
+async function quarantineLateSpawn(ctx, input2) {
+  let attached = false;
+  const detail = (await ctx.store.getRun({ repositoryKey: input2.repositoryKey, runId: input2.runId })).run;
+  if (detail) {
+    attached = ctx.store.withTransaction((transaction) => {
+      const currentRun = transaction.getRunSummary(input2.runId);
+      const status = currentRun?.status ?? null;
+      const attempt = transaction.getDispatchAttempt(input2.attemptId);
+      const lease = transaction.getLeaseForRun(input2.runId);
+      const terminalStatus = status === "no-op" || status === "failed-safe";
+      const cancellableStatus = status === "cancel-requested";
+      const reconcilingStatus = status === "reconciliation-required";
+      const expectedAttemptStatus = terminalStatus ? status : cancellableStatus ? "cancel-requested" : reconcilingStatus ? "reconciliation-required" : null;
+      const allowedLeaseStatus = terminalStatus || reconcilingStatus ? "reconciliation-required" : cancellableStatus ? "release-requested" : null;
+      const leaseWorkerIsUnresolved = lease?.workerThreadId === null || lease?.workerThreadId === "unknown-thread" || lease?.workerThreadId === "spawn-ambiguous" || lease?.workerThreadId === "never-dispatched";
+      if (!status || status === "pending" || !expectedAttemptStatus || !allowedLeaseStatus || !currentRun || currentRun.repositoryKey !== input2.repositoryKey || currentRun.requestedAt !== input2.requestedAt || currentRun.startedAt !== null || !sameRevision(currentRun.repositoryRevision, input2.repositoryRevision) || !sameJson(currentRun.canonicalRecords, input2.canonicalRecords) || !sameJson(currentRun.queueItemIds, input2.queueItemIds) || !attempt || attempt.runId !== input2.runId || attempt.attemptId !== input2.attemptId || attempt.repositoryKey !== input2.repositoryKey || attempt.providerId !== input2.providerId || attempt.model !== input2.model || attempt.reasoningLevel !== input2.reasoningLevel || attempt.status !== expectedAttemptStatus || attempt.workerThreadId !== null || !lease || lease.leaseId !== input2.leaseId || lease.repositoryKey !== input2.repositoryKey || lease.runId !== input2.runId || !sameJson(lease.queueItemIds, input2.queueItemIds) || !sameJson(lease.authorizationProvenance, input2.leaseAuthorizationProvenance) || lease.status !== allowedLeaseStatus || !leaseWorkerIsUnresolved) return false;
+      transaction.updateRunDispatch(runDispatchUpdate(currentRun, {
+        status,
+        finishedAt: currentRun.finishedAt,
+        workerThreadId: input2.threadId
+      }));
+      transaction.updateDispatchAttempt({ ...attempt, workerThreadId: input2.threadId });
+      transaction.updateOwnershipLease({ ...lease, workerThreadId: input2.threadId });
+      return true;
+    });
+  }
+  const safeToStop = ctx.store.withTransaction((transaction) => {
+    const currentOwner = transaction.getCurrentOwnership(input2.repositoryKey);
+    if (!currentOwner) return true;
+    if (currentOwner.workerThreadId !== input2.threadId) return true;
+    if (currentOwner.runId !== input2.runId || currentOwner.leaseId !== input2.leaseId) return false;
+    const currentRun = transaction.getRunSummary(input2.runId);
+    const currentAttempt = transaction.getDispatchAttempt(input2.attemptId);
+    const currentLease = transaction.getLeaseForRun(input2.runId);
+    const terminalStatus = currentRun?.status === "no-op" || currentRun?.status === "failed-safe";
+    const expectedAttemptStatus = terminalStatus ? currentRun?.status : currentRun?.status === "cancel-requested" ? "cancel-requested" : currentRun?.status === "reconciliation-required" ? "reconciliation-required" : null;
+    const expectedLeaseStatus = terminalStatus || currentRun?.status === "reconciliation-required" ? "reconciliation-required" : currentRun?.status === "cancel-requested" ? "release-requested" : null;
+    return expectedAttemptStatus !== null && expectedLeaseStatus !== null && currentRun !== null && currentRun.repositoryKey === input2.repositoryKey && currentRun.requestedAt === input2.requestedAt && currentRun.startedAt === null && (currentRun.providerId === input2.providerId || currentRun.providerId === "unknown") && currentRun.workerThreadId === input2.threadId && (currentRun.projectId === input2.projectId || currentRun.projectId === "unknown") && (currentRun.environmentId === input2.environmentId || currentRun.environmentId === null) && sameRevision(currentRun.repositoryRevision, input2.repositoryRevision) && sameJson(currentRun.canonicalRecords, input2.canonicalRecords) && sameJson(currentRun.queueItemIds, input2.queueItemIds) && currentAttempt !== null && currentAttempt.attemptId === input2.attemptId && currentAttempt.runId === input2.runId && currentAttempt.repositoryKey === input2.repositoryKey && currentAttempt.providerId === input2.providerId && currentAttempt.model === input2.model && currentAttempt.reasoningLevel === input2.reasoningLevel && currentAttempt.workerThreadId === input2.threadId && currentAttempt.status === expectedAttemptStatus && currentLease !== null && currentLease.leaseId === input2.leaseId && currentLease.repositoryKey === input2.repositoryKey && currentLease.runId === input2.runId && sameJson(currentLease.queueItemIds, input2.queueItemIds) && sameJson(currentLease.authorizationProvenance, input2.leaseAuthorizationProvenance) && currentLease.acquiredAt === input2.acquiredAt && currentLease.expiresAt === input2.expiresAt && currentLease.workerThreadId === input2.threadId && currentLease.status === expectedLeaseStatus;
+  });
+  if (!safeToStop) {
+    ctx.log?.(`run ${input2.runId}: did not stop late spawn '${input2.threadId}' because a newer lease owns that worker id`);
+    return;
+  }
+  try {
+    await withWorkerOperation(ctx, input2.threadId, "stop", () => ctx.sdk.threads.stop({ threadId: input2.threadId }));
+    ctx.log?.(`run ${input2.runId}: stopped late spawn '${input2.threadId}' after generation ${input2.attemptId} became stale${attached ? "; lease remains quarantined" : ""}`);
+  } catch (error62) {
+    ctx.log?.(`run ${input2.runId}: late spawn '${input2.threadId}' could not be stopped: ${errorMessage(error62)}${attached ? "; lease remains quarantined" : "; no durable lease was available"}`);
+  }
+}
 async function markSpawnAmbiguous(ctx, input2, error62) {
   const message = `Worker spawn for run '${input2.runId}' failed ambiguously: ${errorMessage(error62)}. The thread may exist; the run was marked for reconciliation instead of retried.`;
   ctx.log?.(message);
-  ctx.store.withTransaction((transaction) => {
+  const detectedAt = ctx.now();
+  const applied = ctx.store.withTransaction((transaction) => {
+    if (!ownsPendingSpawnGeneration(transaction, {
+      ...input2,
+      requestedAt: input2.requestedAt,
+      providerId: input2.provider.providerId,
+      model: input2.provider.model,
+      reasoningLevel: input2.provider.reasoningLevel,
+      projectId: null,
+      environmentId: null,
+      repositoryRevision: input2.revision,
+      canonicalRecords: input2.canonicalRecords,
+      queueItemIds: input2.queueItemIds,
+      leaseAuthorizationProvenance: input2.leaseAuthorizationProvenance,
+      acquiredAt: input2.requestedAt,
+      expiresAt: input2.expiresAt
+    })) return false;
+    transaction.recordReconciliation({
+      runId: input2.runId,
+      firstDetectedAt: detectedAt.toISOString(),
+      deadlineAt: new Date(detectedAt.getTime() + RECONCILIATION_GRACE_MS).toISOString(),
+      reasonCode: "ambiguous-worker-spawn",
+      rawObservation: boundedDiagnostic(message, 512)
+    });
     transaction.updateRunDispatch({
       repositoryKey: input2.repositoryKey,
       runId: input2.runId,
@@ -27186,11 +28570,19 @@ async function markSpawnAmbiguous(ctx, input2, error62) {
       startedAt: null,
       finishedAt: ctx.now().toISOString()
     });
-    const lease = ctx.store.getCurrentOwnership(input2.repositoryKey);
-    if (lease && lease.runId === input2.runId) {
-      transaction.updateOwnershipLease({ ...lease, status: "reconciliation-required" });
-    }
+    const lease = transaction.getLeaseForRun(input2.runId);
+    if (!lease || lease.leaseId !== input2.leaseId) return false;
+    transaction.updateOwnershipLease({ ...lease, workerThreadId: "spawn-ambiguous", status: "reconciliation-required" });
+    return true;
   });
+  if (!applied) {
+    ctx.log?.(`run ${input2.runId}: ignored stale ambiguous spawn result for generation ${input2.attemptId}`);
+    return {
+      result: actionError("conflict", `The ambiguous spawn result for run '${input2.runId}' was stale and was ignored.`),
+      runId: input2.runId,
+      leaseId: input2.leaseId
+    };
+  }
   return {
     result: actionError("internal", message),
     runId: input2.runId,
@@ -27254,9 +28646,9 @@ async function startRun(ctx, input2) {
     source: item.approved.kind === "explicit" ? "queue.approved" : "none",
     approvedText: item.approved.kind === "explicit" ? item.approved.text : null
   }));
-  const runId = `run-${randomUUID3()}`;
-  const attemptId = `attempt-${randomUUID3()}`;
-  const leaseId = `lease-${randomUUID3()}`;
+  const runId = `run-${randomUUID4()}`;
+  const attemptId = `attempt-${randomUUID4()}`;
+  const leaseId = `lease-${randomUUID4()}`;
   const requestedAt = ctx.now().toISOString();
   const expiresAt = new Date(ctx.now().getTime() + ctx.settings.runtimeCapSeconds * 1e3).toISOString();
   const intent = {
@@ -27284,6 +28676,7 @@ async function startRun(ctx, input2) {
         persistedRunId = inserted.runId;
         return false;
       }
+      transaction.assertGlobalCapacity(ctx.settings.concurrencyLimit, runId);
       transaction.createOwnershipLease({
         leaseId,
         repositoryKey: input2.repositoryKey,
@@ -27314,6 +28707,9 @@ async function startRun(ctx, input2) {
       return noSpawn(actionError("idempotency-conflict", errorMessage(error62)));
     }
     if (error62 instanceof OwnershipHeldError) {
+      return noSpawn(actionError("conflict", errorMessage(error62)));
+    }
+    if (error62 instanceof GlobalConcurrencyLimitError) {
       return noSpawn(actionError("conflict", errorMessage(error62)));
     }
     const message = errorMessage(error62);
@@ -27355,14 +28751,37 @@ async function startRun(ctx, input2) {
       runId,
       leaseId,
       attemptId,
+      requestedAt,
+      expiresAt,
       provider,
       revision: snapshot.revision,
       projectId: entry.projectId,
-      environmentId: entry.environmentId ?? null
+      environmentId: entry.environmentId ?? null,
+      canonicalRecords,
+      queueItemIds: intent.queueItemIds,
+      leaseAuthorizationProvenance: intent.queueItemIds
     }, error62);
   }
   const startedAt = ctx.now().toISOString();
-  ctx.store.withTransaction((transaction) => {
+  const applied = ctx.store.withTransaction((transaction) => {
+    if (!ownsPendingSpawnGeneration(transaction, {
+      repositoryKey: input2.repositoryKey,
+      runId,
+      attemptId,
+      leaseId,
+      requestedAt,
+      providerId: provider.providerId,
+      model: provider.model,
+      reasoningLevel: provider.reasoningLevel,
+      projectId: null,
+      environmentId: null,
+      repositoryRevision: snapshot.revision,
+      canonicalRecords,
+      queueItemIds: intent.queueItemIds,
+      leaseAuthorizationProvenance: intent.queueItemIds,
+      acquiredAt: requestedAt,
+      expiresAt
+    })) return false;
     transaction.updateRunDispatch({
       repositoryKey: input2.repositoryKey,
       runId,
@@ -27387,10 +28806,8 @@ async function startRun(ctx, input2) {
       startedAt,
       finishedAt: null
     });
-    const lease = ctx.store.getCurrentOwnership(input2.repositoryKey);
-    if (lease && lease.runId === runId) {
-      transaction.updateOwnershipLease({ ...lease, workerThreadId: threadId });
-    }
+    const lease = transaction.getLeaseForRun(runId);
+    transaction.updateOwnershipLease({ ...lease, workerThreadId: threadId });
     const state = ctx.store.getDispatcherState(input2.repositoryKey);
     transaction.saveDispatcherState({
       ...nightState(state, nightKey),
@@ -27398,7 +28815,35 @@ async function startRun(ctx, input2) {
       // An explicit manual pick still advances the cursor, so the next alternate step skips it.
       lastStartProvider: provider.providerId
     });
+    return true;
   });
+  if (!applied) {
+    ctx.log?.(`run ${runId}: ignored stale spawn success for generation ${attemptId}`);
+    await quarantineLateSpawn(ctx, {
+      repositoryKey: input2.repositoryKey,
+      runId,
+      attemptId,
+      leaseId,
+      threadId,
+      requestedAt,
+      providerId: provider.providerId,
+      model: provider.model,
+      reasoningLevel: provider.reasoningLevel,
+      repositoryRevision: snapshot.revision,
+      canonicalRecords,
+      queueItemIds: intent.queueItemIds,
+      leaseAuthorizationProvenance: intent.queueItemIds,
+      projectId: entry.projectId,
+      environmentId: entry.environmentId ?? null,
+      acquiredAt: requestedAt,
+      expiresAt
+    });
+    return {
+      result: actionError("conflict", `The spawn result for run '${runId}' was stale and was ignored.`),
+      runId,
+      leaseId
+    };
+  }
   return {
     result: actionSuccess({
       status: "accepted",

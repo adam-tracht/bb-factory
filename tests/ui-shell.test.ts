@@ -586,6 +586,22 @@ describe("FactoryShell", () => {
 });
 
 describe("computeAttention", () => {
+  it("treats reconciliation-required as an urgent bounded recovery state", () => {
+    const items = computeAttention({
+      snapshot: null,
+      snapshotError: false,
+      settings: null,
+      health: null,
+      runs: { runs: [{ runId: "run-1", status: "reconciliation-required" } as never], nextCursor: null },
+      interactions: null,
+    });
+    expect(items).toContainEqual(expect.objectContaining({
+      id: "run-reconciliation",
+      severity: "action",
+      detail: expect.stringContaining("bounded window"),
+    }));
+  });
+
   it("flags blocking questions, approvals, and paused dispatch without snapshot data", () => {
     const items = computeAttention({
       snapshot: null,

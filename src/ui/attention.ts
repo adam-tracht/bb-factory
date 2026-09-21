@@ -156,14 +156,24 @@ export function computeAttention(input: AttentionInput): AttentionItem[] {
     });
   }
 
-  const failedRun = runs?.runs.find((run) => run.status === "failed-safe" || run.status === "reconciliation-required");
-  if (failedRun) {
+  const reconciliationRun = runs?.runs.find((run) => run.status === "reconciliation-required");
+  if (reconciliationRun) {
+    items.push({
+      id: "run-reconciliation",
+      severity: "action",
+      section: "runs",
+      title: "A run needs reconciliation",
+      detail: `${reconciliationRun.runId} · terminal evidence is being checked; the bounded window ends in failed-safe and Retry is unavailable`,
+    });
+  }
+  const failedSafeRun = runs?.runs.find((run) => run.status === "failed-safe");
+  if (failedSafeRun) {
     items.push({
       id: "failed-run",
       severity: "warning",
       section: "runs",
-      title: failedRun.status === "reconciliation-required" ? "A run needs reconciliation" : "A run failed safe",
-      detail: `${failedRun.runId} · retry available on the run`,
+      title: "A run failed safe",
+      detail: `${failedSafeRun.runId} · review the run for lease status before retrying`,
     });
   }
 

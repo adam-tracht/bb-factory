@@ -284,6 +284,41 @@ describe("runStatusLabel", () => {
 });
 
 describe("RunDetailView", () => {
+  it("explains reconciliation and failed-safe terminal states", () => {
+    const ctx = makeCtx();
+    render(h(RunDetailView, { detail: makeDetail(makeRun({ status: "reconciliation-required" })), ctx }));
+    expect(screen.getByRole("status").textContent).toContain("Terminal evidence is being reconciled");
+
+    cleanup();
+    const quarantinedLease = {
+      leaseId: "lease-1",
+      repositoryKey: "demo" as const,
+      runId: "run-1",
+      queueItemIds: ["MON-1"],
+      workerThreadId: "thr_worker",
+      authorizationProvenance: ["MON-1"],
+      acquiredAt: "2026-09-10T12:01:00Z",
+      expiresAt: "2026-09-10T13:01:00Z",
+      status: "reconciliation-required" as const,
+    };
+    render(h(RunDetailView, {
+      detail: makeDetail(makeRun({ status: "failed-safe" }), { lease: quarantinedLease }),
+      ctx,
+    }));
+    expect(screen.getByRole("status").textContent).toContain("Global capacity is free");
+    expect(screen.getByRole("status").textContent).toContain("ownership remains quarantined");
+    expect(screen.getByRole("button", { name: "Resolve ownership" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+
+    cleanup();
+    render(h(RunDetailView, {
+      detail: makeDetail(makeRun({ status: "failed-safe" }), { lease: { ...quarantinedLease, status: "released" } }),
+      ctx,
+    }));
+    expect(screen.getByRole("status").textContent).toContain("the repository lease is released");
+    expect(screen.getByRole("status").textContent).toContain("Retry is the supported next action");
+  });
+
   it("renders the timeline and resolves canonical records to workspace targets", () => {
     const ctx = makeCtx();
     render(h(RunDetailView, { detail: makeDetail(makeRun()), ctx }));
@@ -317,12 +352,12 @@ describe("RunDetailView", () => {
 
   it("confirms Retry and dispatches the retry action with the latest attempt id", () => {
     const ctx = makeCtx();
-    const detail = makeDetail(makeRun({ status: "started", finishedAt: null }));
+    const detail = makeDetail(makeRun({ status: "failed-safe", finishedAt: "2026-09-10T12:05:00Z" }));
     render(h(RunDetailView, { detail, ctx }));
 
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     const dialog = screen.getByRole("alertdialog");
-    expect(dialog.textContent).toContain("Dispatches a new attempt for run run-1");
+    expect(dialog.textContent).toContain("Dispatches a new attempt for failed-safe run run-1.");
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
     expect(ctx.onAction).toHaveBeenCalledWith({ kind: "retry", attemptId: "attempt-1" });

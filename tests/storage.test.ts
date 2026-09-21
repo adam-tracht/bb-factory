@@ -306,7 +306,106 @@ describe("operational SQLite storage", () => {
       "pending_action_intents",
       "question_answer_submissions",
       "repository_write_actions",
+      "run_reconciliation_metadata",
+      "stop_intents",
     ]);
+  });
+
+  it("keeps reconciliation deadlines immutable and resolves them once", () => {
+    const store = newStore();
+    const intent = makeIntent("run-reconcile", "bbf:v1:monorepo:run-now:423e4567-e89b-12d3-a456-426614174000");
+    store.createRunIntent({ intent });
+    const first = store.recordReconciliation({
+      runId: intent.runId,
+      firstDetectedAt: "2026-09-10T00:01:00Z",
+      deadlineAt: "2026-09-10T00:11:00Z",
+      reasonCode: "malformed-current-state",
+      rawObservation: "state: partial",
+    });
+    expect(first).toMatchObject({
+      runId: intent.runId,
+      firstDetectedAt: "2026-09-10T00:01:00Z",
+      deadlineAt: "2026-09-10T00:11:00Z",
+      detectionCount: 1,
+      resolvedAt: null,
+      resolution: null,
+    });
+    const second = store.recordReconciliation({
+      runId: intent.runId,
+      firstDetectedAt: "2026-09-10T00:03:00Z",
+      deadlineAt: "2026-09-10T00:13:00Z",
+      reasonCode: "malformed-current-state",
+      rawObservation: "state: partial continued",
+    });
+    expect(second).toMatchObject({
+      firstDetectedAt: first.firstDetectedAt,
+      deadlineAt: first.deadlineAt,
+      reasonCode: "malformed-current-state",
+      rawObservation: "state: partial continued",
+      detectionCount: 2,
+    });
+    expect(store.getReconciliation(intent.runId)).toEqual(second);
+
+    const promoted = store.recordReconciliation({
+      runId: intent.runId,
+      firstDetectedAt: "2026-09-10T00:04:00Z",
+      deadlineAt: "2026-09-10T00:14:00Z",
+      reasonCode: "dead-start: worker exited before evidence was readable",
+      rawObservation: "worker status: error",
+    });
+    expect(promoted.reasonCode).toMatch(/^dead-start:/u);
+    expect(promoted.deadlineAt).toBe(first.deadlineAt);
+
+    const resolved = store.resolveReconciliation({
+      runId: intent.runId,
+      resolvedAt: "2026-09-10T00:11:01Z",
+      resolution: "failed-safe",
+      reasonCode: "reconciliation-deadline-expired",
+    });
+    expect(resolved).toMatchObject({
+      resolvedAt: "2026-09-10T00:11:01Z",
+      resolution: "failed-safe",
+      reasonCode: "dead-start: worker exited before evidence was readable",
+      resolutionReason: "reconciliation-deadline-expired",
+    });
+    expect(store.resolveReconciliation({
+      runId: intent.runId,
+      resolvedAt: "2026-09-10T00:12:00Z",
+      resolution: "failed-safe",
+      reasonCode: "repeat-finalization",
+    })).toEqual(resolved);
+    expect(() => store.resolveReconciliation({
+      runId: intent.runId,
+      resolvedAt: "2026-09-10T00:12:00Z",
+      resolution: "completed",
+      reasonCode: "conflicting-finalization",
+    })).toThrow(/already resolved as failed-safe/);
+    store.resetReconciliation(intent.runId);
+    expect(store.getReconciliation(intent.runId)).toBeNull();
+  });
+
+  it("preserves reconciliation metadata across storage reopen", () => {
+    const storage = makeStorage();
+    const store = initializeOperationalStorage(storage);
+    const intent = makeIntent("run-reconciliation-reopen", "bbf:v1:monorepo:run-now:423e4567-e89b-12d3-a456-426614174001");
+    store.createRunIntent({ intent });
+    store.recordReconciliation({
+      runId: intent.runId,
+      firstDetectedAt: "2026-09-10T00:01:00Z",
+      deadlineAt: "2026-09-10T00:11:00Z",
+      reasonCode: "malformed-current-state",
+      rawObservation: "state: partial",
+    });
+    store.resolveReconciliation({
+      runId: intent.runId,
+      resolvedAt: "2026-09-10T00:11:01Z",
+      resolution: "failed-safe",
+      reasonCode: "worker-read-timeout",
+    });
+    const before = store.getReconciliation(intent.runId);
+    storage.close();
+    const reopened = initializeOperationalStorage(storage);
+    expect(reopened.getReconciliation(intent.runId)).toEqual(before);
   });
 
   it("enforces run, attempt, and active ownership uniqueness", async () => {
@@ -627,8 +726,49 @@ describe("operational SQLite storage", () => {
       lastError: "BB interaction did not resolve",
     });
     expect(() => store.updatePendingActionIntent({ idempotencyKey: ambiguousRequest.idempotencyKey, status: "completed", result })).toThrow("terminal");
+    });
   });
-});
+
+  it("preserves existing operational runs when reconciliation metadata is appended", async () => {
+    const storage = makeStorage();
+    const db = storage.db;
+    // Start from a populated schema before reconciliation metadata existed.
+    // initializeOperationalStorage must append both metadata migrations without
+    // losing the pre-existing operational run.
+    storage.migrate(db, OPERATIONAL_STORAGE_MIGRATIONS.slice(0, -2));
+    const intent = makeIntent("run-before-reconciliation-migration", "bbf:v1:monorepo:run-now:923e4567-e89b-42d3-a456-426614174012");
+    db.prepare(
+      `INSERT INTO operational_runs (
+         run_id, repository_key, trigger, idempotency_key, request_fingerprint,
+         requested_at, base_revision_json, queue_item_ids_json,
+         authorization_provenance_json, status, repository_revision_json,
+         canonical_records_json
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+    ).run(
+      intent.runId,
+      intent.repositoryKey,
+      intent.trigger,
+      intent.idempotencyKey,
+      "legacy-run-fingerprint",
+      intent.requestedAt,
+      JSON.stringify(intent.baseRevision),
+      JSON.stringify(intent.queueItemIds),
+      JSON.stringify(intent.authorizationProvenance),
+      JSON.stringify(intent.baseRevision),
+      "[]",
+    );
+
+    const store = initializeOperationalStorage(storage);
+    expect((await store.getRun({ repositoryKey: intent.repositoryKey, runId: intent.runId })).run?.intent).toEqual(intent);
+    store.recordReconciliation({
+      runId: intent.runId,
+      firstDetectedAt: "2026-09-10T00:01:00Z",
+      deadlineAt: "2026-09-10T00:11:00Z",
+      reasonCode: "legacy-migration-check",
+      rawObservation: null,
+    });
+    expect(store.getReconciliation(intent.runId)?.reasonCode).toBe("legacy-migration-check");
+  });
 
 function newStore(executionNow?: string | (() => string)): OperationalStateStore {
   const now = typeof executionNow === "function"

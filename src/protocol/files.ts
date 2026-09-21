@@ -180,7 +180,12 @@ export async function readTextFile(
   };
 }
 
-export async function listFiles(
+export interface ListedProtocolFiles {
+  readonly paths: readonly string[];
+  readonly truncated: boolean;
+}
+
+export async function listFilesPage(
   files: ProtocolFiles,
   options: {
     readonly hostId: string;
@@ -188,8 +193,11 @@ export async function listFiles(
     readonly relativePath: string;
     readonly signal?: AbortSignal;
     readonly repositoryKey?: string;
+    readonly query?: string;
+    readonly limit?: number;
+    readonly allowTruncated?: boolean;
   },
-): Promise<readonly string[]> {
+): Promise<ListedProtocolFiles> {
   const absolutePath = confinedPath(options.rootPath, options.relativePath);
   let result: ProtocolPathListResult;
   try {
@@ -198,7 +206,8 @@ export async function listFiles(
       path: absolutePath,
       includeFiles: true,
       includeDirectories: false,
-      limit: 1000,
+      ...(options.query === undefined ? {} : { query: options.query }),
+      limit: options.limit ?? 1000,
       signal: options.signal,
     });
   } catch (error) {
@@ -207,16 +216,8 @@ export async function listFiles(
       repositoryKey: options.repositoryKey,
     });
   }
-  if (result.truncated) {
-    throw new ProtocolError(
-      "malformed-protocol",
-      `The immutable run-record directory '${options.relativePath}' contains more than 1000 files`,
-      { path: options.relativePath, repositoryKey: options.repositoryKey },
-    );
-  }
-
   const listedRoot = confinedPath(options.rootPath, options.relativePath);
-  return result.paths
+  const paths = result.paths
     .filter((entry) => entry.kind === "file")
     .map((entry) => {
       const requestedDirectory = options.relativePath.replace(/\/$/u, "");
@@ -236,4 +237,20 @@ export async function listFiles(
       }
       return relative;
     });
+  return { paths, truncated: result.truncated };
+}
+
+export async function listFiles(
+  files: ProtocolFiles,
+  options: Parameters<typeof listFilesPage>[1],
+): Promise<readonly string[]> {
+  const result = await listFilesPage(files, options);
+  if (result.truncated && options.allowTruncated !== true) {
+    throw new ProtocolError(
+      "malformed-protocol",
+      `The immutable run-record directory '${options.relativePath}' contains more than ${options.limit ?? 1000} files`,
+      { path: options.relativePath, repositoryKey: options.repositoryKey },
+    );
+  }
+  return result.paths;
 }

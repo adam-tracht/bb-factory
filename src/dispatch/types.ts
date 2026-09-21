@@ -50,12 +50,67 @@ export interface DispatchContext {
   readonly log?: (message: string) => void;
 }
 
+type WorkerOperation = "stop" | "retry";
+interface WorkerOperationState {
+  stop: Promise<void> | null;
+  retry: Promise<void> | null;
+}
+const workerOperationStates = new WeakMap<object, Map<string, WorkerOperationState>>();
+
+/** Serialize destructive and retry operations that target the same provider worker. */
+export async function withWorkerOperation<T>(
+  ctx: DispatchContext,
+  workerThreadId: string,
+  kind: WorkerOperation,
+  operation: () => Promise<T>,
+): Promise<T> {
+  let operations = workerOperationStates.get(ctx);
+  if (!operations) {
+    operations = new Map();
+    workerOperationStates.set(ctx, operations);
+  }
+  const state = operations.get(workerThreadId) ?? { stop: null, retry: null };
+  operations.set(workerThreadId, state);
+  const previous = kind === "retry" ? state.retry : state.stop;
+  const blockedByStop = kind === "retry" ? state.stop : null;
+  const operationPromise = (async () => {
+    if (previous) await previous;
+    if (blockedByStop && blockedByStop !== previous) await blockedByStop;
+    return operation();
+  })();
+  const completion = operationPromise.then(() => undefined, () => undefined);
+  state[kind] = completion;
+  try {
+    return await operationPromise;
+  } finally {
+    if (state[kind] === completion) state[kind] = null;
+    if (state.stop === null && state.retry === null && operations.get(workerThreadId) === state) {
+      operations.delete(workerThreadId);
+    }
+  }
+}
+
 /** The shell dispatcher marks a provider limited for six hours after a dead start or a long provider retry. */
 export const PROVIDER_LIMIT_SECONDS = 6 * 3600;
 /** A run left in `pending` past this grace period needs reconciliation: its worker spawn never landed. */
 export const PENDING_RUN_GRACE_MS = 10 * 60 * 1000;
+/** A reconciliation-required run gets one persisted settlement window. */
+export const RECONCILIATION_GRACE_MS = 10 * 60 * 1000;
+/** A terminal quarantined lease gets one more durable operator window. */
+export const QUARANTINE_ABANDONMENT_GRACE_MS = 10 * 60 * 1000;
 /** Retry budget per run: the initial attempt plus this many retries. */
 export const MAX_RUN_ATTEMPTS = 3;
+
+/** Keep provider and host diagnostics inside the storage field limits. */
+export function boundedDiagnostic(value: string, maxLength: number): string {
+  const normalized = value.replace(/\s+/gu, " ").trim();
+  return (normalized.length > 0 ? normalized : "unknown").slice(0, maxLength);
+}
+
+/** Compare persisted JSON-shaped values without duplicating field walkers. */
+export function sameJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
 
 export function dispatcherNowSeconds(now: () => Date): number {
   return Math.floor(now().getTime() / 1000);

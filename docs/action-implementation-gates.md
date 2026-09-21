@@ -67,6 +67,33 @@ actor identity. Verified against the installed `@get-bb/plugin-sdk@0.4.47`.
   (`src/schedule/`) applies night-window, spacing, provider-alternation, and
   night-stop policy in the shell dispatcher's order.
 
+Run completion is correlated before it becomes terminal: the observed worker,
+active attempt, current lease, fresh current state, and attributable immutable
+run record must agree. Malformed or ambiguous evidence is persisted as
+`reconciliation-required` with an immutable deadline and can be corrected only
+inside the ten-minute settlement window. At the deadline the operational run
+becomes `failed-safe`, terminalizes active attempts, and applies counters once,
+freeing global run capacity. A matching lease is released only after worker
+termination is confirmed. An active, stopping, unreadable, or spawn-ambiguous
+worker leaves that repository's lease `reconciliation-required`, so the
+repository stays quarantined until a later observation confirms safe release.
+Retry marks a run pending through a new attempt generation before calling the
+provider. Any retry error is ambiguous, so the run remains reconciled and its
+lease remains quarantined until the worker is observed safely terminated.
+The foreman must write the immutable run record first, then make `current.md`
+the final repository write of the run; no protocol file may be written after
+that final state line.
+For a spawn with no observable thread id, the durable deadline still frees
+global capacity but leaves repository ownership quarantined. A known worker
+lease is released only after trusted terminal observation. A sentinel lease
+may be released only through explicit operator repair after repository
+dispatch is paused and the durable quarantine timeout has elapsed.
+`current.md` is never ownership proof.
+
+Reconciliation diagnostics stay in internal storage metadata;
+the frozen v1.2 action, revision, RPC, and idempotency projections are not
+expanded.
+
 ## Verified SDK constraints
 
 - `bb.sdk.threads.interactions.get`, `list`, and `resolve` are available. The

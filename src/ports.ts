@@ -9,6 +9,7 @@ import type {
   ProviderStatus,
   PendingInteractionsProjection,
   ProtocolSnapshot,
+  RepositoryRevision,
   ProvisionCheckoutActionRequest,
   RepositoryConfiguration,
   RepositoryKey,
@@ -19,6 +20,8 @@ import type {
 
 export interface ProtocolReader {
   loadSnapshot(configuration: RepositoryConfiguration): Promise<ProtocolSnapshot>;
+  /** Read the post-run repository revision without enumerating historical run records. */
+  loadRevision?(configuration: RepositoryConfiguration): Promise<RepositoryRevision>;
 }
 
 export interface OperationalStateReader {

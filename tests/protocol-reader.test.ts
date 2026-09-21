@@ -320,6 +320,9 @@ answer: yes
     expect(() => parseCurrentState("# run\nstate: unknown\n", "plans/factory/current.md")).toThrowError(
       expect.objectContaining({ code: "malformed-protocol" }),
     );
+    expect(() => parseCurrentState("# run\n  state: success\n", "plans/factory/current.md")).toThrowError(
+      expect.objectContaining({ code: "malformed-protocol" }),
+    );
     expect(() => parseDashboard("# dashboard\n\n| Name | Status |\n| --- | --- |\n| x | ready |\n", "plans/README.md"))
       .toThrowError(expect.objectContaining({ code: "malformed-protocol" }));
 

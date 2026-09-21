@@ -38,6 +38,7 @@ import {
   operationalRunDetailProjectionSchema,
   operationalRunListInputSchema,
   operationalRunListProjectionSchema,
+  operationalRunStatusSchema,
   operationalRunSummarySchema,
   ownershipLeaseSchema,
   provisionCheckoutActionRequestSchema,
@@ -389,6 +390,27 @@ export const OPERATIONAL_STORAGE_MIGRATIONS = [
   `INSERT INTO pending_action_intents_v6 SELECT * FROM pending_action_intents`,
   `DROP TABLE pending_action_intents`,
   `ALTER TABLE pending_action_intents_v6 RENAME TO pending_action_intents`,
+  `CREATE TABLE run_reconciliation_metadata (
+    run_id TEXT PRIMARY KEY REFERENCES operational_runs(run_id),
+    first_detected_at TEXT NOT NULL,
+    deadline_at TEXT NOT NULL,
+    reason_code TEXT NOT NULL,
+    raw_observation TEXT,
+    detection_count INTEGER NOT NULL CHECK (detection_count > 0),
+    resolved_at TEXT,
+    resolution TEXT CHECK (resolution IS NULL OR resolution IN ('completed', 'blocked', 'failed-safe', 'no-op'))
+  )`,
+  `ALTER TABLE run_reconciliation_metadata ADD COLUMN resolution_reason TEXT`,
+  `CREATE TABLE stop_intents (
+    token TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES operational_runs(run_id),
+    attempt_id TEXT NOT NULL REFERENCES dispatch_attempts(attempt_id),
+    lease_id TEXT NOT NULL REFERENCES ownership_leases(lease_id),
+    repository_key TEXT NOT NULL,
+    worker_thread_id TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE UNIQUE INDEX stop_intent_one_per_run ON stop_intents(run_id)`,
 ] as const;
 
 export interface CreateRunIntentInput {
@@ -399,6 +421,16 @@ export interface CreateRunIntentInput {
 export interface CreateRunIntentResult {
   readonly created: boolean;
   readonly runId: string;
+}
+
+export interface StopIntent {
+  readonly token: string;
+  readonly runId: string;
+  readonly attemptId: string;
+  readonly leaseId: string;
+  readonly repositoryKey: RepositoryKey;
+  readonly workerThreadId: string;
+  readonly createdAt: string;
 }
 
 export interface RunDispatchUpdate {
@@ -413,6 +445,35 @@ export interface RunDispatchUpdate {
   readonly environmentId: string | null;
   readonly repositoryRevision: RepositoryRevision;
   readonly canonicalRecords?: readonly CanonicalFileRecordLink[];
+}
+
+export type ReconciliationResolution = "completed" | "blocked" | "failed-safe" | "no-op";
+
+export interface ReconciliationMetadata {
+  readonly runId: string;
+  readonly firstDetectedAt: string;
+  readonly deadlineAt: string;
+  readonly reasonCode: string;
+  readonly rawObservation: string | null;
+  readonly detectionCount: number;
+  readonly resolvedAt: string | null;
+  readonly resolution: ReconciliationResolution | null;
+  readonly resolutionReason: string | null;
+}
+
+export interface ReconciliationObservation {
+  readonly runId: string;
+  readonly firstDetectedAt: string;
+  readonly deadlineAt: string;
+  readonly reasonCode: string;
+  readonly rawObservation?: string | null;
+}
+
+export interface ReconciliationResolutionUpdate {
+  readonly runId: string;
+  readonly resolvedAt: string;
+  readonly resolution: ReconciliationResolution;
+  readonly reasonCode: string;
 }
 
 export type QuestionAnswerSource = "repository-question" | "bb-interaction";
@@ -563,12 +624,27 @@ export interface DispatcherState {
 
 
 export interface OperationalTransaction {
+  getRunSummary(runId: string): OperationalRunSummary | null;
+  getRunStatus(runId: string): OperationalRunStatus | null;
+  getActiveAttempt(runId: string): DispatchAttempt | null;
+  hasDispatchAttemptStatus(runId: string, status: DispatchAttempt["status"]): boolean;
+  getDispatchAttempt(attemptId: string): DispatchAttempt | null;
+  getLeaseForRun(runId: string): OwnershipLease | null;
+  getCurrentOwnership(repositoryKey: RepositoryKey): OwnershipLease | null;
+  getReconciliation(runId: string): ReconciliationMetadata | null;
+  getStopIntent(runId: string): StopIntent | null;
+  assertGlobalCapacity(limit: number, excludingRunId?: string): void;
   createRunIntent(input: CreateRunIntentInput): CreateRunIntentResult;
   updateRunDispatch(input: RunDispatchUpdate): void;
   createDispatchAttempt(attempt: DispatchAttempt): void;
   updateDispatchAttempt(attempt: DispatchAttempt): void;
   createOwnershipLease(lease: OwnershipLease): void;
   updateOwnershipLease(lease: OwnershipLease): void;
+  createStopIntent(input: StopIntent): void;
+  deleteStopIntent(token: string): void;
+  resetReconciliation(runId: string): void;
+  recordReconciliation(input: ReconciliationObservation): ReconciliationMetadata;
+  resolveReconciliation(input: ReconciliationResolutionUpdate): ReconciliationMetadata | null;
   claimQuestionAnswer(input: QuestionAnswerSubmission): IdempotencyClaim<QuestionAnswerSubmissionRecord>;
   completeQuestionAnswer(idempotencyKey: IdempotencyKey, result: JsonValue, completedAt?: string): void;
   claimRepositoryWrite(input: RepositoryWriteAction): IdempotencyClaim<RepositoryWriteActionRecord>;
@@ -590,6 +666,11 @@ export interface OperationalStateStore extends OperationalStateReader {
   updateDispatchAttempt(attempt: DispatchAttempt): void;
   createOwnershipLease(lease: OwnershipLease): void;
   updateOwnershipLease(lease: OwnershipLease): void;
+  createStopIntent(input: StopIntent): void;
+  deleteStopIntent(token: string): void;
+  resetReconciliation(runId: string): void;
+  recordReconciliation(input: ReconciliationObservation): ReconciliationMetadata;
+  resolveReconciliation(input: ReconciliationResolutionUpdate): ReconciliationMetadata | null;
   getCurrentOwnership(repositoryKey: RepositoryKey): OwnershipLease | null;
   claimQuestionAnswer(input: QuestionAnswerSubmission): IdempotencyClaim<QuestionAnswerSubmissionRecord>;
   completeQuestionAnswer(idempotencyKey: IdempotencyKey, result: JsonValue, completedAt?: string): void;
@@ -605,6 +686,8 @@ export interface OperationalStateStore extends OperationalStateReader {
   updatePendingActionIntent(input: PendingActionIntentUpdate): PendingActionIntentRecord;
   getDispatchAttempt(attemptId: string): DispatchAttempt | null;
   getLeaseForRun(runId: string): OwnershipLease | null;
+  getReconciliation(runId: string): ReconciliationMetadata | null;
+  getStopIntent(runId: string): StopIntent | null;
   findRunIdByIdempotencyKey(idempotencyKey: IdempotencyKey): string | null;
   listActiveRuns(repositoryKey: RepositoryKey): OperationalRunSummary[];
   getDispatcherState(repositoryKey: RepositoryKey): DispatcherState;
@@ -658,6 +741,28 @@ interface OwnershipRow {
   acquired_at: string;
   expires_at: string;
   status: string;
+}
+
+interface StopIntentRow {
+  token: string;
+  run_id: string;
+  attempt_id: string;
+  lease_id: string;
+  repository_key: string;
+  worker_thread_id: string;
+  created_at: string;
+}
+
+interface ReconciliationRow {
+  run_id: string;
+  first_detected_at: string;
+  deadline_at: string;
+  reason_code: string;
+  raw_observation: string | null;
+  detection_count: number;
+  resolved_at: string | null;
+  resolution: string | null;
+  resolution_reason: string | null;
 }
 
 interface QuestionAnswerRow {
@@ -726,6 +831,17 @@ class IdempotencyConflictError extends Error {
 
 export { IdempotencyConflictError };
 
+class GlobalConcurrencyLimitError extends Error {
+  readonly code = "global-concurrency-limit";
+
+  constructor(limit: number) {
+    super(`global run concurrency limit of ${limit} is reached`);
+    this.name = "GlobalConcurrencyLimitError";
+  }
+}
+
+export { GlobalConcurrencyLimitError };
+
 class PendingActionIntentExpiredError extends Error {
   readonly code = "pending-action-expired";
 
@@ -793,6 +909,26 @@ class OperationalSqliteStore implements OperationalStateStore {
     this.withTransaction((transaction) => transaction.updateOwnershipLease(lease));
   }
 
+  createStopIntent(input: StopIntent): void {
+    this.withTransaction((transaction) => transaction.createStopIntent(input));
+  }
+
+  deleteStopIntent(token: string): void {
+    this.withTransaction((transaction) => transaction.deleteStopIntent(token));
+  }
+
+  resetReconciliation(runId: string): void {
+    this.withTransaction((transaction) => transaction.resetReconciliation(runId));
+  }
+
+  recordReconciliation(input: ReconciliationObservation): ReconciliationMetadata {
+    return this.withTransaction((transaction) => transaction.recordReconciliation(input));
+  }
+
+  resolveReconciliation(input: ReconciliationResolutionUpdate): ReconciliationMetadata | null {
+    return this.withTransaction((transaction) => transaction.resolveReconciliation(input));
+  }
+
   claimQuestionAnswer(input: QuestionAnswerSubmission): IdempotencyClaim<QuestionAnswerSubmissionRecord> {
     return this.withTransaction((transaction) => transaction.claimQuestionAnswer(input));
   }
@@ -857,18 +993,11 @@ class OperationalSqliteStore implements OperationalStateStore {
   }
 
   getCurrentOwnership(repositoryKey: RepositoryKey): OwnershipLease | null {
-    repositoryKeySchema.parse(repositoryKey);
-    const row = this.db
-      .prepare<unknown[], OwnershipRow>(
-        `SELECT lease_id, repository_key, run_id, queue_item_ids_json, worker_thread_id,
-                authorization_provenance_json, acquired_at, expires_at, status
-           FROM ownership_leases
-          WHERE repository_key = ? AND status <> 'released'
-          ORDER BY acquired_at DESC
-          LIMIT 1`,
-      )
-      .get(repositoryKey);
-    return row === undefined ? null : ownershipFromRow(row);
+    return readCurrentOwnership(this.db, repositoryKey);
+  }
+
+  getStopIntent(runId: string): StopIntent | null {
+    return readStopIntent(this.db, runId);
   }
 
   async listRuns(input: OperationalRunListInput): Promise<OperationalRunListProjection> {
@@ -942,12 +1071,27 @@ class OperationalSqliteStore implements OperationalStateStore {
 
   private createTransactionApi(): OperationalTransaction {
     return {
+      getRunSummary: (runId) => readRunSummary(this.db, runId),
+      getRunStatus: (runId) => readRunStatus(this.db, runId),
+      getActiveAttempt: (runId) => readActiveAttempt(this.db, runId),
+      hasDispatchAttemptStatus: (runId, status) => hasDispatchAttemptStatus(this.db, runId, status),
+      getDispatchAttempt: (attemptId) => readDispatchAttempt(this.db, attemptId),
+      getLeaseForRun: (runId) => readLeaseForRun(this.db, runId),
+      getCurrentOwnership: (repositoryKey) => readCurrentOwnership(this.db, repositoryKey),
+      getReconciliation: (runId) => readReconciliation(this.db, runId),
+      getStopIntent: (runId) => readStopIntent(this.db, runId),
+      assertGlobalCapacity: (limit, excludingRunId) => assertGlobalCapacity(this.db, limit, excludingRunId),
       createRunIntent: (input) => insertRunIntent(this.db, input),
       updateRunDispatch: (input) => updateRunDispatch(this.db, input),
       createDispatchAttempt: (attempt) => insertDispatchAttempt(this.db, attempt),
       updateDispatchAttempt: (attempt) => updateDispatchAttempt(this.db, attempt),
       createOwnershipLease: (lease) => insertOwnershipLease(this.db, lease),
       updateOwnershipLease: (lease) => updateOwnershipLease(this.db, lease),
+      createStopIntent: (input) => insertStopIntent(this.db, input),
+      deleteStopIntent: (token) => deleteStopIntent(this.db, token),
+      resetReconciliation: (runId) => resetReconciliation(this.db, runId),
+      recordReconciliation: (input) => recordReconciliation(this.db, input),
+      resolveReconciliation: (input) => resolveReconciliation(this.db, input),
       claimQuestionAnswer: (input) => claimQuestionAnswer(this.db, input),
       completeQuestionAnswer: (idempotencyKey, result, completedAt) => completeQuestionAnswer(this.db, idempotencyKey, result, completedAt),
       claimRepositoryWrite: (input) => claimRepositoryWrite(this.db, input),
@@ -985,6 +1129,10 @@ class OperationalSqliteStore implements OperationalStateStore {
       )
       .get(z.string().trim().min(1).parse(runId));
     return row === undefined ? null : ownershipFromRow(row);
+  }
+
+  getReconciliation(runId: string): ReconciliationMetadata | null {
+    return readReconciliation(this.db, runId);
   }
 
   findRunIdByIdempotencyKey(idempotencyKey: IdempotencyKey): string | null {
@@ -1557,6 +1705,19 @@ function insertRunIntent(db: SqliteDatabase, input: CreateRunIntentInput): Creat
   return { created: true, runId: intent.runId };
 }
 
+function assertGlobalCapacity(db: SqliteDatabase, limit: number, excludingRunId?: string): void {
+  const parsedLimit = z.number().int().positive().parse(limit);
+  const active = db
+    .prepare<unknown[], { count: number }>(
+      `SELECT COUNT(*) AS count
+         FROM operational_runs
+        WHERE status IN ('pending', 'started', 'cancel-requested', 'reconciliation-required')
+          AND (? IS NULL OR run_id <> ?)`,
+    )
+    .get(excludingRunId ?? null, excludingRunId ?? null);
+  if ((active?.count ?? 0) >= parsedLimit) throw new GlobalConcurrencyLimitError(parsedLimit);
+}
+
 function updateRunDispatch(db: SqliteDatabase, input: RunDispatchUpdate): void {
   const repositoryKey = repositoryKeySchema.parse(input.repositoryKey);
   const status = dispatchedRunStatusSchema.parse(input.status);
@@ -1577,6 +1738,8 @@ function updateRunDispatch(db: SqliteDatabase, input: RunDispatchUpdate): void {
   const canonicalRecords = input.canonicalRecords === undefined
     ? currentSummary.canonicalRecords
     : canonicalRecordsSchema.parse(input.canonicalRecords);
+
+  deleteStopIntentForRun(db, input.runId);
 
   const summary = operationalRunSummarySchema.parse({
     ...currentSummary,
@@ -1636,6 +1799,7 @@ function insertDispatchAttempt(db: SqliteDatabase, attempt: DispatchAttempt): vo
 function updateDispatchAttempt(db: SqliteDatabase, attempt: DispatchAttempt): void {
   const parsed = dispatchAttemptSchema.parse(attempt);
   assertRunRepository(db, parsed.runId, parsed.repositoryKey);
+  deleteStopIntentForRun(db, parsed.runId);
   const result = db.prepare(
     `UPDATE dispatch_attempts
         SET run_id = ?, repository_key = ?, provider_id = ?, model = ?,
@@ -1684,6 +1848,7 @@ function insertOwnershipLease(db: SqliteDatabase, lease: OwnershipLease): void {
 function updateOwnershipLease(db: SqliteDatabase, lease: OwnershipLease): void {
   const parsed = ownershipLeaseSchema.parse(lease);
   assertRunRepository(db, parsed.runId, parsed.repositoryKey);
+  deleteStopIntentForRun(db, parsed.runId);
   const result = db.prepare(
     `UPDATE ownership_leases
         SET repository_key = ?, run_id = ?, queue_item_ids_json = ?,
@@ -1705,6 +1870,118 @@ function updateOwnershipLease(db: SqliteDatabase, lease: OwnershipLease): void {
   if (result.changes !== 1) {
     throw new Error(`cannot update missing ownership lease: ${parsed.leaseId}`);
   }
+}
+
+function insertStopIntent(db: SqliteDatabase, input: StopIntent): void {
+  const token = z.string().trim().min(1).parse(input.token);
+  const runId = z.string().trim().min(1).parse(input.runId);
+  const attemptId = z.string().trim().min(1).parse(input.attemptId);
+  const leaseId = z.string().trim().min(1).parse(input.leaseId);
+  const repositoryKey = repositoryKeySchema.parse(input.repositoryKey);
+  const workerThreadId = z.string().trim().min(1).parse(input.workerThreadId);
+  const createdAt = isoTimestampSchema.parse(input.createdAt);
+  assertRunRepository(db, runId, repositoryKey);
+  db.prepare(
+    `INSERT INTO stop_intents (
+       token, run_id, attempt_id, lease_id, repository_key, worker_thread_id, created_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(token, runId, attemptId, leaseId, repositoryKey, workerThreadId, createdAt);
+}
+
+function deleteStopIntent(db: SqliteDatabase, token: string): void {
+  db.prepare(`DELETE FROM stop_intents WHERE token = ?`).run(z.string().trim().min(1).parse(token));
+}
+
+function deleteStopIntentForRun(db: SqliteDatabase, runId: string): void {
+  db.prepare(`DELETE FROM stop_intents WHERE run_id = ?`).run(z.string().trim().min(1).parse(runId));
+}
+
+function resetReconciliation(db: SqliteDatabase, runId: string): void {
+  const parsedRunId = z.string().trim().min(1).parse(runId);
+  db.prepare(`DELETE FROM run_reconciliation_metadata WHERE run_id = ?`).run(parsedRunId);
+}
+
+function recordReconciliation(db: SqliteDatabase, input: ReconciliationObservation): ReconciliationMetadata {
+  const runId = z.string().trim().min(1).parse(input.runId);
+  const firstDetectedAt = isoTimestampSchema.parse(input.firstDetectedAt);
+  const deadlineAt = isoTimestampSchema.parse(input.deadlineAt);
+  const reasonCode = z.string().trim().min(1).max(128).parse(input.reasonCode);
+  const rawObservation = input.rawObservation === undefined || input.rawObservation === null
+    ? null
+    : z.string().max(512).parse(input.rawObservation);
+  assertRunExists(db, runId);
+  db.prepare(
+    `INSERT INTO run_reconciliation_metadata (
+       run_id, first_detected_at, deadline_at, reason_code, raw_observation,
+       detection_count, resolved_at, resolution
+     ) VALUES (?, ?, ?, ?, ?, 1, NULL, NULL)
+     ON CONFLICT(run_id) DO UPDATE SET
+       reason_code = CASE
+         WHEN run_reconciliation_metadata.resolved_at IS NULL
+           AND excluded.reason_code LIKE 'dead-start:%'
+           AND run_reconciliation_metadata.reason_code NOT LIKE 'dead-start:%'
+           THEN excluded.reason_code
+         ELSE run_reconciliation_metadata.reason_code
+       END,
+       raw_observation = CASE
+         WHEN excluded.raw_observation IS NULL THEN run_reconciliation_metadata.raw_observation
+         ELSE excluded.raw_observation
+       END,
+       detection_count = CASE
+         WHEN run_reconciliation_metadata.resolved_at IS NULL
+           THEN run_reconciliation_metadata.detection_count + 1
+         ELSE run_reconciliation_metadata.detection_count
+       END`,
+  ).run(runId, firstDetectedAt, deadlineAt, reasonCode, rawObservation);
+  const row = db
+    .prepare<unknown[], ReconciliationRow>(
+      `SELECT run_id, first_detected_at, deadline_at, reason_code,
+              raw_observation, detection_count, resolved_at, resolution,
+              resolution_reason
+         FROM run_reconciliation_metadata
+        WHERE run_id = ?`,
+    )
+    .get(runId);
+  if (row === undefined) throw new Error(`cannot read reconciliation metadata for run: ${runId}`);
+  return reconciliationFromRow(row);
+}
+
+function resolveReconciliation(db: SqliteDatabase, input: ReconciliationResolutionUpdate): ReconciliationMetadata | null {
+  const runId = z.string().trim().min(1).parse(input.runId);
+  const resolvedAt = isoTimestampSchema.parse(input.resolvedAt);
+  const resolution = z.enum(["completed", "blocked", "failed-safe", "no-op"]).parse(input.resolution);
+  const reasonCode = z.string().trim().min(1).max(128).parse(input.reasonCode);
+  const existing = db
+    .prepare<unknown[], ReconciliationRow>(
+      `SELECT run_id, first_detected_at, deadline_at, reason_code,
+              raw_observation, detection_count, resolved_at, resolution,
+              resolution_reason
+         FROM run_reconciliation_metadata
+        WHERE run_id = ?`,
+    )
+    .get(runId);
+  if (existing === undefined) return null;
+  if (existing.resolved_at !== null) {
+    if (existing.resolution !== resolution) {
+      throw new Error(`reconciliation for run '${runId}' was already resolved as ${existing.resolution}`);
+    }
+    return reconciliationFromRow(existing);
+  }
+  db.prepare(
+    `UPDATE run_reconciliation_metadata
+        SET resolved_at = ?, resolution = ?, resolution_reason = ?
+      WHERE run_id = ? AND resolved_at IS NULL`,
+  ).run(resolvedAt, resolution, reasonCode, runId);
+  const row = db
+    .prepare<unknown[], ReconciliationRow>(
+      `SELECT run_id, first_detected_at, deadline_at, reason_code,
+              raw_observation, detection_count, resolved_at, resolution,
+              resolution_reason
+         FROM run_reconciliation_metadata
+        WHERE run_id = ?`,
+    )
+    .get(runId);
+  return row === undefined ? null : reconciliationFromRow(row);
 }
 
 function claimQuestionAnswer(db: SqliteDatabase, input: QuestionAnswerSubmission): IdempotencyClaim<QuestionAnswerSubmissionRecord> {
@@ -1861,6 +2138,133 @@ function assertRunRepository(db: SqliteDatabase, runId: string, repositoryKey: s
   }
 }
 
+function assertRunExists(db: SqliteDatabase, runId: string): void {
+  const row = db.prepare<unknown[], { run_id: string }>(`SELECT run_id FROM operational_runs WHERE run_id = ?`).get(runId);
+  if (row === undefined) throw new Error(`cannot reference missing operational run: ${runId}`);
+}
+
+function readReconciliation(db: SqliteDatabase, runId: string): ReconciliationMetadata | null {
+  const row = db
+    .prepare<unknown[], ReconciliationRow>(
+      `SELECT run_id, first_detected_at, deadline_at, reason_code,
+              raw_observation, detection_count, resolved_at, resolution,
+              resolution_reason
+         FROM run_reconciliation_metadata
+        WHERE run_id = ?`,
+    )
+    .get(z.string().trim().min(1).parse(runId));
+  return row === undefined ? null : reconciliationFromRow(row);
+}
+
+function readStopIntent(db: SqliteDatabase, runId: string): StopIntent | null {
+  const row = db
+    .prepare<unknown[], StopIntentRow>(
+      `SELECT token, run_id, attempt_id, lease_id, repository_key,
+              worker_thread_id, created_at
+         FROM stop_intents
+        WHERE run_id = ?`,
+    )
+    .get(z.string().trim().min(1).parse(runId));
+  if (row === undefined) return null;
+  return {
+    token: z.string().trim().min(1).parse(row.token),
+    runId: z.string().trim().min(1).parse(row.run_id),
+    attemptId: z.string().trim().min(1).parse(row.attempt_id),
+    leaseId: z.string().trim().min(1).parse(row.lease_id),
+    repositoryKey: repositoryKeySchema.parse(row.repository_key),
+    workerThreadId: z.string().trim().min(1).parse(row.worker_thread_id),
+    createdAt: isoTimestampSchema.parse(row.created_at),
+  };
+}
+
+function readRunStatus(db: SqliteDatabase, runId: string): OperationalRunStatus | null {
+  const row = db.prepare<unknown[], { status: string }>(`SELECT status FROM operational_runs WHERE run_id = ?`).get(runId);
+  return row === undefined ? null : operationalRunStatusSchema.parse(row.status);
+}
+
+function readRunSummary(db: SqliteDatabase, runId: string): OperationalRunSummary | null {
+  const row = db
+    .prepare<unknown[], RunRow>(
+      `SELECT run_id, repository_key, requested_at, status, started_at, finished_at,
+              provider_id, worker_thread_id, project_id, environment_id,
+              queue_item_ids_json, repository_revision_json, canonical_records_json
+         FROM operational_runs
+        WHERE run_id = ?`,
+    )
+    .get(z.string().trim().min(1).parse(runId));
+  return row === undefined ? null : runSummaryFromRow(row);
+}
+
+function readActiveAttempt(db: SqliteDatabase, runId: string): DispatchAttempt | null {
+  const row = db
+    .prepare<unknown[], AttemptRow>(
+      `SELECT attempt_id, run_id, repository_key, provider_id, model,
+              reasoning_level, worker_thread_id, status, started_at, finished_at
+         FROM dispatch_attempts
+        WHERE run_id = ?
+          AND status IN ('pending', 'started', 'cancel-requested', 'reconciliation-required')
+        ORDER BY rowid DESC
+        LIMIT 1`,
+    )
+    .get(z.string().trim().min(1).parse(runId));
+  return row === undefined ? null : attemptFromRow(row);
+}
+
+function hasDispatchAttemptStatus(db: SqliteDatabase, runId: string, status: DispatchAttempt["status"]): boolean {
+  const parsedRunId = z.string().trim().min(1).parse(runId);
+  const parsedStatus = dispatchAttemptSchema.shape.status.parse(status);
+  const row = db
+    .prepare<unknown[], { found: number }>(
+      `SELECT 1 AS found
+         FROM dispatch_attempts
+        WHERE run_id = ? AND status = ?
+        LIMIT 1`,
+    )
+    .get(parsedRunId, parsedStatus);
+  return row !== undefined;
+}
+
+function readDispatchAttempt(db: SqliteDatabase, attemptId: string): DispatchAttempt | null {
+  const row = db
+    .prepare<unknown[], AttemptRow>(
+      `SELECT attempt_id, run_id, repository_key, provider_id, model,
+              reasoning_level, worker_thread_id, status, started_at, finished_at
+         FROM dispatch_attempts
+        WHERE attempt_id = ?`,
+    )
+    .get(z.string().trim().min(1).parse(attemptId));
+  return row === undefined ? null : attemptFromRow(row);
+}
+
+function readLeaseForRun(db: SqliteDatabase, runId: string): OwnershipLease | null {
+  const row = db
+    .prepare<unknown[], OwnershipRow>(
+      `SELECT lease_id, repository_key, run_id, queue_item_ids_json, worker_thread_id,
+              authorization_provenance_json, acquired_at, expires_at, status
+         FROM ownership_leases
+        WHERE run_id = ?
+        ORDER BY acquired_at DESC
+        LIMIT 1`,
+    )
+    .get(z.string().trim().min(1).parse(runId));
+  return row === undefined ? null : ownershipFromRow(row);
+}
+
+function readCurrentOwnership(db: SqliteDatabase, repositoryKey: RepositoryKey): OwnershipLease | null {
+  const parsedRepositoryKey = repositoryKeySchema.parse(repositoryKey);
+  const row = db
+    .prepare<unknown[], OwnershipRow>(
+      `SELECT lease_id, repository_key, run_id, queue_item_ids_json, worker_thread_id,
+              authorization_provenance_json, acquired_at, expires_at, status
+         FROM ownership_leases
+        WHERE repository_key = ? AND status <> 'released'
+        ORDER BY acquired_at DESC
+        LIMIT 1`,
+    )
+    .get(parsedRepositoryKey);
+  return row === undefined ? null : ownershipFromRow(row);
+}
+
 function runSummaryFromRow(row: RunRow): OperationalRunSummary {
   return operationalRunSummarySchema.parse({
     runId: row.run_id,
@@ -1919,6 +2323,22 @@ function ownershipFromRow(row: OwnershipRow): OwnershipLease {
     expiresAt: row.expires_at,
     status: row.status,
   });
+}
+
+function reconciliationFromRow(row: ReconciliationRow): ReconciliationMetadata {
+  return {
+    runId: z.string().trim().min(1).parse(row.run_id),
+    firstDetectedAt: isoTimestampSchema.parse(row.first_detected_at),
+    deadlineAt: isoTimestampSchema.parse(row.deadline_at),
+    reasonCode: z.string().trim().min(1).parse(row.reason_code),
+    rawObservation: row.raw_observation,
+    detectionCount: z.number().int().positive().parse(row.detection_count),
+    resolvedAt: row.resolved_at === null ? null : isoTimestampSchema.parse(row.resolved_at),
+    resolution: row.resolution === null
+      ? null
+      : z.enum(["completed", "blocked", "failed-safe", "no-op"]).parse(row.resolution),
+    resolutionReason: row.resolution_reason === null ? null : z.string().trim().min(1).parse(row.resolution_reason),
+  };
 }
 
 function questionAnswerFromRow(row: QuestionAnswerRow): QuestionAnswerSubmissionRecord {

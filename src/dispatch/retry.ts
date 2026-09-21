@@ -1,12 +1,76 @@
 import { randomUUID } from "node:crypto";
-import type { FactoryActionResult, RepositoryKey, RepositoryRevision } from "../contracts.js";
+import type { FactoryActionResult, OperationalRunSummary, RepositoryKey, RepositoryRevision } from "../contracts.js";
 import { actionError, actionSuccess, errorMessage, sameRevision, staleRevisionError } from "../actions/results.js";
-import { MAX_RUN_ATTEMPTS, runDispatchUpdate, type DispatchContext } from "./types.js";
+import { GlobalConcurrencyLimitError, type OperationalTransaction } from "../storage/index.js";
+import { boundedDiagnostic, MAX_RUN_ATTEMPTS, RECONCILIATION_GRACE_MS, runDispatchUpdate, sameJson, withWorkerOperation, type DispatchContext } from "./types.js";
 
 export interface RetryAttemptInput {
   readonly repositoryKey: RepositoryKey;
   readonly attemptId: string;
   readonly expectedRevision?: RepositoryRevision;
+}
+
+function ownsPendingRetryGeneration(
+  transaction: OperationalTransaction,
+  generation: {
+    readonly repositoryKey: RepositoryKey;
+    readonly runId: string;
+    readonly attemptId: string;
+    readonly leaseId: string;
+    readonly workerThreadId: string;
+    readonly runRequestedAt: string;
+    readonly runStartedAt: string | null;
+    readonly runProviderId: string | null;
+    readonly runProjectId: string | null;
+    readonly runEnvironmentId: string | null;
+    readonly runQueueItemIds: readonly string[];
+    readonly runRepositoryRevision: OperationalRunSummary["repositoryRevision"];
+    readonly runCanonicalRecords: OperationalRunSummary["canonicalRecords"];
+    readonly attemptStartedAt: string;
+    readonly attemptProviderId: string;
+    readonly attemptModel: string;
+    readonly attemptReasoningLevel: string;
+    readonly leaseAcquiredAt: string;
+    readonly leaseExpiresAt: string;
+    readonly leaseQueueItemIds: readonly string[];
+    readonly leaseAuthorizationProvenance: readonly string[];
+  },
+): boolean {
+  const run = transaction.getRunSummary(generation.runId);
+  const attempt = transaction.getActiveAttempt(generation.runId);
+  const lease = transaction.getLeaseForRun(generation.runId);
+  return run?.runId === generation.runId
+    && run.repositoryKey === generation.repositoryKey
+    && run.status === "started"
+    && run.requestedAt === generation.runRequestedAt
+    && run.startedAt === generation.runStartedAt
+    && run.finishedAt === null
+    && run.providerId === generation.runProviderId
+    && run.workerThreadId === generation.workerThreadId
+    && run.projectId === generation.runProjectId
+    && run.environmentId === generation.runEnvironmentId
+    && sameJson(run.queueItemIds, generation.runQueueItemIds)
+    && sameRevision(run.repositoryRevision, generation.runRepositoryRevision)
+    && sameJson(run.canonicalRecords, generation.runCanonicalRecords)
+    && attempt?.attemptId === generation.attemptId
+    && attempt.runId === generation.runId
+    && attempt.repositoryKey === generation.repositoryKey
+    && attempt.status === "pending"
+    && attempt.providerId === generation.attemptProviderId
+    && attempt.model === generation.attemptModel
+    && attempt.reasoningLevel === generation.attemptReasoningLevel
+    && attempt.workerThreadId === generation.workerThreadId
+    && attempt.startedAt === generation.attemptStartedAt
+    && attempt.finishedAt === null
+    && lease?.leaseId === generation.leaseId
+    && lease.repositoryKey === generation.repositoryKey
+    && lease.runId === generation.runId
+    && lease.status === "held"
+    && sameJson(lease.queueItemIds, generation.leaseQueueItemIds)
+    && sameJson(lease.authorizationProvenance, generation.leaseAuthorizationProvenance)
+    && lease.workerThreadId === generation.workerThreadId
+    && lease.acquiredAt === generation.leaseAcquiredAt
+    && lease.expiresAt === generation.leaseExpiresAt;
 }
 
 /**
@@ -31,6 +95,9 @@ export async function retryAttempt(ctx: DispatchContext, input: RetryAttemptInpu
   if (run.status !== "failed-safe") {
     return actionError("conflict", `Run '${run.runId}' is '${run.status}', not failed-safe; only failed runs can be retried.`);
   }
+  if (detail.attempts.some((candidate) => ["pending", "started", "cancel-requested", "reconciliation-required"].includes(candidate.status))) {
+    return actionError("conflict", `Run '${run.runId}' already has an active retry attempt.`);
+  }
   if (detail.attempts.filter((candidate) => candidate.status !== "pending").length >= MAX_RUN_ATTEMPTS) {
     return actionError("conflict", `Run '${run.runId}' has used its retry budget of ${MAX_RUN_ATTEMPTS} attempts.`);
   }
@@ -41,6 +108,9 @@ export async function retryAttempt(ctx: DispatchContext, input: RetryAttemptInpu
   const existingLease = ctx.store.getLeaseForRun(run.runId);
   if (!existingLease) {
     return actionError("internal", `Run '${run.runId}' has no ownership lease to resume.`);
+  }
+  if (existingLease.status !== "released") {
+    return actionError("conflict", `Run '${run.runId}' cannot be retried while its repository lease is quarantined.`);
   }
   const current = ctx.store.getCurrentOwnership(input.repositoryKey);
   if (current && current.runId !== run.runId) {
@@ -75,44 +145,154 @@ export async function retryAttempt(ctx: DispatchContext, input: RetryAttemptInpu
     return actionError("conflict", `Worker thread '${threadId}' is '${threadStatus}', not in a retryable error state.`);
   }
 
-  // Re-acquire ownership before the external retry so a concurrent start
-  // cannot interleave a second run while this worker resumes.
+  const retryAttemptId = `attempt-${randomUUID()}`;
+  const retryGenerationStartedAt = ctx.now().toISOString();
+  const pendingAttempt = {
+    attemptId: retryAttemptId,
+    runId: run.runId,
+    repositoryKey: input.repositoryKey,
+    providerId: attempt.providerId,
+    model: attempt.model,
+    reasoningLevel: attempt.reasoningLevel,
+    workerThreadId: threadId,
+    status: "pending" as const,
+    // This is the generation fence timestamp, not proof that the provider
+    // already accepted the retry. The pending status remains the in-flight
+    // guard while the external call is unresolved.
+    startedAt: retryGenerationStartedAt,
+    finishedAt: null,
+  };
+
+  // Fence stale reconciliation passes before the external retry. The pending
+  // attempt is the new generation, so an old pass cannot finalize it.
   const resumedExpiresAt = new Date(ctx.now().getTime() + ctx.settings.runtimeCapSeconds * 1000).toISOString();
+  const retryGeneration = {
+    repositoryKey: input.repositoryKey,
+    runId: run.runId,
+    attemptId: retryAttemptId,
+    leaseId: existingLease.leaseId,
+    workerThreadId: threadId,
+    runRequestedAt: run.requestedAt,
+    runStartedAt: run.startedAt,
+    runProviderId: run.providerId,
+    runProjectId: run.projectId,
+    runEnvironmentId: run.environmentId,
+    runQueueItemIds: run.queueItemIds,
+    runRepositoryRevision: run.repositoryRevision,
+    runCanonicalRecords: run.canonicalRecords,
+    attemptStartedAt: retryGenerationStartedAt,
+    attemptProviderId: pendingAttempt.providerId,
+    attemptModel: pendingAttempt.model,
+    attemptReasoningLevel: pendingAttempt.reasoningLevel,
+    leaseAcquiredAt: existingLease.acquiredAt,
+    leaseExpiresAt: resumedExpiresAt,
+    leaseQueueItemIds: existingLease.queueItemIds,
+    leaseAuthorizationProvenance: existingLease.authorizationProvenance,
+  };
   try {
-    ctx.store.updateOwnershipLease({
-      ...existingLease,
-      workerThreadId: threadId,
-      expiresAt: resumedExpiresAt,
-      status: "held",
+    ctx.store.withTransaction((transaction) => {
+      const currentLease = transaction.getLeaseForRun(run.runId);
+      const currentRun = transaction.getRunSummary(run.runId);
+      if (!currentLease
+        || currentLease.leaseId !== existingLease.leaseId
+        || currentLease.repositoryKey !== existingLease.repositoryKey
+        || currentLease.runId !== existingLease.runId
+        || currentLease.status !== existingLease.status
+        || !sameJson(currentLease.queueItemIds, existingLease.queueItemIds)
+        || !sameJson(currentLease.authorizationProvenance, existingLease.authorizationProvenance)
+        || currentLease.workerThreadId !== existingLease.workerThreadId
+        || currentLease.acquiredAt !== existingLease.acquiredAt
+        || currentLease.expiresAt !== existingLease.expiresAt) {
+        throw new Error(`ownership for run '${run.runId}' changed before retry`);
+      }
+      if (!currentRun
+        || currentRun.repositoryKey !== run.repositoryKey
+        || currentRun.requestedAt !== run.requestedAt
+        || currentRun.startedAt !== run.startedAt
+        || currentRun.finishedAt !== run.finishedAt
+        || currentRun.providerId !== run.providerId
+        || currentRun.workerThreadId !== run.workerThreadId
+        || currentRun.projectId !== run.projectId
+        || currentRun.environmentId !== run.environmentId
+        || !sameJson(currentRun.queueItemIds, run.queueItemIds)
+        || !sameRevision(currentRun.repositoryRevision, run.repositoryRevision)
+        || !sameJson(currentRun.canonicalRecords, run.canonicalRecords)
+        || currentRun.status !== "failed-safe") {
+        throw new Error(`run '${run.runId}' changed before retry`);
+      }
+      if (transaction.getActiveAttempt(run.runId) !== null) {
+        throw new Error(`run '${run.runId}' already has an active retry attempt`);
+      }
+      transaction.assertGlobalCapacity(ctx.settings.concurrencyLimit, run.runId);
+      transaction.resetReconciliation(run.runId);
+      transaction.updateRunDispatch(runDispatchUpdate(currentRun, {
+        status: "started",
+        finishedAt: null,
+        workerThreadId: threadId,
+      }));
+      transaction.createDispatchAttempt(pendingAttempt);
+      transaction.updateOwnershipLease({
+        ...currentLease,
+        workerThreadId: threadId,
+        expiresAt: resumedExpiresAt,
+        status: "held",
+      });
     });
   } catch (error) {
+    if (error instanceof GlobalConcurrencyLimitError) {
+      return actionError("conflict", errorMessage(error));
+    }
     return actionError("conflict", `Could not re-acquire ownership for run '${run.runId}': ${errorMessage(error)}`);
   }
 
   try {
-    await ctx.sdk.threads.retry({ threadId, reason: `factory retry of attempt '${input.attemptId}'` });
+    await withWorkerOperation(ctx, threadId, "retry", () => ctx.sdk.threads.retry({ threadId, reason: `factory retry of attempt '${input.attemptId}'` }));
   } catch (error) {
-    ctx.store.updateOwnershipLease({ ...existingLease, status: "released" });
-    return actionError("internal", `Retry of worker thread '${threadId}' failed: ${errorMessage(error)}`);
+    const applied = ctx.store.withTransaction((transaction) => {
+      if (!ownsPendingRetryGeneration(transaction, retryGeneration)) return false;
+      const currentRun = transaction.getRunSummary(run.runId);
+      const currentAttempt = transaction.getActiveAttempt(run.runId);
+      const currentLease = transaction.getLeaseForRun(run.runId);
+      if (!currentRun || !currentAttempt || !currentLease || currentAttempt.attemptId !== retryAttemptId) return false;
+      const detectedAt = ctx.now();
+      const detectedAtIso = detectedAt.toISOString();
+      transaction.recordReconciliation({
+        runId: run.runId,
+        firstDetectedAt: detectedAtIso,
+        deadlineAt: new Date(detectedAt.getTime() + RECONCILIATION_GRACE_MS).toISOString(),
+        reasonCode: "retry-ambiguous",
+        rawObservation: boundedDiagnostic(`retry of '${threadId}' failed ambiguously: ${errorMessage(error)}`, 512),
+      });
+      transaction.updateRunDispatch(runDispatchUpdate(currentRun, {
+        status: "reconciliation-required",
+        finishedAt: detectedAtIso,
+        workerThreadId: threadId,
+      }));
+      transaction.updateDispatchAttempt({ ...currentAttempt, status: "reconciliation-required", finishedAt: detectedAtIso });
+      transaction.updateOwnershipLease({ ...currentLease, status: "reconciliation-required" });
+      return true;
+    });
+    if (!applied) {
+      ctx.log?.(`run ${run.runId}: ignored stale retry failure for generation ${retryAttemptId}`);
+    }
+    return actionError("internal", boundedDiagnostic(`Retry of worker thread '${threadId}' failed: ${errorMessage(error)}`, 512));
   }
 
-  const retryAttemptId = `attempt-${randomUUID()}`;
   const startedAt = ctx.now().toISOString();
-  ctx.store.withTransaction((transaction) => {
-    transaction.createDispatchAttempt({
-      attemptId: retryAttemptId,
-      runId: run.runId,
-      repositoryKey: input.repositoryKey,
-      providerId: attempt.providerId,
-      model: attempt.model,
-      reasoningLevel: attempt.reasoningLevel,
-      workerThreadId: threadId,
-      status: "started",
-      startedAt,
-      finishedAt: null,
-    });
-    transaction.updateRunDispatch(runDispatchUpdate(run, { status: "started", finishedAt: null, workerThreadId: threadId }));
+  const applied = ctx.store.withTransaction((transaction) => {
+    if (!ownsPendingRetryGeneration(transaction, retryGeneration)) return false;
+    const currentAttempt = transaction.getActiveAttempt(run.runId);
+    if (!currentAttempt || currentAttempt.attemptId !== retryAttemptId) return false;
+    transaction.updateDispatchAttempt({ ...currentAttempt, status: "started", startedAt });
+    const currentRun = transaction.getRunSummary(run.runId);
+    if (!currentRun) return false;
+    transaction.updateRunDispatch(runDispatchUpdate(currentRun, { status: "started", finishedAt: null, workerThreadId: threadId }));
+    return true;
   });
+  if (!applied) {
+    ctx.log?.(`run ${run.runId}: ignored stale retry success for generation ${retryAttemptId}`);
+    return actionError("conflict", `The retry result for run '${run.runId}' was stale and was ignored.`);
+  }
 
   return actionSuccess({
     status: "accepted",

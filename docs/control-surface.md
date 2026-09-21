@@ -35,6 +35,34 @@ The Work tab reads the union of `plans/factory/queue.md` and optional
 visible and satisfy `depends_on` references after moving to `done.md`. The
 foreman never reads `done.md`; existing status and attention rules still apply.
 
+## Run completion and recovery
+
+The dispatch lifecycle settles a run only after the observed terminal worker,
+its active attempt, the current lease, a fresh `plans/factory/current.md`, and
+an attributable immutable run record agree on the same outcome. Immutable
+record names carry the UTC timestamp and worker thread id. A failed-safe
+outcome may settle without an immutable record only when the fresh current
+state explicitly says `failed-safe`.
+
+Malformed, stale, unreadable, or mismatched evidence moves the run into
+`reconciliation-required`. This is a bounded settlement state, not a terminal
+outcome. The deadline is persisted on first detection and is never extended by
+later observations. The current settlement window is ten minutes. A corrected
+correlated outcome can settle during that window. At the deadline, the
+operational run becomes `failed-safe` so it no longer consumes global run
+capacity, terminalizes active attempts, and updates counters once. The
+dispatcher releases the repository lease only after a worker re-observation
+confirms termination. If the worker is live, stopping, unreadable, or the
+spawn was ambiguous, the lease stays `reconciliation-required`, quarantining
+only that repository. An ambiguous spawn with no real thread id remains
+quarantined. An explicit operator repair may release the sentinel lease only
+after repository dispatch is paused and the durable quarantine timeout has
+elapsed; `current.md` cannot authorize release.
+Repeated finalization is a no-op, and a conflicting terminal outcome is
+rejected. The public run projection stays unchanged, so diagnostic observations
+remain internal while the attention surface marks reconciliation as urgent and
+the run detail explains the next state.
+
 ## Aggregate composition
 
 The "All" tabs are a pure view-layer union (`src/ui/views/aggregate.ts`):

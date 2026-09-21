@@ -9,6 +9,7 @@ import {
   type QueueEntry,
   type Question,
   type RepositoryConfiguration,
+  type RepositoryRevision,
 } from "../contracts.js";
 import type { ProtocolReader } from "../ports.js";
 import { ProtocolError } from "./errors.js";
@@ -266,6 +267,35 @@ export class RepositoryProtocolReader implements ProtocolReader {
 
   async loadSnapshot(configuration: RepositoryConfiguration): Promise<ProtocolSnapshot> {
     return (await this.loadProjection(configuration)).snapshot;
+  }
+
+  async loadRevision(configuration: RepositoryConfiguration): Promise<RepositoryRevision> {
+    const normalizedConfiguration = this.validateConfiguration(configuration);
+    const foreman = await this.read(normalizedConfiguration, PROTOCOL_PATHS.foreman);
+    const repo = await this.read(normalizedConfiguration, PROTOCOL_PATHS.repo);
+    const [queue, done, questions, current, dashboard, lock] = await Promise.all([
+      this.read(normalizedConfiguration, PROTOCOL_PATHS.queue),
+      this.readOptionalDone(normalizedConfiguration),
+      this.read(normalizedConfiguration, PROTOCOL_PATHS.questions),
+      this.read(normalizedConfiguration, PROTOCOL_PATHS.current),
+      this.read(normalizedConfiguration, PROTOCOL_PATHS.dashboard),
+      this.readOptionalLock(normalizedConfiguration),
+    ]);
+    const allFiles = [foreman, repo, queue, ...(done ? [done] : []), questions, current, dashboard, ...(lock ? [{
+      relativePath: PROTOCOL_PATHS.lock,
+      content: lock.content,
+      sha256: lock.sha256,
+    }] : [])];
+    const mergeReader = this.options.mergeReader ?? unavailableMergeReader();
+    const merge = validateMergeProjection(
+      await mergeReader.readMergeProjection(normalizedConfiguration),
+      normalizedConfiguration.repositoryKey,
+    );
+    return {
+      gitCommit: merge.gitCommit,
+      protocolDigest: protocolDigest(allFiles),
+      fileDigests: Object.fromEntries(allFiles.map((file) => [file.relativePath, file.sha256])),
+    };
   }
 
   async loadProjection(configuration: RepositoryConfiguration): Promise<ProtocolProjection> {
