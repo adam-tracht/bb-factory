@@ -3,15 +3,11 @@ import type { FactoryActionResult, RepositoryKey } from "../contracts.js";
 import { actionError, actionSuccess, errorMessage, sameRevision } from "../actions/results.js";
 import type { DispatchAttempt, OperationalRunSummary, OwnershipLease } from "../contracts.js";
 import { finalizeCancelledRun, releaseQuarantinedOwnership } from "./lifecycle.js";
-import { runDispatchUpdate, withWorkerOperation, type DispatchContext } from "./types.js";
+import { runDispatchUpdate, sameJson, withWorkerOperation, type DispatchContext } from "./types.js";
 import type { StopIntent } from "../storage/index.js";
 
 export interface StopRunInput {
   readonly repositoryKey: RepositoryKey;
-}
-
-function sameJson(left: unknown, right: unknown): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 interface StopGeneration {

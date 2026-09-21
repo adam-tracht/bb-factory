@@ -107,6 +107,11 @@ export function boundedDiagnostic(value: string, maxLength: number): string {
   return (normalized.length > 0 ? normalized : "unknown").slice(0, maxLength);
 }
 
+/** Compare persisted JSON-shaped values without duplicating field walkers. */
+export function sameJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
 export function dispatcherNowSeconds(now: () => Date): number {
   return Math.floor(now().getTime() / 1000);
 }

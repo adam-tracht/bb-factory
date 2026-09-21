@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { FactoryActionResult, OperationalRunSummary, RepositoryKey, RepositoryRevision } from "../contracts.js";
 import { actionError, actionSuccess, errorMessage, sameRevision, staleRevisionError } from "../actions/results.js";
 import { GlobalConcurrencyLimitError, type OperationalTransaction } from "../storage/index.js";
-import { boundedDiagnostic, MAX_RUN_ATTEMPTS, RECONCILIATION_GRACE_MS, runDispatchUpdate, withWorkerOperation, type DispatchContext } from "./types.js";
+import { boundedDiagnostic, MAX_RUN_ATTEMPTS, RECONCILIATION_GRACE_MS, runDispatchUpdate, sameJson, withWorkerOperation, type DispatchContext } from "./types.js";
 
 export interface RetryAttemptInput {
   readonly repositoryKey: RepositoryKey;
@@ -71,10 +71,6 @@ function ownsPendingRetryGeneration(
     && lease.workerThreadId === generation.workerThreadId
     && lease.acquiredAt === generation.leaseAcquiredAt
     && lease.expiresAt === generation.leaseExpiresAt;
-}
-
-function sameJson(left: unknown, right: unknown): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 /**

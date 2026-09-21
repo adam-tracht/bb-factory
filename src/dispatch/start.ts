@@ -15,7 +15,7 @@ import { repositoryLabel } from "../repository-label.js";
 import { GlobalConcurrencyLimitError, IdempotencyConflictError, type OperationalTransaction } from "../storage/index.js";
 import { OwnershipHeldError } from "./ownership.js";
 import { hostPreflight, selectExplicitProvider, selectProvider, type ProviderSelection } from "./preflight.js";
-import { boundedDiagnostic, dispatcherNowSeconds, nightKeyAt, nightState, RECONCILIATION_GRACE_MS, runDispatchUpdate, spawnEnvironment, withWorkerOperation, type DispatchContext } from "./types.js";
+import { boundedDiagnostic, dispatcherNowSeconds, nightKeyAt, nightState, RECONCILIATION_GRACE_MS, runDispatchUpdate, sameJson, spawnEnvironment, withWorkerOperation, type DispatchContext } from "./types.js";
 
 export interface StartRunInput {
   readonly repositoryKey: RepositoryKey;
@@ -113,10 +113,6 @@ function ownsPendingSpawnGeneration(
     && lease.status === "held"
     && lease.workerThreadId === null;
   return matched;
-}
-
-function sameJson(left: unknown, right: unknown): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 async function quarantineLateSpawn(

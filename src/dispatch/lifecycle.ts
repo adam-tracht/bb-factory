@@ -24,6 +24,7 @@ import {
   nightKeyAt,
   nightState,
   runDispatchUpdate,
+  sameJson,
   withWorkerOperation,
   type DispatchContext,
 } from "./types.js";
@@ -289,10 +290,6 @@ function timestampVariants(timestampMs: number): { readonly stamps: readonly str
 
 function sameStringArray(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
-}
-
-function sameJson(left: unknown, right: unknown): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function sameRunGeneration(actual: OperationalRunSummary | null, expected: OperationalRunSummary): boolean {
