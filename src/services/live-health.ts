@@ -8,6 +8,7 @@ import {
   type RepositoryKey,
 } from "../contracts.js";
 import type { FactoryHealthReader } from "../ports.js";
+import { probeTasksAvailability, type TasksAvailability, type TasksClient } from "../tasks/index.js";
 import { errorMessage } from "../errors.js";
 import { normalizeAbsolutePath } from "../protocol/files.js";
 
@@ -25,6 +26,7 @@ type Environment = Awaited<ReturnType<BbSdk["environments"]["get"]>>;
 export interface LiveHealthOptions {
   readonly sdk: BbSdk;
   readonly repositoryLookup: (repositoryKey: RepositoryKey) => RepositoryRegistryEntry | null;
+  readonly tasksClient?: TasksClient;
 }
 
 export async function validateConfiguredEnvironment(
@@ -367,6 +369,17 @@ export function createLiveHealthReader(options: LiveHealthOptions): FactoryHealt
       const entry = options.repositoryLookup(repositoryKey);
       if (!entry) throw new Error(`Repository '${repositoryKey}' is not configured.`);
       return readHostPreflight(options.sdk, entry, entry.configuration.connectedHostId);
+    },
+
+    async getTasksAvailability(): Promise<TasksAvailability> {
+      if (options.tasksClient === undefined) {
+        return {
+          enabled: false,
+          status: "disabled-or-unavailable",
+          message: "Tasks integration is disabled in Factory settings.",
+        };
+      }
+      return probeTasksAvailability(options.tasksClient);
     },
   };
 }

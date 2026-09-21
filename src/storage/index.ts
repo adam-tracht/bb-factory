@@ -411,7 +411,158 @@ export const OPERATIONAL_STORAGE_MIGRATIONS = [
     created_at TEXT NOT NULL
   )`,
   `CREATE UNIQUE INDEX stop_intent_one_per_run ON stop_intents(run_id)`,
+  `CREATE TABLE tasks_approval_records (
+    approval_id TEXT PRIMARY KEY,
+    repository_key TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    operation_class TEXT NOT NULL,
+    content_revision TEXT NOT NULL,
+    provenance_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (repository_key, task_id, operation_class, content_revision)
+  )`,
+  `CREATE INDEX tasks_approval_lookup
+    ON tasks_approval_records(repository_key, task_id, operation_class, content_revision)`,
+  `CREATE TABLE tasks_dependency_edges (
+    repository_key TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    depends_on_task_id TEXT NOT NULL,
+    provenance_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (repository_key, task_id, depends_on_task_id),
+    CHECK (task_id <> depends_on_task_id)
+  )`,
+  `CREATE INDEX tasks_dependency_reverse_lookup
+    ON tasks_dependency_edges(repository_key, depends_on_task_id)`,
+  `CREATE TABLE tasks_blocker_records (
+    blocker_id TEXT PRIMARY KEY,
+    repository_key TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('blocking-question', 'dependency-blocker')),
+    state TEXT NOT NULL CHECK (state IN ('open', 'answered', 'resolved')),
+    question_text TEXT NOT NULL,
+    answer_text TEXT,
+    provenance_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    answered_at TEXT,
+    resolved_at TEXT
+  )`,
+  `CREATE INDEX tasks_blocker_lookup
+    ON tasks_blocker_records(repository_key, task_id, state)`,
 ] as const;
+
+const tasksOperationClassSchema = z.string().trim().min(1).max(128);
+const tasksTaskIdSchema = z.string().trim().min(1).max(256);
+const tasksContentRevisionSchema = z.string().trim().min(1).max(256);
+const tasksBlockerKindSchema = z.enum(["blocking-question", "dependency-blocker"]);
+const tasksBlockerStateSchema = z.enum(["open", "answered", "resolved"]);
+
+export type TasksOperationClass = z.infer<typeof tasksOperationClassSchema>;
+export type TasksBlockerKind = z.infer<typeof tasksBlockerKindSchema>;
+export type TasksBlockerState = z.infer<typeof tasksBlockerStateSchema>;
+
+export interface TasksApprovalRecord {
+  readonly approvalId: string;
+  readonly repositoryKey: RepositoryKey;
+  readonly taskId: string;
+  readonly operationClass: TasksOperationClass;
+  /** The grant is valid only for this exact task content revision. */
+  readonly contentRevision: string;
+  readonly provenance: JsonValue;
+  readonly createdAt: string;
+}
+
+export interface CreateTasksApprovalInput {
+  readonly approvalId: string;
+  readonly repositoryKey: RepositoryKey;
+  readonly taskId: string;
+  readonly operationClass: TasksOperationClass;
+  readonly contentRevision: string;
+  readonly provenance: JsonValue;
+  readonly createdAt?: string;
+}
+
+export interface TasksDependencyEdge {
+  readonly repositoryKey: RepositoryKey;
+  readonly taskId: string;
+  readonly dependsOnTaskId: string;
+  readonly provenance: JsonValue;
+  readonly createdAt: string;
+}
+
+export interface CreateTasksDependencyEdgeInput {
+  readonly repositoryKey: RepositoryKey;
+  readonly taskId: string;
+  readonly dependsOnTaskId: string;
+  readonly provenance: JsonValue;
+  readonly createdAt?: string;
+}
+
+export interface TasksBlockerRecord {
+  readonly blockerId: string;
+  readonly repositoryKey: RepositoryKey;
+  readonly taskId: string;
+  readonly kind: TasksBlockerKind;
+  readonly state: TasksBlockerState;
+  readonly questionText: string;
+  readonly answerText: string | null;
+  readonly provenance: JsonValue;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly answeredAt: string | null;
+  readonly resolvedAt: string | null;
+}
+
+export interface CreateTasksBlockerInput {
+  readonly blockerId: string;
+  readonly repositoryKey: RepositoryKey;
+  readonly taskId: string;
+  readonly kind: TasksBlockerKind;
+  readonly questionText: string;
+  readonly createdAt?: string;
+  readonly provenance?: JsonValue;
+}
+
+export interface UpdateTasksBlockerInput {
+  readonly blockerId: string;
+  readonly state: Exclude<TasksBlockerState, "open">;
+  readonly answerText?: string | null;
+  readonly updatedAt?: string;
+}
+
+interface TasksApprovalRow {
+  approval_id: string;
+  repository_key: string;
+  task_id: string;
+  operation_class: string;
+  content_revision: string;
+  provenance_json: string;
+  created_at: string;
+}
+
+interface TasksDependencyRow {
+  repository_key: string;
+  task_id: string;
+  depends_on_task_id: string;
+  provenance_json: string;
+  created_at: string;
+}
+
+interface TasksBlockerRow {
+  blocker_id: string;
+  repository_key: string;
+  task_id: string;
+  kind: string;
+  state: string;
+  question_text: string;
+  answer_text: string | null;
+  provenance_json: string;
+  created_at: string;
+  updated_at: string;
+  answered_at: string | null;
+  resolved_at: string | null;
+}
 
 export interface CreateRunIntentInput {
   readonly intent: RunIntent;
@@ -655,6 +806,15 @@ export interface OperationalTransaction {
   updatePendingActionIntent(input: PendingActionIntentUpdate): PendingActionIntentRecord;
   getDispatcherState(repositoryKey: RepositoryKey): DispatcherState;
   saveDispatcherState(state: DispatcherState): void;
+  createTasksApproval(input: CreateTasksApprovalInput): TasksApprovalRecord;
+  getTasksApproval(input: Pick<CreateTasksApprovalInput, "repositoryKey" | "taskId" | "operationClass" | "contentRevision">): TasksApprovalRecord | null;
+  listTasksApprovals(repositoryKey: RepositoryKey, taskId?: string): TasksApprovalRecord[];
+  createTasksDependencyEdge(input: CreateTasksDependencyEdgeInput): TasksDependencyEdge;
+  listTasksDependencyEdges(repositoryKey: RepositoryKey): TasksDependencyEdge[];
+  createTasksBlocker(input: CreateTasksBlockerInput): TasksBlockerRecord;
+  updateTasksBlocker(input: UpdateTasksBlockerInput): TasksBlockerRecord;
+  getTasksBlocker(blockerId: string): TasksBlockerRecord | null;
+  listTasksBlockers(repositoryKey: RepositoryKey, taskId?: string): TasksBlockerRecord[];
 }
 
 export interface OperationalStateStore extends OperationalStateReader {
@@ -692,6 +852,15 @@ export interface OperationalStateStore extends OperationalStateReader {
   listActiveRuns(repositoryKey: RepositoryKey): OperationalRunSummary[];
   getDispatcherState(repositoryKey: RepositoryKey): DispatcherState;
   saveDispatcherState(state: DispatcherState): void;
+  createTasksApproval(input: CreateTasksApprovalInput): TasksApprovalRecord;
+  getTasksApproval(input: Pick<CreateTasksApprovalInput, "repositoryKey" | "taskId" | "operationClass" | "contentRevision">): TasksApprovalRecord | null;
+  listTasksApprovals(repositoryKey: RepositoryKey, taskId?: string): TasksApprovalRecord[];
+  createTasksDependencyEdge(input: CreateTasksDependencyEdgeInput): TasksDependencyEdge;
+  listTasksDependencyEdges(repositoryKey: RepositoryKey): TasksDependencyEdge[];
+  createTasksBlocker(input: CreateTasksBlockerInput): TasksBlockerRecord;
+  updateTasksBlocker(input: UpdateTasksBlockerInput): TasksBlockerRecord;
+  getTasksBlocker(blockerId: string): TasksBlockerRecord | null;
+  listTasksBlockers(repositoryKey: RepositoryKey, taskId?: string): TasksBlockerRecord[];
 }
 
 interface RunRow {
@@ -1102,6 +1271,15 @@ class OperationalSqliteStore implements OperationalStateStore {
       updatePendingActionIntent: (input) => updatePendingActionIntent(this.db, input, this.executionNow),
       getDispatcherState: (repositoryKey) => readDispatcherState(this.db, repositoryKey),
       saveDispatcherState: (state) => saveDispatcherState(this.db, state),
+      createTasksApproval: (input) => createTasksApproval(this.db, input, this.executionNow),
+      getTasksApproval: (input) => readTasksApproval(this.db, input),
+      listTasksApprovals: (repositoryKey, taskId) => listTasksApprovals(this.db, repositoryKey, taskId),
+      createTasksDependencyEdge: (input) => createTasksDependencyEdge(this.db, input, this.executionNow),
+      listTasksDependencyEdges: (repositoryKey) => listTasksDependencyEdges(this.db, repositoryKey),
+      createTasksBlocker: (input) => createTasksBlocker(this.db, input, this.executionNow),
+      updateTasksBlocker: (input) => updateTasksBlocker(this.db, input, this.executionNow),
+      getTasksBlocker: (blockerId) => readTasksBlocker(this.db, blockerId),
+      listTasksBlockers: (repositoryKey, taskId) => listTasksBlockers(this.db, repositoryKey, taskId),
     };
   }
 
@@ -1165,6 +1343,42 @@ class OperationalSqliteStore implements OperationalStateStore {
 
   saveDispatcherState(state: DispatcherState): void {
     this.withTransaction((transaction) => transaction.saveDispatcherState(state));
+  }
+
+  createTasksApproval(input: CreateTasksApprovalInput): TasksApprovalRecord {
+    return this.withTransaction((transaction) => transaction.createTasksApproval(input));
+  }
+
+  getTasksApproval(input: Pick<CreateTasksApprovalInput, "repositoryKey" | "taskId" | "operationClass" | "contentRevision">): TasksApprovalRecord | null {
+    return readTasksApproval(this.db, input);
+  }
+
+  listTasksApprovals(repositoryKey: RepositoryKey, taskId?: string): TasksApprovalRecord[] {
+    return listTasksApprovals(this.db, repositoryKey, taskId);
+  }
+
+  createTasksDependencyEdge(input: CreateTasksDependencyEdgeInput): TasksDependencyEdge {
+    return this.withTransaction((transaction) => transaction.createTasksDependencyEdge(input));
+  }
+
+  listTasksDependencyEdges(repositoryKey: RepositoryKey): TasksDependencyEdge[] {
+    return listTasksDependencyEdges(this.db, repositoryKey);
+  }
+
+  createTasksBlocker(input: CreateTasksBlockerInput): TasksBlockerRecord {
+    return this.withTransaction((transaction) => transaction.createTasksBlocker(input));
+  }
+
+  updateTasksBlocker(input: UpdateTasksBlockerInput): TasksBlockerRecord {
+    return this.withTransaction((transaction) => transaction.updateTasksBlocker(input));
+  }
+
+  getTasksBlocker(blockerId: string): TasksBlockerRecord | null {
+    return readTasksBlocker(this.db, blockerId);
+  }
+
+  listTasksBlockers(repositoryKey: RepositoryKey, taskId?: string): TasksBlockerRecord[] {
+    return listTasksBlockers(this.db, repositoryKey, taskId);
   }
 }
 
@@ -1656,6 +1870,266 @@ function saveDispatcherState(db: SqliteDatabase, state: DispatcherState): void {
     z.string().parse(state.lastStartProvider),
     stableJson(limits),
   );
+}
+
+function createTasksApproval(
+  db: SqliteDatabase,
+  input: CreateTasksApprovalInput,
+  executionNow: () => string,
+): TasksApprovalRecord {
+  const repositoryKey = repositoryKeySchema.parse(input.repositoryKey);
+  const approvalId = z.string().trim().min(1).max(256).parse(input.approvalId);
+  const taskId = tasksTaskIdSchema.parse(input.taskId);
+  const operationClass = tasksOperationClassSchema.parse(input.operationClass);
+  const contentRevision = tasksContentRevisionSchema.parse(input.contentRevision);
+  const createdAt = executionTimestamp(() => input.createdAt ?? executionNow());
+  const existingById = db.prepare<unknown[], TasksApprovalRow>(
+    `SELECT approval_id, repository_key, task_id, operation_class,
+            content_revision, provenance_json, created_at
+       FROM tasks_approval_records
+      WHERE approval_id = ?`,
+  ).get(approvalId);
+  if (existingById !== undefined) {
+    const existing = tasksApprovalFromRow(existingById);
+    if (existing.repositoryKey !== repositoryKey
+      || existing.taskId !== taskId
+      || existing.operationClass !== operationClass
+      || existing.contentRevision !== contentRevision) {
+      throw new Error(`tasks approval id is already bound to a different grant: ${approvalId}`);
+    }
+    return existing;
+  }
+  const existingByKey = db.prepare<unknown[], TasksApprovalRow>(
+    `SELECT approval_id, repository_key, task_id, operation_class,
+            content_revision, provenance_json, created_at
+       FROM tasks_approval_records
+      WHERE repository_key = ? AND task_id = ?
+        AND operation_class = ? AND content_revision = ?`,
+  ).get(repositoryKey, taskId, operationClass, contentRevision);
+  if (existingByKey !== undefined) return tasksApprovalFromRow(existingByKey);
+
+  db.prepare(
+    `INSERT INTO tasks_approval_records (
+       approval_id, repository_key, task_id, operation_class,
+       content_revision, provenance_json, created_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    approvalId,
+    repositoryKey,
+    taskId,
+    operationClass,
+    contentRevision,
+    stableJson(input.provenance),
+    createdAt,
+  );
+  const inserted = readTasksApproval(db, { repositoryKey, taskId, operationClass, contentRevision });
+  if (inserted === null) throw new Error(`tasks approval was not persisted: ${approvalId}`);
+  return inserted;
+}
+
+function readTasksApproval(
+  db: SqliteDatabase,
+  input: Pick<CreateTasksApprovalInput, "repositoryKey" | "taskId" | "operationClass" | "contentRevision">,
+): TasksApprovalRecord | null {
+  const repositoryKey = repositoryKeySchema.parse(input.repositoryKey);
+  const taskId = tasksTaskIdSchema.parse(input.taskId);
+  const operationClass = tasksOperationClassSchema.parse(input.operationClass);
+  const contentRevision = tasksContentRevisionSchema.parse(input.contentRevision);
+  const row = db.prepare<unknown[], TasksApprovalRow>(
+    `SELECT approval_id, repository_key, task_id, operation_class,
+            content_revision, provenance_json, created_at
+       FROM tasks_approval_records
+      WHERE repository_key = ? AND task_id = ?
+        AND operation_class = ? AND content_revision = ?`,
+  ).get(repositoryKey, taskId, operationClass, contentRevision);
+  return row === undefined ? null : tasksApprovalFromRow(row);
+}
+
+function listTasksApprovals(db: SqliteDatabase, repositoryKey: RepositoryKey, taskId?: string): TasksApprovalRecord[] {
+  const key = repositoryKeySchema.parse(repositoryKey);
+  const parsedTaskId = taskId === undefined ? undefined : tasksTaskIdSchema.parse(taskId);
+  const rows = db.prepare<unknown[], TasksApprovalRow>(
+    `SELECT approval_id, repository_key, task_id, operation_class,
+            content_revision, provenance_json, created_at
+       FROM tasks_approval_records
+      WHERE repository_key = ? AND (? IS NULL OR task_id = ?)
+      ORDER BY created_at ASC, approval_id ASC`,
+  ).all(key, parsedTaskId ?? null, parsedTaskId ?? null);
+  return rows.map(tasksApprovalFromRow);
+}
+
+function createTasksDependencyEdge(
+  db: SqliteDatabase,
+  input: CreateTasksDependencyEdgeInput,
+  executionNow: () => string,
+): TasksDependencyEdge {
+  const repositoryKey = repositoryKeySchema.parse(input.repositoryKey);
+  const taskId = tasksTaskIdSchema.parse(input.taskId);
+  const dependsOnTaskId = tasksTaskIdSchema.parse(input.dependsOnTaskId);
+  if (taskId === dependsOnTaskId) throw new Error("dependency cycle rejected: a task cannot depend on itself");
+  const createdAt = executionTimestamp(() => input.createdAt ?? executionNow());
+  const existing = db.prepare<unknown[], TasksDependencyRow>(
+    `SELECT repository_key, task_id, depends_on_task_id, provenance_json, created_at
+       FROM tasks_dependency_edges
+      WHERE repository_key = ? AND task_id = ? AND depends_on_task_id = ?`,
+  ).get(repositoryKey, taskId, dependsOnTaskId);
+  if (existing !== undefined) return tasksDependencyFromRow(existing);
+
+  const cycle = db.prepare<unknown[], { found: number }>(
+    `WITH RECURSIVE reachable(task_id) AS (
+       SELECT ?
+       UNION
+       SELECT edge.depends_on_task_id
+         FROM tasks_dependency_edges edge
+         JOIN reachable ON reachable.task_id = edge.task_id
+        WHERE edge.repository_key = ?
+     )
+     SELECT 1 AS found FROM reachable WHERE task_id = ? LIMIT 1`,
+  ).get(dependsOnTaskId, repositoryKey, taskId);
+  if (cycle !== undefined) {
+    throw new Error(`dependency cycle rejected: ${taskId} depends on ${dependsOnTaskId}`);
+  }
+
+  db.prepare(
+    `INSERT INTO tasks_dependency_edges (
+       repository_key, task_id, depends_on_task_id, provenance_json, created_at
+     ) VALUES (?, ?, ?, ?, ?)`,
+  ).run(repositoryKey, taskId, dependsOnTaskId, stableJson(input.provenance), createdAt);
+  const inserted = db.prepare<unknown[], TasksDependencyRow>(
+    `SELECT repository_key, task_id, depends_on_task_id, provenance_json, created_at
+       FROM tasks_dependency_edges
+      WHERE repository_key = ? AND task_id = ? AND depends_on_task_id = ?`,
+  ).get(repositoryKey, taskId, dependsOnTaskId);
+  if (inserted === undefined) throw new Error(`tasks dependency edge was not persisted: ${taskId}/${dependsOnTaskId}`);
+  return tasksDependencyFromRow(inserted);
+}
+
+function listTasksDependencyEdges(db: SqliteDatabase, repositoryKey: RepositoryKey): TasksDependencyEdge[] {
+  const key = repositoryKeySchema.parse(repositoryKey);
+  const rows = db.prepare<unknown[], TasksDependencyRow>(
+    `SELECT repository_key, task_id, depends_on_task_id, provenance_json, created_at
+       FROM tasks_dependency_edges
+      WHERE repository_key = ?
+      ORDER BY created_at ASC, task_id ASC, depends_on_task_id ASC`,
+  ).all(key);
+  return rows.map(tasksDependencyFromRow);
+}
+
+function createTasksBlocker(
+  db: SqliteDatabase,
+  input: CreateTasksBlockerInput,
+  executionNow: () => string,
+): TasksBlockerRecord {
+  const blockerId = z.string().trim().min(1).max(256).parse(input.blockerId);
+  const repositoryKey = repositoryKeySchema.parse(input.repositoryKey);
+  const taskId = tasksTaskIdSchema.parse(input.taskId);
+  const kind = tasksBlockerKindSchema.parse(input.kind);
+  const questionText = z.string().trim().min(1).max(32_768).parse(input.questionText);
+  const createdAt = executionTimestamp(() => input.createdAt ?? executionNow());
+  const existing = readTasksBlocker(db, blockerId);
+  if (existing !== null) {
+    if (existing.repositoryKey !== repositoryKey || existing.taskId !== taskId || existing.kind !== kind || existing.questionText !== questionText) {
+      throw new Error(`tasks blocker id is already bound to a different blocker: ${blockerId}`);
+    }
+    return existing;
+  }
+  db.prepare(
+    `INSERT INTO tasks_blocker_records (
+       blocker_id, repository_key, task_id, kind, state, question_text,
+       answer_text, provenance_json, created_at, updated_at, answered_at, resolved_at
+     ) VALUES (?, ?, ?, ?, 'open', ?, NULL, ?, ?, ?, NULL, NULL)`,
+  ).run(blockerId, repositoryKey, taskId, kind, questionText, stableJson(input.provenance ?? { source: "factory" }), createdAt, createdAt);
+  const inserted = readTasksBlocker(db, blockerId);
+  if (inserted === null) throw new Error(`tasks blocker was not persisted: ${blockerId}`);
+  return inserted;
+}
+
+function updateTasksBlocker(
+  db: SqliteDatabase,
+  input: UpdateTasksBlockerInput,
+  executionNow: () => string,
+): TasksBlockerRecord {
+  const blockerId = z.string().trim().min(1).max(256).parse(input.blockerId);
+  const state = z.enum(["answered", "resolved"]).parse(input.state);
+  const existing = readTasksBlocker(db, blockerId);
+  if (existing === null) throw new Error(`cannot update missing tasks blocker: ${blockerId}`);
+  if (existing.state === "resolved") throw new Error(`cannot update resolved tasks blocker: ${blockerId}`);
+  const updatedAt = executionTimestamp(() => input.updatedAt ?? executionNow());
+  const answerText = input.answerText === undefined ? existing.answerText : input.answerText;
+  if (state === "answered" && (answerText === null || answerText.trim().length === 0)) {
+    throw new Error(`answered tasks blocker requires answer text: ${blockerId}`);
+  }
+  const answeredAt = state === "answered" ? existing.answeredAt ?? updatedAt : existing.answeredAt;
+  const resolvedAt = state === "resolved" ? existing.resolvedAt ?? updatedAt : existing.resolvedAt;
+  db.prepare(
+    `UPDATE tasks_blocker_records
+        SET state = ?, answer_text = ?, updated_at = ?, answered_at = ?, resolved_at = ?
+      WHERE blocker_id = ?`,
+  ).run(state, answerText, updatedAt, answeredAt, resolvedAt, blockerId);
+  return readTasksBlocker(db, blockerId)!;
+}
+
+function readTasksBlocker(db: SqliteDatabase, blockerId: string): TasksBlockerRecord | null {
+  const id = z.string().trim().min(1).max(256).parse(blockerId);
+  const row = db.prepare<unknown[], TasksBlockerRow>(
+    `SELECT blocker_id, repository_key, task_id, kind, state, question_text,
+            answer_text, provenance_json, created_at, updated_at, answered_at, resolved_at
+       FROM tasks_blocker_records
+      WHERE blocker_id = ?`,
+  ).get(id);
+  return row === undefined ? null : tasksBlockerFromRow(row);
+}
+
+function listTasksBlockers(db: SqliteDatabase, repositoryKey: RepositoryKey, taskId?: string): TasksBlockerRecord[] {
+  const key = repositoryKeySchema.parse(repositoryKey);
+  const parsedTaskId = taskId === undefined ? undefined : tasksTaskIdSchema.parse(taskId);
+  const rows = db.prepare<unknown[], TasksBlockerRow>(
+    `SELECT blocker_id, repository_key, task_id, kind, state, question_text,
+            answer_text, provenance_json, created_at, updated_at, answered_at, resolved_at
+       FROM tasks_blocker_records
+      WHERE repository_key = ? AND (? IS NULL OR task_id = ?)
+      ORDER BY created_at ASC, blocker_id ASC`,
+  ).all(key, parsedTaskId ?? null, parsedTaskId ?? null);
+  return rows.map(tasksBlockerFromRow);
+}
+
+function tasksApprovalFromRow(row: TasksApprovalRow): TasksApprovalRecord {
+  return {
+    approvalId: z.string().trim().min(1).parse(row.approval_id),
+    repositoryKey: repositoryKeySchema.parse(row.repository_key),
+    taskId: tasksTaskIdSchema.parse(row.task_id),
+    operationClass: tasksOperationClassSchema.parse(row.operation_class),
+    contentRevision: tasksContentRevisionSchema.parse(row.content_revision),
+    provenance: parseJson<JsonValue>(row.provenance_json),
+    createdAt: isoTimestampSchema.parse(row.created_at),
+  };
+}
+
+function tasksDependencyFromRow(row: TasksDependencyRow): TasksDependencyEdge {
+  return {
+    repositoryKey: repositoryKeySchema.parse(row.repository_key),
+    taskId: tasksTaskIdSchema.parse(row.task_id),
+    dependsOnTaskId: tasksTaskIdSchema.parse(row.depends_on_task_id),
+    provenance: parseJson<JsonValue>(row.provenance_json),
+    createdAt: isoTimestampSchema.parse(row.created_at),
+  };
+}
+
+function tasksBlockerFromRow(row: TasksBlockerRow): TasksBlockerRecord {
+  return {
+    blockerId: z.string().trim().min(1).parse(row.blocker_id),
+    repositoryKey: repositoryKeySchema.parse(row.repository_key),
+    taskId: tasksTaskIdSchema.parse(row.task_id),
+    kind: tasksBlockerKindSchema.parse(row.kind),
+    state: tasksBlockerStateSchema.parse(row.state),
+    questionText: z.string().trim().min(1).parse(row.question_text),
+    answerText: row.answer_text,
+    provenance: parseJson<JsonValue>(row.provenance_json),
+    createdAt: isoTimestampSchema.parse(row.created_at),
+    updatedAt: isoTimestampSchema.parse(row.updated_at),
+    answeredAt: row.answered_at === null ? null : isoTimestampSchema.parse(row.answered_at),
+    resolvedAt: row.resolved_at === null ? null : isoTimestampSchema.parse(row.resolved_at),
+  };
 }
 
 function persistedRequestPayload(request: PendingActionIntentRequest): unknown {

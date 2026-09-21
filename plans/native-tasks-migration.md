@@ -32,10 +32,14 @@
 
 ## Phase 1: Adapter and safety ledger (high/high/M)
 
-- ⬜ **Tasks adapter behind a setting** — narrow port in the contract layer; the current direct-spawn path stays default; the tasks implementation uses validated cross-plugin RPC. Lands in: src/contracts.ts, new src/tasks adapter.
-- ⬜ **Immutable approval records** — approvals keyed to task id plus operation class plus content revision; a material task edit invalidates the grant. A card move or plain human comment initiates; factory records the grant. Replaces `approved:` syntax. Lands in: src/storage, src/actions.
-- ⬜ **Dependency and blocker edges** — explicit task-id edges in factory storage; Tasks labels and parent/child are display only. Lands in: src/storage.
-- ⬜ **Availability degradation** — tasks disabled, unavailable, or contract-incompatible produces a visible health state and pauses dispatch rather than failing silently. Lands in: src/lifecycle, health surfaces.
+- ✅ **Tasks adapter behind a setting** — narrow port in the contract layer; the current direct-spawn path stays default; the tasks implementation uses validated cross-plugin RPC. Lands in: src/contracts.ts, new src/tasks adapter.
+  Implementation note: Added the disabled-by-default `tasksIntegration` setting and tolerant, injected `TasksClient` in `src/tasks/index.ts`; frozen v1.2 factory contracts remain unchanged.
+- ✅ **Immutable approval records** — approvals keyed to task id plus operation class plus content revision; a material task edit invalidates the grant. A card move or plain human comment initiates; factory records the grant. Replaces `approved:` syntax. Lands in: src/storage, src/actions.
+  Implementation note: Added append-only, repository-scoped approval records with exact revision lookup and duplicate binding protection in `src/storage/index.ts`.
+- ✅ **Dependency and blocker edges** — explicit task-id edges in factory storage; Tasks labels and parent/child are display only. Lands in: src/storage.
+  Implementation note: Added repository-scoped dependency edges with recursive cycle rejection and typed blocker records with answer/resolution timestamps in `src/storage/index.ts`.
+- ✅ **Availability degradation** — tasks disabled, unavailable, or contract-incompatible produces a visible health state and pauses dispatch rather than failing silently. Lands in: src/lifecycle, health surfaces.
+  Implementation note: Added Tasks probing to live health, settings attention, and the dispatch start gate; enabled-mode failures pause dispatch while disabled mode makes no Tasks calls.
 
 ## Phase 2: Execution substrate (high/high/M)
 

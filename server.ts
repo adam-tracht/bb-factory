@@ -8,12 +8,13 @@ import {
 } from "./src/contracts.js";
 import { factoryRpcContract } from "./src/rpc.js";
 import { createFactoryRpcHandlers } from "./src/rpc/action-router.js";
-import { factorySettingDescriptors } from "./src/settings.js";
+import { factorySettingDescriptors, tasksIntegrationSettingSchema } from "./src/settings.js";
 import { createReadComposition } from "./src/services/read-composition.js";
 import { createActionComposition, createFactoryComposition, type FactoryComposition } from "./src/services/action-composition.js";
 import { initializeOperationalStorage, type OperationalStateStore } from "./src/storage/index.js";
 import { registerFactoryLifecycle } from "./src/lifecycle/index.js";
 import { registerFactorySchedule } from "./src/schedule/index.js";
+import { tasksIntegrationModeSchema, type TasksIntegrationMode } from "./src/tasks/index.js";
 
 export function reportConfigurationStatus(
   bb: Pick<BbPluginApi, "pluginId" | "status">,
@@ -64,6 +65,18 @@ export function repositoryInvalidationForThread(
   };
 }
 
+function parsePluginSettings(raw: unknown): {
+  readonly factory: ReturnType<typeof factorySettingsSchema.parse>;
+  readonly tasksIntegration: TasksIntegrationMode;
+} {
+  const values = typeof raw === "object" && raw !== null ? raw as Record<string, unknown> : {};
+  const { tasksIntegration, ...factoryValues } = values;
+  return {
+    factory: factorySettingsSchema.parse(factoryValues),
+    tasksIntegration: tasksIntegrationModeSchema.parse(tasksIntegration ?? tasksIntegrationSettingSchema.parse("disabled")),
+  };
+}
+
 /**
  * The full factory backend: read projections, guarded repository and BB
  * interaction actions, the dispatch engine, the durable scheduler sweep, and
@@ -87,12 +100,16 @@ export default async function plugin(bb: BbPluginApi): Promise<void> {
     bb.log.error(message);
   };
 
-  const buildComposition = (current: ReturnType<typeof factorySettingsSchema.parse>): FactoryComposition => {
+  const buildComposition = (
+    current: ReturnType<typeof factorySettingsSchema.parse>,
+    tasksIntegration: TasksIntegrationMode,
+  ): FactoryComposition => {
     const read = createReadComposition({
       sdk: bb.sdk,
       storage: bb.storage,
       settings: current,
       operationalState: store,
+      tasksIntegration,
     });
     const action = createActionComposition({
       sdk: bb.sdk,
@@ -107,8 +124,8 @@ export default async function plugin(bb: BbPluginApi): Promise<void> {
   };
 
   try {
-    const current = factorySettingsSchema.parse(await settings.get());
-    composition = buildComposition(current);
+    const parsed = parsePluginSettings(await settings.get());
+    composition = buildComposition(parsed.factory, parsed.tasksIntegration);
     reportConfigurationStatus(bb, composition);
   } catch (error) {
     rejectInvalidConfiguration(error);
@@ -127,8 +144,8 @@ export default async function plugin(bb: BbPluginApi): Promise<void> {
 
   settings.onChange((next) => {
     try {
-      const parsed = factorySettingsSchema.parse(next);
-      composition = buildComposition(parsed);
+      const parsed = parsePluginSettings(next);
+      composition = buildComposition(parsed.factory, parsed.tasksIntegration);
       reportConfigurationStatus(bb, composition);
       publish({
         channel: "factory",

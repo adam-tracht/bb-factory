@@ -43,6 +43,7 @@ function makeThread(
     environmentWorkspaceDisplayKind: "other",
     hasPendingInteraction: false,
     id: "thread-default",
+    lifecycleOwnerThreadId: null,
     lastReadAt: null,
     latestAttentionAt: Date.parse("2026-09-10T11:00:00Z"),
     originKind: null,

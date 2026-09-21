@@ -54,6 +54,7 @@ export function createActionComposition(options: ActionCompositionOptions): Acti
     store,
     protocolReader: composition.protocolReader,
     healthReader: composition.healthReader,
+    tasksIntegration: composition.tasksIntegration,
     repositoryLookup: (repositoryKey) => composition.getRepositoryEntry(repositoryKey),
     settings: composition.settings,
     now,

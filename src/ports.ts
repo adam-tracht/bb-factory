@@ -17,6 +17,7 @@ import type {
   RevisionFreeActionRequest,
   ScaffoldProtocolActionRequest,
 } from "./contracts.js";
+import type { TasksAvailability } from "./tasks/index.js";
 
 export interface ProtocolReader {
   loadSnapshot(configuration: RepositoryConfiguration): Promise<ProtocolSnapshot>;
@@ -32,6 +33,7 @@ export interface OperationalStateReader {
 export interface FactoryHealthReader {
   listProviderStatus(repositoryKey: RepositoryKey): Promise<ProviderStatus[]>;
   getHostPreflight(repositoryKey: RepositoryKey): Promise<HostPreflight>;
+  getTasksAvailability?(repositoryKey: RepositoryKey): Promise<TasksAvailability>;
 }
 
 export interface PendingInteractionReader {

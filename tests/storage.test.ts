@@ -308,6 +308,9 @@ describe("operational SQLite storage", () => {
       "repository_write_actions",
       "run_reconciliation_metadata",
       "stop_intents",
+      "tasks_approval_records",
+      "tasks_blocker_records",
+      "tasks_dependency_edges",
     ]);
   });
 
@@ -768,6 +771,74 @@ describe("operational SQLite storage", () => {
       rawObservation: null,
     });
     expect(store.getReconciliation(intent.runId)?.reasonCode).toBe("legacy-migration-check");
+  });
+
+  it("binds task approvals to content revisions and rejects dependency cycles", () => {
+    const store = newStore("2026-09-21T12:00:00Z");
+    const first = store.createTasksApproval({
+      approvalId: "approval-1",
+      repositoryKey: "monorepo",
+      taskId: "task-1",
+      operationClass: "dispatch",
+      contentRevision: "rev-1",
+      provenance: { source: "human-ui", actor: null },
+    });
+    expect(store.getTasksApproval({
+      repositoryKey: "monorepo",
+      taskId: "task-1",
+      operationClass: "dispatch",
+      contentRevision: "rev-1",
+    })).toEqual(first);
+    expect(store.getTasksApproval({
+      repositoryKey: "monorepo",
+      taskId: "task-1",
+      operationClass: "dispatch",
+      contentRevision: "rev-2",
+    })).toBeNull();
+    expect(store.createTasksApproval({
+      approvalId: "approval-2",
+      repositoryKey: "monorepo",
+      taskId: "task-1",
+      operationClass: "dispatch",
+      contentRevision: "rev-1",
+      provenance: { source: "different-writer" },
+    })).toEqual(first);
+    expect(store.db.prepare<[], { count: number }>(
+      "SELECT COUNT(*) AS count FROM tasks_approval_records",
+    ).get()?.count).toBe(1);
+
+    store.createTasksDependencyEdge({
+      repositoryKey: "monorepo",
+      taskId: "task-a",
+      dependsOnTaskId: "task-b",
+      provenance: { source: "human-ui" },
+    });
+    store.createTasksDependencyEdge({
+      repositoryKey: "monorepo",
+      taskId: "task-b",
+      dependsOnTaskId: "task-c",
+      provenance: { source: "human-ui" },
+    });
+    expect(() => store.createTasksDependencyEdge({
+      repositoryKey: "monorepo",
+      taskId: "task-c",
+      dependsOnTaskId: "task-a",
+      provenance: { source: "human-ui" },
+    })).toThrow("dependency cycle rejected");
+
+    const blocker = store.createTasksBlocker({
+      blockerId: "blocker-1",
+      repositoryKey: "monorepo",
+      taskId: "task-a",
+      kind: "blocking-question",
+      questionText: "Which provider should run this?",
+      provenance: { source: "human-ui" },
+    });
+    expect(store.updateTasksBlocker({
+      blockerId: blocker.blockerId,
+      state: "answered",
+      answerText: "codex",
+    })).toMatchObject({ state: "answered", answerText: "codex" });
   });
 
 function newStore(executionNow?: string | (() => string)): OperationalStateStore {

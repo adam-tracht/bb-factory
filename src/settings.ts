@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { PluginSettingDescriptors } from "@get-bb/plugin-sdk";
 import { providerModelDefaultsSchema, providerPreferenceSchema, providerRotationSchema, repositoryRegistrySchema } from "./contracts.js";
+import { tasksIntegrationModeSchema } from "./tasks/index.js";
 
 const repositoryKey = z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/);
 const absolutePath = z.string().regex(/^(?:\/|[A-Za-z]:[\\/])/);
@@ -28,6 +29,7 @@ function jsonSettingSchema(inner: z.ZodTypeAny, label: string) {
 export const repositoryRegistrySettingSchema = jsonSettingSchema(repositoryRegistrySchema, "repository registry");
 export const providerModelDefaultsSettingSchema = jsonSettingSchema(providerModelDefaultsSchema, "provider model defaults");
 export const providerRotationSettingSchema = jsonSettingSchema(providerRotationSchema, "provider rotation");
+export const tasksIntegrationSettingSchema = tasksIntegrationModeSchema;
 
 export const factorySettingDescriptors = {
   repositoryKey: {
@@ -143,5 +145,13 @@ export const factorySettingDescriptors = {
     description: "Phase 0 defaults to paused and does not start a scheduler or worker.",
     options: ["enabled", "paused"],
     default: "paused",
+  },
+  tasksIntegration: {
+    type: "select",
+    label: "Tasks integration",
+    description: "Use native Tasks records for the migration path. Disabled by default; enabling it pauses dispatch when Tasks is unavailable or incompatible.",
+    options: ["disabled", "enabled"],
+    default: "disabled",
+    experimental_schema: tasksIntegrationSettingSchema,
   },
 } satisfies PluginSettingDescriptors;

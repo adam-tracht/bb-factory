@@ -29,6 +29,7 @@ import { ProtocolError } from "../protocol/errors.js";
 import { initializeOperationalStorage } from "../storage/index.js";
 import { createLiveHealthReader, validateConfiguredEnvironment } from "./live-health.js";
 import { createReadOnlyActionExecutor } from "./read-action-composition.js";
+import { TasksClient, tasksIntegrationModeSchema, type TasksIntegrationMode, type TasksRpcCall } from "../tasks/index.js";
 
 type BbSdk = BbPluginApi["sdk"];
 
@@ -37,11 +38,14 @@ export interface ReadCompositionOptions {
   readonly storage?: PluginStorage;
   readonly settings: FactorySettings;
   readonly operationalState?: OperationalStateReader;
+  readonly tasksIntegration?: TasksIntegrationMode;
 }
 
 export interface ReadComposition {
   readonly sdk: BbSdk;
   readonly settings: FactorySettings;
+  readonly tasksIntegration: TasksIntegrationMode;
+  readonly tasksClient: TasksClient;
   readonly resolution: RepositoryRegistryResolution;
   readonly operationalState: OperationalStateReader;
   readonly protocolReader: ProtocolReader;
@@ -185,6 +189,7 @@ function settingsProjection(
   settings: FactorySettings,
   entry: RepositoryRegistryEntry,
   activeRunCount: number,
+  tasksPauseReason: string | null,
 ): SettingsProjection {
   const repositorySettings = omitUndefinedObjectFields({
     ...settings,
@@ -197,7 +202,7 @@ function settingsProjection(
   }) as FactorySettings;
   const repositoryPaused = entry.dispatchPaused === true;
   const accepting =
-    settings.dispatchMode === "enabled" && !repositoryPaused && activeRunCount < settings.concurrencyLimit;
+    settings.dispatchMode === "enabled" && !repositoryPaused && activeRunCount < settings.concurrencyLimit && tasksPauseReason === null;
   return {
     settings: repositorySettings,
     validation: { valid: true, fieldErrors: {} },
@@ -210,6 +215,8 @@ function settingsProjection(
         ? "Dispatch is paused."
         : repositoryPaused
           ? "Dispatch is paused for this repository."
+          : tasksPauseReason !== null
+            ? tasksPauseReason
           : accepting
             ? "Dispatch is enabled."
             : "The concurrency limit is reached.",
@@ -219,6 +226,9 @@ function settingsProjection(
 
 export function createReadComposition(options: ReadCompositionOptions): ReadComposition {
   const settings = factorySettingsSchema.parse(options.settings);
+  const tasksIntegration = tasksIntegrationModeSchema.parse(options.tasksIntegration ?? "disabled");
+  const tasksPlugins = (options.sdk as BbSdk & { plugins?: { callRpc?: TasksRpcCall } }).plugins;
+  const tasksClient = new TasksClient(tasksPlugins?.callRpc, tasksIntegration);
   const resolution = resolveRepositoryRegistry(settings);
   const entries = configuredEntries(resolution);
   const lookupEntry = repositoryLookup(entries);
@@ -250,6 +260,7 @@ export function createReadComposition(options: ReadCompositionOptions): ReadComp
   const healthReader = createLiveHealthReader({
     sdk: options.sdk,
     repositoryLookup: lookupEntry,
+    tasksClient,
   });
   const readOnlyActionExecutor = createReadOnlyActionExecutor({
     protocolReader,
@@ -259,6 +270,8 @@ export function createReadComposition(options: ReadCompositionOptions): ReadComp
   return {
     sdk: options.sdk,
     settings,
+    tasksIntegration,
+    tasksClient,
     resolution,
     operationalState,
     protocolReader,
@@ -301,7 +314,12 @@ export function createReadComposition(options: ReadCompositionOptions): ReadComp
       if (!entry) {
         throw new Error(`Repository '${repositoryKey}' is not configured.`);
       }
-      return settingsProjection(settings, entry, await countActiveRuns(operationalState, repositoryKey));
+      let tasksPauseReason: string | null = null;
+      if (tasksIntegration === "enabled" && healthReader.getTasksAvailability !== undefined) {
+        const tasks = await healthReader.getTasksAvailability(repositoryKey);
+        if (tasks.status !== "available") tasksPauseReason = `Tasks dispatch is paused: ${tasks.message}`;
+      }
+      return settingsProjection(settings, entry, await countActiveRuns(operationalState, repositoryKey), tasksPauseReason);
     },
     async listRegistryOptions() {
       const [hostsResult, projectsResult] = await Promise.allSettled([

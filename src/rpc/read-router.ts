@@ -108,18 +108,29 @@ export function createFactoryReadRpcHandlers(
     async factory_health(input) {
       const composition = getComposition();
       const entry = requireEntry(composition, input.repositoryKey);
-      const [providersResult, hostResult] = await Promise.allSettled([
+      const tasksAvailability = composition.healthReader.getTasksAvailability === undefined
+        ? Promise.resolve(null)
+        : composition.healthReader.getTasksAvailability(input.repositoryKey);
+      const [providersResult, hostResult, tasksResult] = await Promise.allSettled([
         composition.healthReader.listProviderStatus(input.repositoryKey),
         composition.healthReader.getHostPreflight(input.repositoryKey),
+        tasksAvailability,
       ]);
+      const host = hostResult.status === "fulfilled"
+        ? hostResult.value
+        : hostReadFailure(repositoryLabel(input.repositoryKey, entry.displayName), hostResult.reason);
+      const tasks = tasksResult.status === "fulfilled" ? tasksResult.value : null;
+      const tasksReason = tasks?.enabled === true && tasks.status !== "available"
+        ? `Tasks integration ${tasks.status}: ${tasks.message}`
+        : null;
       return {
         repositoryKey: input.repositoryKey,
         providers: providersResult.status === "fulfilled"
           ? providersResult.value
           : [providerReadFailure(providersResult.reason)],
-        host: hostResult.status === "fulfilled"
-          ? hostResult.value
-          : hostReadFailure(repositoryLabel(input.repositoryKey, entry.displayName), hostResult.reason),
+        host: tasksReason === null
+          ? host
+          : { ...host, ok: false, reasons: [...host.reasons, tasksReason] },
       };
     },
 

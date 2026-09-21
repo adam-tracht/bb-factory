@@ -202,6 +202,31 @@ describe("dispatch engine", () => {
     expect(store.listActiveRuns("monorepo")).toHaveLength(0);
   });
 
+  it("pauses Tasks-integrated dispatch when the Tasks health check is degraded", async () => {
+    const harness = makeHarness();
+    const ctx: DispatchContext = {
+      ...harness.ctx,
+      tasksIntegration: "enabled",
+      healthReader: {
+        ...harness.ctx.healthReader,
+        getTasksAvailability: async () => ({
+          enabled: true,
+          status: "disabled-or-unavailable" as const,
+          message: "Tasks is unavailable.",
+        }),
+      },
+    };
+    const engine = createDispatchEngine(ctx, () => ["monorepo"]);
+
+    const result = await engine.requestRun(MANUAL_REQUEST);
+    expect(result).toMatchObject({
+      ok: false,
+      error: { category: "paused", message: "Tasks dispatch is paused: Tasks is unavailable." },
+    });
+    expect(harness.threads.threads.size).toBe(0);
+    expect(harness.store.listActiveRuns("monorepo")).toHaveLength(0);
+  });
+
   it("starts a run: durable intent, lease, attempt, and spawned worker", async () => {
     const { engine, threads, store } = makeHarness({ settings: { providerPreference: "codex" } });
     const result = await engine.requestRun(MANUAL_REQUEST);

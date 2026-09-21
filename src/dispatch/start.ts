@@ -376,6 +376,19 @@ export async function startRun(ctx: DispatchContext, input: StartRunInput): Prom
   if (entry.dispatchPaused === true) {
     return noSpawn(actionError("paused", `Dispatch is paused for repository '${input.repositoryKey}'. Resume it in Settings before starting runs.`));
   }
+  if (ctx.tasksIntegration === "enabled") {
+    if (ctx.healthReader.getTasksAvailability === undefined) {
+      return noSpawn(actionError("paused", "Tasks dispatch is paused because the Tasks health check is unavailable."));
+    }
+    try {
+      const tasks = await ctx.healthReader.getTasksAvailability(input.repositoryKey);
+      if (tasks.status !== "available") {
+        return noSpawn(actionError("paused", `Tasks dispatch is paused: ${tasks.message}`));
+      }
+    } catch (error) {
+      return noSpawn(actionError("paused", `Tasks dispatch is paused because Tasks health could not be read: ${errorMessage(error)}`));
+    }
+  }
   const configuration = entry.configuration;
 
   let snapshot: ProtocolSnapshot;

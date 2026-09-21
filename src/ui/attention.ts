@@ -178,7 +178,17 @@ export function computeAttention(input: AttentionInput): AttentionItem[] {
   }
 
   if (health) {
-    if (!health.host.ok) {
+    const tasksIssue = health.host.reasons.find((reason) => reason.startsWith("Tasks integration "));
+    if (tasksIssue) {
+      items.push({
+        id: "tasks-degraded",
+        severity: "action",
+        section: "settings",
+        title: "Tasks integration is unavailable",
+        detail: tasksIssue,
+      });
+    }
+    if (!health.host.ok && tasksIssue === undefined) {
       items.push({
         id: "host-degraded",
         severity: "warning",

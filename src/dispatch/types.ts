@@ -13,6 +13,7 @@ import type {
   RepositoryRegistryEntry,
 } from "../contracts.js";
 import type { FactoryHealthReader, ProtocolReader } from "../ports.js";
+import type { TasksIntegrationMode } from "../tasks/index.js";
 
 export type DispatchSdk = Pick<BbPluginApi["sdk"], "threads" | "files">;
 
@@ -46,6 +47,7 @@ export interface DispatchContext {
   readonly healthReader: FactoryHealthReader;
   readonly repositoryLookup: (repositoryKey: RepositoryKey) => RepositoryRegistryEntry | null;
   readonly settings: FactorySettings;
+  readonly tasksIntegration?: TasksIntegrationMode;
   readonly now: () => Date;
   readonly log?: (message: string) => void;
 }
