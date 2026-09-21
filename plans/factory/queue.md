@@ -31,6 +31,29 @@ Rules:
 - Validation commands must run to completion inside this worktree without a human.
 - `risk: high` entries need at least one `approved:` item or they will be skipped.
 
+## BBF-0039 Native Tasks core rebuild
+status: in-progress (thread thr_wswppd4ja4, 2026-09-21T19:12Z)
+priority: 1
+depends_on: none
+risk: high
+plan: plans/native-tasks-migration.md
+approved: none
+acceptance:
+- Phase 0 spike records delegate, environment, authorship, and failure behavior against the plan's kill criteria.
+- Tasks adapter and safety ledger land behind a flag with the direct-spawn path still default.
+- Delegation runs through a durable intent with ambiguous outcomes quarantined, never blind-retried.
+- Settlement requires terminal thread state plus expected repo revision change plus current generation.
+- A stuck run quarantines only its own repository's dispatch.
+- queue.md and questions.md leave the correctness path; Tasks is the queue.
+validate:
+- pnpm test
+- pnpm typecheck
+- pnpm lint
+- pnpm build
+- bb plugin types --check .
+- git diff --check
+notes: Human authorized the plan and implementation in thread thr_wswppd4ja4. Work lands on branch factory-tasks in worktree /Users/adamtracht/Desktop/Code/bb-factory-tasks so the installed stable checkout is untouched. Phase 3 cutover, dependency changes, and any protected operations still need an explicit approved: line before a run may do them.
+
 ## BBF-0007 Marketplace listing
 status: ready
 priority: 4
