@@ -13,6 +13,7 @@
 ## Decisions (council outcome, 2026-09-21)
 
 - Tasks is the authoritative work record (queue card, discussion, worker attachment), not a mirror. Mirror-only was rejected: it keeps dual truth plus sync drift while preserving the markdown failure class.
+- Worker execution stays on `sdk.threads.spawn` into the provisioned checkout, with the worker self-attaching to its task card via `bb tasks attach`. Phase 0 proved `delegate` cannot target a fixed checkout (it always provisions a managed worktree); self-attach delivers the same task↔thread linkage and live_status tracking without surrendering environment control.
 - Factory remains the sole authority for approvals, dependency edges, dispatch intents, attempt generations, leases, and settlement. `delegate()` has no idempotency or compare-and-swap, so every delegation goes through a durable outbox.
 - Settlement never trusts task status alone: terminal thread state plus expected git change plus current generation. Task status is a signal, never proof.
 - `runs/*.md` stays as committed audit artifacts, never parsed for correctness.
@@ -21,8 +22,13 @@
 
 ## Phase 0: Feasibility spike (priority/impact/effort: high/high/S)
 
-- ⬜ **Exercise the Tasks contract end to end** — enable the builtin tasks plugin, then drive createTask, delegate, listTaskThreads, and comments on a scratch repo. Confirm preset environment kinds (`project-default`, `new-worktree`) cover the provisioned-checkout flow; observe double-delegate and ambiguous-failure behavior; confirm comment authorship (user vs agent) cannot be forged by a worker. Confidence: high this is the right gate before any build. Effort: S. Kill criteria: unusable environment targeting or forgeable authorship falls back to factory spawn plus worker self-attach via `bb tasks attach`.
-- ⬜ **Record the contract we depend on** — pin the exact RPC surface and the drift strategy (passthrough schemas plus compatibility error surface, the Work plugin pattern).
+- ✅ **Exercise the Tasks contract end to end** — done 2026-09-21 in thr_e8xpts5gkx on scratch project proj_c4x98kskky (tracker SPIKE/SPISO). Verified: project CRUD/linking, task CRUD, labels, comments, presets, dispatch, thread attach, `task_threads.live_status` (working→idle tracked, including on a self-attached thread thr_7gm29ww6c5). Findings that shape the design:
+  - `delegate`/preset environment kinds do NOT cover the provisioned-checkout flow: `project-default` provisions a managed worktree even when the linked bb project has an unmanaged env for the checkout path. **Fallback taken per kill criteria: factory keeps `sdk.threads.spawn` for execution; the worker self-attaches via `bb tasks attach <key>`.** Self-attached threads get identical live_status tracking.
+  - Comment authorship is forgeable from any threadless context: plugin-RPC `createComment` hard-codes `kind="user"`, `threadId=null`, `authorName="You"`; the CLI rejects caller-supplied kind. Consequences: (a) approvals are never inferred from task comments, they are factory-ledger records only (already the design); (b) factory-posted comments display as "You", so projections use labels/status and comments are rare and prefixed.
+  - No double-dispatch guard (two task_threads rows attach freely) — moot under self-attach; our own outbox fences spawn.
+  - `updateTask --status done` has no git-settlement guard — confirms status is a signal, never proof.
+  - Error shapes recorded: `command_failed` (unlinked project), `preset_not_found`, HTTP 404 unknown method, HTTP 400 input validation. These feed the availability-degradation classifier.
+- ✅ **Record the contract we depend on** — exercised via `bb plugin rpc call tasks <method> --input-file`: `createTask`, `getTaskByKey`, `updateTask`, `listTasks`, `createComment`, `listComments`, `listTaskThreads`, `createLabel`, `updateLabel`, `listLabels`, `createProject`, `listProjects`, `listBbProjects`, `listPresets`. Object inputs require a JSON body; null-input methods accept none. Drift strategy: passthrough-tolerant zod schemas plus a classified error surface (`tasks_unavailable` / `tasks_contract_incompatible` / `tasks_rpc_failed`), the Work plugin pattern in `bb-plugin-work/integrations/tasks.ts`.
 
 ## Phase 1: Adapter and safety ledger (high/high/M)
 
@@ -33,7 +39,7 @@
 
 ## Phase 2: Execution substrate (high/high/M)
 
-- ⬜ **Delegate through the outbox** — durable dispatch intent, then the delegate call, then immediate thread-id capture; ambiguous outcomes quarantine for reconciliation instead of retrying blind. Lands in: src/dispatch/start.ts.
+- ⬜ **Attach through the outbox** — durable dispatch intent, existing fenced `threads.spawn` into the provisioned checkout, then the worker self-attaches via `bb tasks attach <key>`; attachment plus `task_threads.live_status` are recorded on the attempt. Ambiguous spawns keep the current quarantine path. Lands in: src/dispatch/start.ts, worker prompt/templates.
 - ⬜ **Settlement on structured signals** — terminal thread state plus expected repository revision change plus current generation; `task_threads.live_status` is the liveness oracle. Lands in: src/dispatch/lifecycle.ts.
 - ⬜ **Simplified worker protocol** — foreman instructions report progress and outcomes via `bb tasks comment` / `bb tasks update`; the run record file is still written as the audit artifact but nothing parses it. Lands in: templates/foreman.md, plans/factory/foreman.md.
 - ⬜ **Per-repo fault containment** — a stuck run quarantines only its repository's dispatch; add a regression test for the verified global-capacity starvation path. Lands in: src/dispatch, src/schedule.
