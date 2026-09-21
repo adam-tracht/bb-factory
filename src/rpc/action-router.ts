@@ -80,13 +80,14 @@ export function createFactoryRpcHandlers(
 
       const tasksAction = tasksActionRequestSchema.safeParse(input);
       const repositoryAction = repositoryActionRequestSchema.safeParse(input);
-      const scaffoldAction = tasksAction.success || repositoryAction.success ? null : scaffoldProtocolActionRequestSchema.safeParse(input);
-      const provisionAction = tasksAction.success || repositoryAction.success || scaffoldAction?.success
+      const useTasksAction = tasksAction.success && (composition.tasksIntegration === "enabled" || !repositoryAction.success);
+      const scaffoldAction = useTasksAction || repositoryAction.success ? null : scaffoldProtocolActionRequestSchema.safeParse(input);
+      const provisionAction = useTasksAction || repositoryAction.success || scaffoldAction?.success
         ? null
         : provisionCheckoutActionRequestSchema.safeParse(input);
       let request;
       let execute: () => Promise<FactoryActionResult>;
-      if (tasksAction.success) {
+      if (useTasksAction) {
         request = tasksAction.data;
         const valid = tasksAction.data;
         execute = () => composition.tasksActionExecutor.execute(valid);

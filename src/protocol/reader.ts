@@ -44,6 +44,7 @@ import type {
   ProtocolRepositoryPolicy,
   ProtocolReaderOptions,
 } from "./types.js";
+import { projectTasks } from "../tasks/migration.js";
 
 function protocolDigest(files: readonly TextFile[]): string {
   const digests = files
@@ -254,7 +255,7 @@ function unavailableMergeReader(): ProtocolMergeReader {
 
 export class RepositoryProtocolReader implements ProtocolReader {
   private readonly options: Required<Pick<ProtocolReaderOptions, "canonicalDashboardUrl" | "now">> &
-    Pick<ProtocolReaderOptions, "mergeReader" | "dependencyResolver">;
+    Pick<ProtocolReaderOptions, "mergeReader" | "dependencyResolver" | "tasksIntegration" | "tasksClient" | "tasksLedger" | "tasksProjectLookup">;
 
   constructor(private readonly files: ProtocolFiles, options: ProtocolReaderOptions = {}) {
     this.options = {
@@ -262,6 +263,10 @@ export class RepositoryProtocolReader implements ProtocolReader {
       dependencyResolver: options.dependencyResolver,
       canonicalDashboardUrl: options.canonicalDashboardUrl ?? null,
       now: options.now ?? (() => new Date()),
+      tasksIntegration: options.tasksIntegration ?? "disabled",
+      tasksClient: options.tasksClient,
+      tasksLedger: options.tasksLedger,
+      tasksProjectLookup: options.tasksProjectLookup,
     };
   }
 
@@ -273,6 +278,20 @@ export class RepositoryProtocolReader implements ProtocolReader {
     const normalizedConfiguration = this.validateConfiguration(configuration);
     const foreman = await this.read(normalizedConfiguration, PROTOCOL_PATHS.foreman);
     const repo = await this.read(normalizedConfiguration, PROTOCOL_PATHS.repo);
+    if (this.options.tasksIntegration === "enabled") {
+      const dashboard = await this.read(normalizedConfiguration, PROTOCOL_PATHS.dashboard);
+      const mergeReader = this.options.mergeReader ?? unavailableMergeReader();
+      const merge = validateMergeProjection(
+        await mergeReader.readMergeProjection(normalizedConfiguration),
+        normalizedConfiguration.repositoryKey,
+      );
+      const allFiles = [foreman, repo, dashboard];
+      return {
+        gitCommit: merge.gitCommit,
+        protocolDigest: protocolDigest(allFiles),
+        fileDigests: Object.fromEntries(allFiles.map((file) => [file.relativePath, file.sha256])),
+      };
+    }
     const [queue, done, questions, current, dashboard, lock] = await Promise.all([
       this.read(normalizedConfiguration, PROTOCOL_PATHS.queue),
       this.readOptionalDone(normalizedConfiguration),
@@ -302,6 +321,10 @@ export class RepositoryProtocolReader implements ProtocolReader {
     const normalizedConfiguration = this.validateConfiguration(configuration);
     const foreman = await this.read(normalizedConfiguration, PROTOCOL_PATHS.foreman);
     const repo = await this.read(normalizedConfiguration, PROTOCOL_PATHS.repo);
+    if (this.options.tasksIntegration === "enabled") {
+      const dashboard = await this.read(normalizedConfiguration, PROTOCOL_PATHS.dashboard);
+      return this.loadTasksProjection(normalizedConfiguration, foreman, repo, dashboard);
+    }
     const [queue, done, questions, current, dashboard] = await Promise.all([
       this.read(normalizedConfiguration, PROTOCOL_PATHS.queue),
       this.readOptionalDone(normalizedConfiguration),
@@ -414,6 +437,90 @@ export class RepositoryProtocolReader implements ProtocolReader {
 
   async loadDashboard(configuration: RepositoryConfiguration): Promise<CanonicalDashboardProjection> {
     return (await this.loadProjection(configuration)).dashboard;
+  }
+
+  private async loadTasksProjection(
+    configuration: RepositoryConfiguration,
+    foreman: TextFile,
+    repo: TextFile,
+    dashboard: TextFile,
+  ): Promise<ProtocolProjection> {
+    const project = await this.options.tasksProjectLookup?.(configuration);
+    if (!project || !this.options.tasksClient || !this.options.tasksLedger) {
+      throw new ProtocolError(
+        "malformed-protocol",
+        `Tasks integration is enabled but no Tasks project and ledger are available for '${configuration.repositoryKey}'.`,
+        { repositoryKey: configuration.repositoryKey, path: "Tasks project" },
+      );
+    }
+    const [tasksProjection, runRecords] = await Promise.all([
+      projectTasks(this.options.tasksClient, this.options.tasksLedger, {
+        repositoryKey: configuration.repositoryKey,
+        project,
+        now: this.options.now,
+      }),
+      this.readRunRecords(configuration),
+    ]);
+    const allFiles = [foreman, repo, dashboard, ...runRecords.map((record) => ({
+      relativePath: record.relativePath,
+      content: record.content,
+      sha256: record.sha256,
+    }))];
+    const mergeReader = this.options.mergeReader ?? unavailableMergeReader();
+    const merge = validateMergeProjection(
+      await mergeReader.readMergeProjection(configuration),
+      configuration.repositoryKey,
+    );
+    const revision = {
+      gitCommit: merge.gitCommit,
+      protocolDigest: protocolDigest(allFiles),
+      fileDigests: Object.fromEntries(allFiles.map((file) => [file.relativePath, file.sha256])),
+    };
+    const dashboardRows = parseDashboard(dashboard.content, PROTOCOL_PATHS.dashboard);
+    const dashboardProjection: CanonicalDashboardProjection = {
+      relativePath: PROTOCOL_PATHS.dashboard,
+      content: dashboard.content,
+      sha256: dashboard.sha256,
+      rows: dashboardRows,
+      url: this.options.canonicalDashboardUrl,
+    };
+    const snapshotValue = {
+      repository: configuration,
+      revision,
+      capturedAt: this.options.now().toISOString(),
+      foremanTemplate: {
+        authority: "repository-protocol" as const,
+        relativePath: PROTOCOL_PATHS.foreman,
+        contentSha256: foreman.sha256,
+        repositoryRevision: revision,
+      },
+      queue: tasksProjection.queue,
+      questions: tasksProjection.questions,
+      dashboard: {
+        canonicalPath: PROTOCOL_PATHS.dashboard,
+        factoryBranch: "factory" as const,
+        mainRef: configuration.mainRef,
+        factoryAhead: merge.factoryAhead,
+        mainBehind: merge.mainBehind,
+        taskCommits: merge.taskCommits,
+        safeFastForward: merge.safeFastForward,
+        canonicalDashboardUrl: this.options.canonicalDashboardUrl,
+      },
+      currentRun: {
+        state: "no-op" as const,
+        lastRunAt: null,
+        currentPath: PROTOCOL_PATHS.current,
+        latestRunPath: runRecords[0]?.relativePath ?? null,
+      },
+    };
+    const parsedSnapshot = protocolSnapshotSchema.safeParse(snapshotValue);
+    if (!parsedSnapshot.success) {
+      throw new ProtocolError("malformed-protocol", "Assembled Tasks protocol snapshot failed the frozen schema", {
+        repositoryKey: configuration.repositoryKey,
+        details: { issue: parsedSnapshot.error.issues.map((issue) => issue.message).join("; ") },
+      });
+    }
+    return { snapshot: parsedSnapshot.data, dashboard: dashboardProjection, runRecords, lock: null };
   }
 
   private validateConfiguration(configuration: RepositoryConfiguration): RepositoryConfiguration {

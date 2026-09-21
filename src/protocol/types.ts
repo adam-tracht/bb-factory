@@ -6,6 +6,8 @@ import type {
 } from "../contracts.js";
 import type { RepositoryDiscoveryOptions } from "./discovery.js";
 import type { ProtocolFiles } from "./files.js";
+import type { TasksClient, TasksProject, TasksIntegrationMode } from "../tasks/index.js";
+import type { TasksLedgerReader } from "../tasks/migration.js";
 
 export interface DashboardRowProjection {
   readonly id: string;
@@ -92,6 +94,11 @@ export interface ProtocolReaderOptions {
   readonly dependencyResolver?: ProtocolDependencyResolver;
   readonly canonicalDashboardUrl?: string | null;
   readonly now?: () => Date;
+  /** Enabled-mode Tasks projection inputs. Disabled mode never touches them. */
+  readonly tasksIntegration?: TasksIntegrationMode;
+  readonly tasksClient?: TasksClient;
+  readonly tasksLedger?: TasksLedgerReader;
+  readonly tasksProjectLookup?: (configuration: RepositoryConfiguration) => Promise<TasksProject | null>;
 }
 
 export interface ProtocolProjection {

@@ -83,6 +83,16 @@ export function createActionComposition(options: ActionCompositionOptions): Acti
     tasksClient: composition.tasksClient,
     store,
     repositoryLookup: (repositoryKey) => composition.getRepositoryEntry(repositoryKey)?.configuration ?? null,
+    files: {
+      read: (args) => sdk.files.read(args),
+      listPaths: (args) => sdk.files.listPaths(args),
+    },
+    projectIdLookup: (repositoryKey) => composition.getRepositoryEntry(repositoryKey)?.projectId ?? null,
+    tasksProjectLookup: async (repositoryKey) => {
+      const entry = composition.getRepositoryEntry(repositoryKey);
+      if (!entry) return null;
+      return (await composition.tasksClient.listProjects()).find((project) => project.linkedBbProjectId === entry.projectId) ?? null;
+    },
     now,
   });
 

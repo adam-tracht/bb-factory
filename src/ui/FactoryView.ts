@@ -72,6 +72,7 @@ import { AddRepositoryView, RepositoryLandingView } from "./views/repositories.j
 import { RunDetailView, RunsView } from "./views/runs.js";
 import { SettingsView } from "./views/settings.js";
 import { WorkView } from "./views/work.js";
+import { TasksDeferredView } from "./views/tasks-deferred.js";
 
 const h = createElement;
 
@@ -142,6 +143,10 @@ function readSettingsIdentity(values: Record<string, string | number | boolean> 
   const repositoryKey = readRepositoryKey(values) ?? "";
   const registry = values?.repositoryRegistry;
   return `${repositoryKey}\u0000${typeof registry === "string" ? registry : ""}`;
+}
+
+function tasksIntegrationEnabled(values: Record<string, string | number | boolean> | undefined): boolean {
+  return values?.tasksIntegration === "enabled";
 }
 
 function selectedRepository(projection: RepositorySelectionProjection): RepositorySelection | null {
@@ -244,6 +249,7 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
   const sdkSettings = useSettings();
   const configuredRepositoryKey = readRepositoryKey(sdkSettings.values);
   const settingsIdentity = readSettingsIdentity(sdkSettings.values);
+  const nativeTasksEnabled = tasksIntegrationEnabled(sdkSettings.values);
   const rpc = useRpc<FactoryRpcContract>();
   const rpcRef = useRef(rpc);
   rpcRef.current = rpc;
@@ -880,6 +886,7 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
       groups: aggregateGroups,
       anchor: route.anchor,
       onRetry,
+      tasksIntegrationEnabled: nativeTasksEnabled,
     });
   } else if (!ctx) {
     content = h(ErrorNotice, { message: "The selected repository configuration is unavailable.", onRetry });
@@ -899,7 +906,9 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
         });
   } else if (route.section === "work") {
     content = snapshot
-      ? h(WorkView, {
+      ? nativeTasksEnabled && ctx
+        ? h(TasksDeferredView, { section: "work", snapshot, health, attention })
+        : h(WorkView, {
           snapshot,
           ctx,
           focusItemId: route.anchor?.replace(/^work-/u, "") ?? null,
@@ -911,7 +920,9 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
         : h(LoadingNotice, { label: "Loading repository work" });
   } else if (route.section === "questions") {
     content = snapshot
-      ? h(QuestionsView, {
+      ? nativeTasksEnabled && ctx
+        ? h(TasksDeferredView, { section: "questions", snapshot, health, attention })
+        : h(QuestionsView, {
           snapshot,
           interactions,
           ctx,
@@ -930,7 +941,9 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
           ? h(LoadingNotice, { label: "Loading run detail" })
           : h(RunDetailView, { detail, ctx })
       : runs
-        ? h(RunsView, { runs, ctx })
+        ? nativeTasksEnabled && ctx && snapshot
+          ? h(TasksDeferredView, { section: "runs", snapshot, health, attention })
+          : h(RunsView, { runs, ctx })
         : runsError !== null
           ? h(ErrorNotice, { message: runsError, onRetry })
           : h(LoadingNotice, { label: "Loading run history" });

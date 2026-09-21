@@ -30,6 +30,7 @@ import { initializeOperationalStorage } from "../storage/index.js";
 import { createLiveHealthReader, validateConfiguredEnvironment } from "./live-health.js";
 import { createReadOnlyActionExecutor } from "./read-action-composition.js";
 import { TasksClient, tasksIntegrationModeSchema, type TasksIntegrationMode, type TasksRpcCall } from "../tasks/index.js";
+import type { TasksLedgerReader } from "../tasks/migration.js";
 
 type BbSdk = BbPluginApi["sdk"];
 
@@ -233,6 +234,17 @@ export function createReadComposition(options: ReadCompositionOptions): ReadComp
   const entries = configuredEntries(resolution);
   const lookupEntry = repositoryLookup(entries);
   const files = createProtocolFiles(options.sdk);
+  const operationalState = options.operationalState ?? (options.storage ? initializeOperationalStorage(options.storage) : null);
+  if (!operationalState) {
+    throw new Error("Read composition requires the BB operational storage adapter or an injected operational reader.");
+  }
+  const tasksLedger = [
+    "listTasksApprovals",
+    "listTasksDependencyEdges",
+    "listTasksBlockers",
+  ].every((method) => typeof (operationalState as unknown as Record<string, unknown>)[method] === "function")
+    ? operationalState as unknown as TasksLedgerReader
+    : undefined;
   const protocolRegistry = {
     listRepositories: () => entries.map((entry) => entry.configuration),
   };
@@ -243,11 +255,16 @@ export function createReadComposition(options: ReadCompositionOptions): ReadComp
       repositoryRegistry: protocolRegistry,
     }),
     canonicalDashboardUrl: null,
+    tasksIntegration,
+    tasksClient,
+    tasksLedger,
+    tasksProjectLookup: async (configuration) => {
+      const entry = lookupEntry(configuration.repositoryKey);
+      if (!entry) return null;
+      const projects = await tasksClient.listProjects();
+      return projects.find((project) => project.linkedBbProjectId === entry.projectId) ?? null;
+    },
   });
-  const operationalState = options.operationalState ?? (options.storage ? initializeOperationalStorage(options.storage) : null);
-  if (!operationalState) {
-    throw new Error("Read composition requires the BB operational storage adapter or an injected operational reader.");
-  }
   const interactionReader = createPendingInteractionReader({
     sdk: options.sdk,
     repositoryConfigLookup: async (repositoryKey) => {

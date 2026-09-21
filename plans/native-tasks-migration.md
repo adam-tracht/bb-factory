@@ -50,9 +50,9 @@
 
 ## Phase 3: Queue migration (med/high/M)
 
-- ⬜ **Queue items become task cards** — one Tasks project per managed repository, linked to its bb project; existing queue and done entries are imported. queue.md leaves the protocol. Lands in: src/protocol (removal path), a one-shot import action.
-- ⬜ **Blocking questions and current state** — questions become labeled cards plus comments backed by factory blocker records; current.md and the repo lock file leave the correctness path entirely.
-- ⬜ **UI deferral** — work, questions, and runs surfaces defer to the Tasks board; the factory UI keeps health, settings, and dispatch controls.
+- ✅ **Queue items become task cards** — enabled reads project the linked Tasks cards as the queue, ledger edges and approvals gate dispatch, and the guarded import is idempotent by embedded dashboard id; markdown remains for disabled mode and audit.
+- ✅ **Blocking questions and current state** — enabled reads project ledger blockers as question cards, answers resolve blockers and record submissions, and current.md plus the repo lock are excluded from the enabled correctness path.
+- ✅ **UI deferral** — enabled Work, Questions, Runs, and aggregate surfaces point to the native Tasks board while retaining Factory-owned attention and health state; settings and dispatch controls remain unchanged.
 
 ## Go-live / cutover (sequence last)
 

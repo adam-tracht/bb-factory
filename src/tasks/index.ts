@@ -9,7 +9,7 @@ const TASKS_STALE_RESTARTS = 1;
 export const tasksIntegrationModeSchema = z.enum(["disabled", "enabled"]);
 export type TasksIntegrationMode = z.infer<typeof tasksIntegrationModeSchema>;
 
-const taskStatusSchema = z.enum([
+const taskStatusInputSchema = z.enum([
   "backlog",
   "todo",
   "in_progress",
@@ -17,6 +17,9 @@ const taskStatusSchema = z.enum([
   "done",
   "canceled",
 ]);
+// Task status is an extensible Tasks-owned field. Factory maps the statuses
+// it knows and keeps an unknown value visible as an unknown queue status.
+const taskStatusSchema = z.string().trim().min(1);
 const taskPrioritySchema = z.enum(["urgent", "high", "medium", "low", "none"]);
 const taskThreadStatusSchema = z.enum(["starting", "working", "idle", "completed", "failed"]);
 
@@ -62,6 +65,15 @@ export const tasksTaskThreadSchema = z
   })
   .passthrough();
 
+export const tasksLabelSchema = z
+  .object({
+    id: z.string().min(1),
+    projectId: z.string().min(1),
+    name: z.string().min(1),
+    color: z.string().min(1),
+  })
+  .passthrough();
+
 export const tasksCommentSchema = z
   .object({
     id: z.string().min(1),
@@ -86,6 +98,8 @@ const tasksBbProjectListSchema = z
   .passthrough();
 const tasksGetTaskSchema = z.object({ task: tasksTaskSchema.nullable() }).passthrough();
 const tasksCommentListSchema = z.object({ comments: z.array(tasksCommentSchema) }).passthrough();
+const tasksLabelListSchema = z.object({ labels: z.array(tasksLabelSchema) }).passthrough();
+const tasksLabelResultSchema = z.object({ label: tasksLabelSchema }).passthrough();
 const tasksDomainErrorSchema = z.object({ code: z.string().min(1), message: z.string() }).passthrough();
 const tasksMutationSchema = z.discriminatedUnion("ok", [
   z.object({ ok: z.literal(true), task: tasksTaskSchema }).passthrough(),
@@ -107,9 +121,11 @@ export type TasksProject = z.infer<typeof tasksProjectSchema>;
 export type TasksTask = z.infer<typeof tasksTaskSchema>;
 export type TasksTaskThread = z.infer<typeof tasksTaskThreadSchema>;
 export type TasksComment = z.infer<typeof tasksCommentSchema>;
+export type TasksLabel = z.infer<typeof tasksLabelSchema>;
 export type TasksMutationResult = z.infer<typeof tasksMutationSchema>;
 export type TasksTaskStatus = z.infer<typeof taskStatusSchema>;
-export type TasksWorkStatus = Exclude<TasksTaskStatus, "canceled">;
+export type TasksWorkStatus = Exclude<z.infer<typeof taskStatusInputSchema>, "canceled">;
+export type TasksUpdateStatus = z.infer<typeof taskStatusInputSchema>;
 export type TasksRpcCall = BbPluginApi["sdk"]["plugins"]["callRpc"];
 
 const tasksApprovalContentSchema = z
@@ -173,7 +189,7 @@ export interface TasksUpdateInput {
   readonly taskId: string;
   readonly title?: string;
   readonly description?: string;
-  readonly status?: TasksTaskStatus;
+  readonly status?: TasksUpdateStatus;
   readonly priority?: z.infer<typeof taskPrioritySchema>;
   readonly dueDate?: string | null;
   readonly parentTaskId?: string | null;
@@ -183,6 +199,12 @@ export interface TasksUpdateInput {
 export interface TasksCreateCommentInput {
   readonly taskId: string;
   readonly body: string;
+}
+
+export interface TasksCreateLabelInput {
+  readonly projectId: string;
+  readonly name: string;
+  readonly color?: string;
 }
 
 export type TasksIntegrationErrorCode =
@@ -432,7 +454,7 @@ export class TasksClient {
         projectId: input.projectId,
         title: input.title,
         description: input.description ?? "",
-        status: input.status,
+        status: taskStatusInputSchema.parse(input.status),
         priority: input.priority ?? "none",
         dueDate: input.dueDate ?? null,
         parentTaskId: input.parentTaskId ?? null,
@@ -449,7 +471,7 @@ export class TasksClient {
         taskId: input.taskId,
         title: input.title,
         description: input.description,
-        status: input.status,
+        status: input.status === undefined ? undefined : taskStatusInputSchema.parse(input.status),
         priority: input.priority,
         dueDate: input.dueDate,
         parentTaskId: input.parentTaskId,
@@ -459,12 +481,28 @@ export class TasksClient {
     );
   }
 
+  public async listLabels(projectId: string): Promise<TasksLabel[]> {
+    return (await this.call("listLabels", { projectId }, tasksLabelListSchema)).labels;
+  }
+
+  public async createLabel(input: TasksCreateLabelInput): Promise<TasksLabel> {
+    return (await this.call(
+      "createLabel",
+      { projectId: input.projectId, name: input.name, color: input.color ?? "gray" },
+      tasksLabelResultSchema,
+    )).label;
+  }
+
   public async deleteTask(taskId: string): Promise<{ ok: boolean; error?: z.infer<typeof tasksDomainErrorSchema> }> {
     return this.call("deleteTask", { taskId }, tasksDeleteResultSchema);
   }
 
   public async createComment(input: TasksCreateCommentInput): Promise<TasksComment> {
-    return unwrap(await this.call("createComment", { taskId: input.taskId, body: input.body }, tasksCommentResultSchema));
+    return unwrap(await this.call(
+      "createComment",
+      { taskId: input.taskId, body: input.body, notify: false, allowEmptyBody: false },
+      tasksCommentResultSchema,
+    ));
   }
 
   public async listComments(taskId: string): Promise<TasksComment[]> {
