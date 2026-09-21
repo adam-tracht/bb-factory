@@ -303,6 +303,7 @@ function sameRunGeneration(actual: OperationalRunSummary | null, expected: Opera
     && actual.workerThreadId === expected.workerThreadId
     && actual.projectId === expected.projectId
     && actual.environmentId === expected.environmentId
+    && (actual.taskId ?? null) === (expected.taskId ?? null)
     && sameStringArray(actual.queueItemIds, expected.queueItemIds)
     && sameRevision(actual.repositoryRevision, expected.repositoryRevision)
     && sameJson(actual.canonicalRecords, expected.canonicalRecords);
@@ -323,7 +324,8 @@ function sameAttemptGeneration(
     && actual.workerThreadId === expected.workerThreadId
     && actual.status === expected.status
     && actual.startedAt === expected.startedAt
-    && actual.finishedAt === expected.finishedAt;
+    && actual.finishedAt === expected.finishedAt
+    && (actual.taskId ?? null) === (expected.taskId ?? null);
 }
 
 function sameLeaseGeneration(
@@ -912,6 +914,9 @@ async function reconcileTerminalRun(
   threadId: string,
   threadStatus: ThreadStatusValue,
 ): Promise<boolean> {
+  if (ctx.tasksIntegration === "enabled") {
+    return reconcileTasksTerminalRun(ctx, detail, threadId, threadStatus);
+  }
   const run = detail.summary;
   const startedAtMs = newestActiveAttemptStartMs(detail);
   const current = await readCurrentState(ctx, run.repositoryKey, startedAtMs);
@@ -967,6 +972,113 @@ async function reconcileTerminalRun(
     expectedLeaseStatus: detail.lease?.status,
   });
   ctx.log?.(`run ${run.runId}: finished ${state} on ${threadStatus}`);
+  return true;
+}
+
+function recordTasksLiveStatus(
+  ctx: DispatchContext,
+  detail: OperationalRunDetail,
+  liveStatus: "starting" | "working" | "idle" | "completed" | "failed",
+): boolean {
+  const expectedAttempt = [...detail.attempts].reverse().find((attempt) =>
+    attempt.runId === detail.summary.runId && ACTIVE_ATTEMPT_STATUSES.includes(attempt.status as typeof ACTIVE_ATTEMPT_STATUSES[number]),
+  );
+  if (!expectedAttempt) return false;
+  return ctx.store.withTransaction((transaction) => {
+    const currentRun = transaction.getRunSummary(detail.summary.runId);
+    const currentAttempt = transaction.getActiveAttempt(detail.summary.runId);
+    if (!sameRunGeneration(currentRun, detail.summary) || !sameAttemptGeneration(currentAttempt, expectedAttempt)) return false;
+    if (currentAttempt === null) return false;
+    transaction.updateDispatchAttempt({ ...currentAttempt, tasksLiveStatus: liveStatus });
+    return true;
+  });
+}
+
+async function reconcileTasksTerminalRun(
+  ctx: DispatchContext,
+  detail: OperationalRunDetail,
+  threadId: string,
+  threadStatus: ThreadStatusValue,
+): Promise<boolean> {
+  const run = detail.summary;
+  if (!ctx.tasksClient) {
+    markRunForReconciliation(ctx, detail, "Tasks settlement is unavailable because the Tasks client is missing");
+    return false;
+  }
+  if (!run.taskId) {
+    markRunForReconciliation(ctx, detail, "Tasks settlement is unavailable because the run has no attached task card");
+    return false;
+  }
+  let taskStatus: string;
+  let liveStatus: "starting" | "working" | "idle" | "completed" | "failed";
+  try {
+    const [task, threads] = await Promise.all([
+      ctx.tasksClient.getTask(run.taskId),
+      ctx.tasksClient.listTaskThreads(run.taskId),
+    ]);
+    const attached = threads.find((candidate) => candidate.threadId === threadId);
+    if (!task || !attached) {
+      markRunForReconciliation(ctx, detail, "Tasks settlement could not find the attached task or task thread");
+      return false;
+    }
+    taskStatus = task.status;
+    liveStatus = attached.liveStatus;
+  } catch (error) {
+    markRunForReconciliation(ctx, detail, `could not read structured Tasks settlement evidence: ${errorMessage(error)}`);
+    return false;
+  }
+  if (!["idle", "completed", "failed"].includes(liveStatus)) {
+    markRunForReconciliation(ctx, detail, `attached Tasks thread is still ${liveStatus}`);
+    return false;
+  }
+  if (taskStatus !== "in_review") {
+    markRunForReconciliation(ctx, detail, `Tasks card is '${taskStatus}', expected in_review for worker settlement`);
+    return false;
+  }
+  if (!recordTasksLiveStatus(ctx, detail, liveStatus)) {
+    ctx.log?.(`run ${run.runId}: ignored stale Tasks live status for generation ${activeAttemptId(detail) ?? "unknown"}`);
+    return false;
+  }
+  const entry = ctx.repositoryLookup(run.repositoryKey);
+  if (!entry) {
+    markRunForReconciliation(ctx, detail, "repository is not configured for Tasks settlement");
+    return false;
+  }
+  let revision: RepositoryRevision;
+  try {
+    revision = ctx.protocolReader.loadRevision !== undefined
+      ? await ctx.protocolReader.loadRevision(entry.configuration)
+      : (await ctx.protocolReader.loadSnapshot(entry.configuration)).revision;
+  } catch (error) {
+    markRunForReconciliation(ctx, detail, `could not read repository revision for Tasks settlement: ${errorMessage(error)}`);
+    return false;
+  }
+  if (revision.gitCommit === run.repositoryRevision.gitCommit) {
+    markRunForReconciliation(ctx, detail, "Tasks thread is terminal but the repository revision did not change");
+    return false;
+  }
+  const status = liveStatus === "failed" ? "failed-safe" : "completed";
+  const terminalAttempt = [...detail.attempts].reverse().find((attempt) =>
+    attempt.runId === run.runId && ACTIVE_ATTEMPT_STATUSES.includes(attempt.status as typeof ACTIVE_ATTEMPT_STATUSES[number]),
+  );
+  finalizeRun(ctx, detail, {
+    ...finalizationInput(
+      run,
+      revision,
+      [...run.canonicalRecords],
+      threadId,
+      ctx.now().toISOString(),
+      status,
+      liveStatus === "failed" ? "failed-safe" : "Tasks thread completed",
+      undefined,
+      status === "failed-safe",
+      activeAttemptId(detail),
+    ),
+    expectedAttemptStatus: terminalAttempt?.status,
+    expectedLeaseId: detail.lease?.leaseId ?? null,
+    expectedLeaseStatus: detail.lease?.status,
+  });
+  ctx.log?.(`run ${run.runId}: structured Tasks settlement accepted on ${threadStatus}`);
   return true;
 }
 

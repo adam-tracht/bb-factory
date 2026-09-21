@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 
 const TASKS_PLUGIN_ID = "tasks";
+const TASKS_PAGE_LIMIT = 500;
+const TASKS_STALE_RESTARTS = 1;
 
 export const tasksIntegrationModeSchema = z.enum(["disabled", "enabled"]);
 export type TasksIntegrationMode = z.infer<typeof tasksIntegrationModeSchema>;
@@ -73,6 +75,9 @@ export const tasksCommentSchema = z
   .passthrough();
 
 const tasksProjectListSchema = z.object({ projects: z.array(tasksProjectSchema) }).passthrough();
+const tasksListSchema = z
+  .object({ tasks: z.array(tasksTaskSchema), nextCursor: z.string().nullable() })
+  .passthrough();
 const tasksThreadListSchema = z.object({ taskThreads: z.array(tasksTaskThreadSchema) }).passthrough();
 const tasksBbProjectListSchema = z
   .object({
@@ -85,6 +90,10 @@ const tasksDomainErrorSchema = z.object({ code: z.string().min(1), message: z.st
 const tasksMutationSchema = z.discriminatedUnion("ok", [
   z.object({ ok: z.literal(true), task: tasksTaskSchema }).passthrough(),
   z.object({ ok: z.literal(false), error: tasksDomainErrorSchema }).passthrough(),
+]);
+const tasksProjectResultSchema = z.union([
+  tasksProjectSchema,
+  z.object({ project: tasksProjectSchema }).passthrough(),
 ]);
 const tasksCommentResultSchema = z.union([
   tasksCommentSchema,
@@ -142,6 +151,30 @@ export interface TasksCreateInput {
   readonly dueDate?: string | null;
   readonly parentTaskId?: string | null;
   readonly labelIds?: readonly string[];
+}
+
+export interface TasksListFilters {
+  readonly projectId?: string;
+  readonly statuses?: readonly TasksTaskStatus[];
+  readonly parentTaskId?: string | null;
+  readonly activeOnly?: boolean;
+  readonly limit?: number;
+  readonly cursor?: string;
+}
+
+export interface TasksCreateProjectInput {
+  readonly name: string;
+  readonly prefix?: string;
+  readonly color?: string;
+  readonly linkedBbProjectId?: string | null;
+}
+
+export interface TasksUpdateProjectInput {
+  readonly projectId: string;
+  readonly name?: string;
+  readonly prefix?: string;
+  readonly color?: string;
+  readonly linkedBbProjectId?: string | null;
 }
 
 export interface TasksUpdateInput {
@@ -211,6 +244,13 @@ function errorText(error: unknown): string {
   return parts.join(" ");
 }
 
+function isStaleCursorError(error: unknown): boolean {
+  const detail = errorText(error).toLowerCase();
+  return detail.includes("stale_cursor")
+    || detail.includes("task-list data changed after this cursor")
+    || (detail.includes("cursor") && detail.includes("restart pagination"));
+}
+
 function hasHttpStatus(error: unknown, status: number, detail: string): boolean {
   if (new RegExp(`\\bHTTP\\s+${status}\\b`, "i").test(detail)) return true;
   const pending: unknown[] = [error];
@@ -273,6 +313,11 @@ function unwrap<T extends TasksComment>(value: T | { comment: T }): T {
   return value as T;
 }
 
+function unwrapProject(value: TasksProject | { project: TasksProject }): TasksProject {
+  if ("project" in value) return (value as { project: TasksProject }).project;
+  return value;
+}
+
 function optionalFields(input: Record<string, unknown>): Record<string, JsonValue> {
   return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined)) as Record<string, JsonValue>;
 }
@@ -307,9 +352,39 @@ export class TasksClient {
     }
   }
 
-  /** Health probe only. Project management stays deferred to cutover. */
   public async listProjects(): Promise<TasksProject[]> {
     return (await this.call("listProjects", {}, tasksProjectListSchema)).projects;
+  }
+
+  public async createProject(input: TasksCreateProjectInput): Promise<TasksProject> {
+    return unwrapProject(await this.call(
+      "createProject",
+      optionalFields({
+        name: input.name,
+        prefix: input.prefix,
+        color: input.color,
+        linkedBbProjectId: input.linkedBbProjectId,
+      }),
+      tasksProjectResultSchema,
+    ));
+  }
+
+  public async updateProject(input: TasksUpdateProjectInput): Promise<TasksProject> {
+    return unwrapProject(await this.call(
+      "updateProject",
+      optionalFields({
+        projectId: input.projectId,
+        name: input.name,
+        prefix: input.prefix,
+        color: input.color,
+        linkedBbProjectId: input.linkedBbProjectId,
+      }),
+      tasksProjectResultSchema,
+    ));
+  }
+
+  public async linkProjectToBbProject(projectId: string, bbProjectId: string): Promise<TasksProject> {
+    return this.updateProject({ projectId, linkedBbProjectId: bbProjectId });
   }
 
   public async listBbProjects(): Promise<Array<{ id: string; name: string }>> {
@@ -326,6 +401,54 @@ export class TasksClient {
 
   public async getTaskByKey(taskKey: string): Promise<TasksTask | null> {
     return (await this.call("getTaskByKey", { taskKey }, tasksGetTaskSchema)).task;
+  }
+
+  public async listTasks(filters: TasksListFilters = {}): Promise<z.infer<typeof tasksListSchema>> {
+    return this.call(
+      "listTasks",
+      optionalFields({
+        ...(filters.projectId === undefined ? {} : { projectId: filters.projectId }),
+        ...(filters.statuses === undefined ? {} : { statuses: [...filters.statuses] }),
+        ...(filters.parentTaskId === undefined ? {} : { parentTaskId: filters.parentTaskId }),
+        ...(filters.activeOnly === undefined ? {} : { activeOnly: filters.activeOnly }),
+        sort: "manual",
+        limit: filters.limit ?? TASKS_PAGE_LIMIT,
+        cursor: filters.cursor,
+      }),
+      tasksListSchema,
+    );
+  }
+
+  public async listAllTasks(filters: Omit<TasksListFilters, "cursor" | "limit"> = {}): Promise<TasksTask[]> {
+    for (let restart = 0; restart <= TASKS_STALE_RESTARTS; restart += 1) {
+      const tasks: TasksTask[] = [];
+      const seenCursors = new Set<string>();
+      let cursor: string | undefined;
+      try {
+        do {
+          const page = await this.listTasks({ ...filters, cursor });
+          tasks.push(...page.tasks);
+          if (page.nextCursor === null) return tasks;
+          if (seenCursors.has(page.nextCursor)) {
+            throw new TasksIntegrationError(
+              "tasks_contract_incompatible",
+              "Tasks listTasks repeated a pagination cursor. Update Tasks and Factory, then refresh.",
+            );
+          }
+          seenCursors.add(page.nextCursor);
+          cursor = page.nextCursor;
+        } while (cursor !== undefined);
+      } catch (error) {
+        if (!isStaleCursorError(error)) throw error;
+        if (restart < TASKS_STALE_RESTARTS) continue;
+        throw new TasksIntegrationError(
+          "tasks_pagination_unstable",
+          "Tasks changed repeatedly while Factory was loading pages. Wait for active task edits to settle, then refresh.",
+          { cause: error },
+        );
+      }
+    }
+    throw new TasksIntegrationError("tasks_pagination_unstable", "Tasks pagination could not settle. Refresh Factory to try again.");
   }
 
   public async createTask(input: TasksCreateInput): Promise<TasksMutationResult> {

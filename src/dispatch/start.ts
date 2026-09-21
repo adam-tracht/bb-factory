@@ -15,6 +15,7 @@ import { repositoryLabel } from "../repository-label.js";
 import { GlobalConcurrencyLimitError, IdempotencyConflictError, type OperationalTransaction } from "../storage/index.js";
 import { OwnershipHeldError } from "./ownership.js";
 import { hostPreflight, selectExplicitProvider, selectProvider, type ProviderSelection } from "./preflight.js";
+import { ensureTasksRunCard, tasksWorkerPrompt, type TasksRunCard } from "./tasks.js";
 import { boundedDiagnostic, dispatcherNowSeconds, nightKeyAt, nightState, RECONCILIATION_GRACE_MS, runDispatchUpdate, sameJson, spawnEnvironment, withWorkerOperation, type DispatchContext } from "./types.js";
 
 export interface StartRunInput {
@@ -75,6 +76,7 @@ function ownsPendingSpawnGeneration(
     readonly canonicalRecords: readonly CanonicalFileRecordLink[];
     readonly queueItemIds: readonly string[];
     readonly leaseAuthorizationProvenance: readonly string[];
+    readonly taskId: string | null;
     readonly acquiredAt: string;
     readonly expiresAt: string;
   },
@@ -86,6 +88,7 @@ function ownsPendingSpawnGeneration(
     && run.repositoryKey === generation.repositoryKey
     && run.requestedAt === generation.requestedAt
     && run.status === "pending"
+    && (run.taskId ?? null) === generation.taskId
     && run.startedAt === null
     && run.finishedAt === null
     && run.workerThreadId === null
@@ -283,6 +286,7 @@ async function markSpawnAmbiguous(
     canonicalRecords: readonly CanonicalFileRecordLink[];
     queueItemIds: readonly string[];
     leaseAuthorizationProvenance: readonly string[];
+    taskId?: string | null;
   },
   error: unknown,
 ): Promise<StartRunResult> {
@@ -302,6 +306,7 @@ async function markSpawnAmbiguous(
       canonicalRecords: input.canonicalRecords,
       queueItemIds: input.queueItemIds,
       leaseAuthorizationProvenance: input.leaseAuthorizationProvenance,
+      taskId: input.taskId ?? null,
       acquiredAt: input.requestedAt,
       expiresAt: input.expiresAt,
     })) return false;
@@ -323,6 +328,7 @@ async function markSpawnAmbiguous(
       projectId: input.projectId,
       environmentId: input.environmentId,
       repositoryRevision: input.revision,
+      taskId: input.taskId ?? null,
     });
     transaction.updateDispatchAttempt({
       attemptId: input.attemptId,
@@ -335,6 +341,7 @@ async function markSpawnAmbiguous(
       status: "reconciliation-required",
       startedAt: null,
       finishedAt: ctx.now().toISOString(),
+      taskId: input.taskId ?? null,
     });
     const lease = transaction.getLeaseForRun(input.runId);
     if (!lease || lease.leaseId !== input.leaseId) return false;
@@ -469,7 +476,7 @@ export async function startRun(ctx: DispatchContext, input: StartRunInput): Prom
         persistedRunId = inserted.runId;
         return false;
       }
-      transaction.assertGlobalCapacity(ctx.settings.concurrencyLimit, runId);
+      transaction.assertGlobalCapacity(input.repositoryKey, ctx.settings.concurrencyLimit, runId);
       transaction.createOwnershipLease({
         leaseId,
         repositoryKey: input.repositoryKey,
@@ -516,6 +523,48 @@ export async function startRun(ctx: DispatchContext, input: StartRunInput): Prom
     return alreadyRecorded(persistedRunId, snapshot.revision);
   }
 
+  let tasksRunCard: TasksRunCard | null = null;
+  if (ctx.tasksIntegration === "enabled") {
+    const cardError = (error: unknown): Promise<StartRunResult> => markSpawnAmbiguous(ctx, {
+      repositoryKey: input.repositoryKey,
+      runId,
+      leaseId,
+      attemptId,
+      requestedAt,
+      expiresAt,
+      provider,
+      revision: snapshot.revision,
+      projectId: entry.projectId,
+      environmentId: entry.environmentId ?? null,
+      canonicalRecords,
+      queueItemIds: intent.queueItemIds,
+      leaseAuthorizationProvenance: intent.queueItemIds,
+      taskId: tasksRunCard?.taskId ?? null,
+    }, error);
+    if (!ctx.tasksClient) return cardError(new Error("Tasks client is unavailable"));
+    const queueEntry = eligible[0];
+    if (!queueEntry) return cardError(new Error("Tasks dispatch has no eligible queue entry for a run card"));
+    try {
+      tasksRunCard = await ensureTasksRunCard(ctx.tasksClient, {
+        repositoryKey: input.repositoryKey,
+        entry,
+        queueEntry,
+        runId,
+      });
+      ctx.store.withTransaction((transaction) => {
+        const currentRun = transaction.getRunSummary(runId);
+        const currentAttempt = transaction.getActiveAttempt(runId);
+        if (currentRun?.status !== "pending" || currentAttempt?.attemptId !== attemptId || currentAttempt.status !== "pending") {
+          throw new Error(`run '${runId}' changed while its Tasks card was being attached`);
+        }
+        transaction.updateRunTaskId(runId, tasksRunCard!.taskId);
+        transaction.updateDispatchAttempt({ ...currentAttempt, taskId: tasksRunCard!.taskId });
+      });
+    } catch (error) {
+      return cardError(new Error(`Tasks run card setup failed: ${errorMessage(error)}`, { cause: error }));
+    }
+  }
+
   let threadId: string;
   // bb registers an unmanaged environment for a host-workspace spawn and
   // returns its id on the thread; a pinned environment id reuses instead.
@@ -538,7 +587,7 @@ export async function startRun(ctx: DispatchContext, input: StartRunInput): Prom
     const spawned = await ctx.sdk.threads.spawn({
       projectId: entry.projectId,
       environment: spawnEnvironment(entry),
-      prompt: FOREMAN_PROMPT,
+      prompt: tasksRunCard === null ? FOREMAN_PROMPT : tasksWorkerPrompt(tasksRunCard.taskKey),
       providerId: provider.providerId,
       model: provider.model,
       reasoningLevel: provider.reasoningLevel,
@@ -564,6 +613,7 @@ export async function startRun(ctx: DispatchContext, input: StartRunInput): Prom
       canonicalRecords,
       queueItemIds: intent.queueItemIds,
       leaseAuthorizationProvenance: intent.queueItemIds,
+      taskId: tasksRunCard?.taskId ?? null,
     }, error);
   }
 
@@ -584,6 +634,7 @@ export async function startRun(ctx: DispatchContext, input: StartRunInput): Prom
       canonicalRecords,
       queueItemIds: intent.queueItemIds,
       leaseAuthorizationProvenance: intent.queueItemIds,
+      taskId: tasksRunCard?.taskId ?? null,
       acquiredAt: requestedAt,
       expiresAt,
     })) return false;
@@ -593,6 +644,7 @@ export async function startRun(ctx: DispatchContext, input: StartRunInput): Prom
       status: "started",
       startedAt,
       finishedAt: null,
+      taskId: tasksRunCard?.taskId ?? null,
       providerId: provider.providerId,
       workerThreadId: threadId,
       projectId: entry.projectId,
@@ -610,6 +662,7 @@ export async function startRun(ctx: DispatchContext, input: StartRunInput): Prom
       status: "started",
       startedAt,
       finishedAt: null,
+      taskId: tasksRunCard?.taskId ?? null,
     });
     const lease = transaction.getLeaseForRun(runId)!;
     transaction.updateOwnershipLease({ ...lease, workerThreadId: threadId });

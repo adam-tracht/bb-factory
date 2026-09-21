@@ -13,7 +13,7 @@ import type {
   RepositoryRegistryEntry,
 } from "../contracts.js";
 import type { FactoryHealthReader, ProtocolReader } from "../ports.js";
-import type { TasksIntegrationMode } from "../tasks/index.js";
+import type { TasksClient, TasksIntegrationMode } from "../tasks/index.js";
 
 export type DispatchSdk = Pick<BbPluginApi["sdk"], "threads" | "files">;
 
@@ -48,6 +48,7 @@ export interface DispatchContext {
   readonly repositoryLookup: (repositoryKey: RepositoryKey) => RepositoryRegistryEntry | null;
   readonly settings: FactorySettings;
   readonly tasksIntegration?: TasksIntegrationMode;
+  readonly tasksClient?: TasksClient;
   readonly now: () => Date;
   readonly log?: (message: string) => void;
 }
@@ -111,7 +112,18 @@ export function boundedDiagnostic(value: string, maxLength: number): string {
 
 /** Compare persisted JSON-shaped values without duplicating field walkers. */
 export function sameJson(left: unknown, right: unknown): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
+  const canonicalize = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonicalize);
+    if (value !== null && typeof value === "object") {
+      return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>)
+          .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
+          .map(([key, item]) => [key, canonicalize(item)]),
+      );
+    }
+    return value;
+  };
+  return JSON.stringify(canonicalize(left)) === JSON.stringify(canonicalize(right));
 }
 
 export function dispatcherNowSeconds(now: () => Date): number {

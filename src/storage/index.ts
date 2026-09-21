@@ -462,6 +462,9 @@ export const OPERATIONAL_STORAGE_MIGRATIONS = [
     BEGIN
       SELECT RAISE(ABORT, 'tasks approval records are append-only');
     END`,
+  `ALTER TABLE operational_runs ADD COLUMN task_id TEXT`,
+  `ALTER TABLE dispatch_attempts ADD COLUMN task_id TEXT`,
+  `ALTER TABLE dispatch_attempts ADD COLUMN tasks_live_status TEXT CHECK (tasks_live_status IS NULL OR tasks_live_status IN ('starting', 'working', 'idle', 'completed', 'failed'))`,
 ] as const;
 
 const tasksOperationClassSchema = z.string().trim().min(1).max(128);
@@ -608,6 +611,7 @@ export interface RunDispatchUpdate {
   readonly environmentId: string | null;
   readonly repositoryRevision: RepositoryRevision;
   readonly canonicalRecords?: readonly CanonicalFileRecordLink[];
+  readonly taskId?: string | null;
 }
 
 export type ReconciliationResolution = "completed" | "blocked" | "failed-safe" | "no-op";
@@ -796,7 +800,8 @@ export interface OperationalTransaction {
   getCurrentOwnership(repositoryKey: RepositoryKey): OwnershipLease | null;
   getReconciliation(runId: string): ReconciliationMetadata | null;
   getStopIntent(runId: string): StopIntent | null;
-  assertGlobalCapacity(limit: number, excludingRunId?: string): void;
+  assertGlobalCapacity(repositoryKey: RepositoryKey, limit: number, excludingRunId?: string): void;
+  updateRunTaskId(runId: string, taskId: string): void;
   createRunIntent(input: CreateRunIntentInput): CreateRunIntentResult;
   updateRunDispatch(input: RunDispatchUpdate): void;
   createDispatchAttempt(attempt: DispatchAttempt): void;
@@ -834,6 +839,7 @@ export interface OperationalStateStore extends OperationalStateReader {
   withTransaction<T>(callback: (transaction: OperationalTransaction) => T): T;
   createRunIntent(input: CreateRunIntentInput): CreateRunIntentResult;
   updateRunDispatch(input: RunDispatchUpdate): void;
+  updateRunTaskId(runId: string, taskId: string): void;
   createDispatchAttempt(attempt: DispatchAttempt): void;
   updateDispatchAttempt(attempt: DispatchAttempt): void;
   createOwnershipLease(lease: OwnershipLease): void;
@@ -889,6 +895,7 @@ interface RunRow {
   queue_item_ids_json: string;
   repository_revision_json: string;
   canonical_records_json: string;
+  task_id: string | null;
 }
 
 interface RunIntentRow extends RunRow {
@@ -910,6 +917,8 @@ interface AttemptRow {
   status: string;
   started_at: string | null;
   finished_at: string | null;
+  task_id: string | null;
+  tasks_live_status: string | null;
 }
 
 interface OwnershipRow {
@@ -1074,6 +1083,10 @@ class OperationalSqliteStore implements OperationalStateStore {
     this.withTransaction((transaction) => transaction.updateRunDispatch(input));
   }
 
+  updateRunTaskId(runId: string, taskId: string): void {
+    this.withTransaction((transaction) => transaction.updateRunTaskId(runId, taskId));
+  }
+
   createDispatchAttempt(attempt: DispatchAttempt): void {
     this.withTransaction((transaction) => transaction.createDispatchAttempt(attempt));
   }
@@ -1188,7 +1201,7 @@ class OperationalSqliteStore implements OperationalStateStore {
       .prepare<unknown[], RunRow>(
         `SELECT run_id, repository_key, requested_at, status, started_at, finished_at,
                 provider_id, worker_thread_id, project_id, environment_id,
-                queue_item_ids_json, repository_revision_json, canonical_records_json
+                queue_item_ids_json, repository_revision_json, canonical_records_json, task_id
            FROM operational_runs
           WHERE repository_key = ?
             AND (? IS NULL OR requested_at < ? OR (requested_at = ? AND run_id < ?))
@@ -1212,7 +1225,7 @@ class OperationalSqliteStore implements OperationalStateStore {
                 requested_at, base_revision_json, queue_item_ids_json,
                 authorization_provenance_json, status, started_at, finished_at,
                 provider_id, worker_thread_id, project_id, environment_id,
-                repository_revision_json, canonical_records_json
+                repository_revision_json, canonical_records_json, task_id
            FROM operational_runs
           WHERE repository_key = ? AND run_id = ?`,
       )
@@ -1224,7 +1237,8 @@ class OperationalSqliteStore implements OperationalStateStore {
     const attempts = this.db
       .prepare<unknown[], AttemptRow>(
         `SELECT attempt_id, run_id, repository_key, provider_id, model,
-                reasoning_level, worker_thread_id, status, started_at, finished_at
+                reasoning_level, worker_thread_id, status, started_at, finished_at,
+                task_id, tasks_live_status
            FROM dispatch_attempts
           WHERE run_id = ?
           ORDER BY rowid ASC`,
@@ -1261,7 +1275,8 @@ class OperationalSqliteStore implements OperationalStateStore {
       getCurrentOwnership: (repositoryKey) => readCurrentOwnership(this.db, repositoryKey),
       getReconciliation: (runId) => readReconciliation(this.db, runId),
       getStopIntent: (runId) => readStopIntent(this.db, runId),
-      assertGlobalCapacity: (limit, excludingRunId) => assertGlobalCapacity(this.db, limit, excludingRunId),
+      assertGlobalCapacity: (repositoryKey, limit, excludingRunId) => assertGlobalCapacity(this.db, repositoryKey, limit, excludingRunId),
+      updateRunTaskId: (runId, taskId) => updateRunTaskId(this.db, runId, taskId),
       createRunIntent: (input) => insertRunIntent(this.db, input),
       updateRunDispatch: (input) => updateRunDispatch(this.db, input),
       createDispatchAttempt: (attempt) => insertDispatchAttempt(this.db, attempt),
@@ -1299,7 +1314,8 @@ class OperationalSqliteStore implements OperationalStateStore {
     const row = this.db
       .prepare<unknown[], AttemptRow>(
         `SELECT attempt_id, run_id, repository_key, provider_id, model,
-                reasoning_level, worker_thread_id, status, started_at, finished_at
+                reasoning_level, worker_thread_id, status, started_at, finished_at,
+                task_id, tasks_live_status
            FROM dispatch_attempts
           WHERE attempt_id = ?`,
       )
@@ -1340,7 +1356,7 @@ class OperationalSqliteStore implements OperationalStateStore {
       .prepare<unknown[], RunRow>(
         `SELECT run_id, repository_key, requested_at, status, started_at, finished_at,
                 provider_id, worker_thread_id, project_id, environment_id,
-                queue_item_ids_json, repository_revision_json, canonical_records_json
+                queue_item_ids_json, repository_revision_json, canonical_records_json, task_id
            FROM operational_runs
           WHERE repository_key = ? AND status IN ('pending', 'started', 'cancel-requested', 'reconciliation-required')
           ORDER BY requested_at ASC, run_id ASC`,
@@ -2191,17 +2207,30 @@ function insertRunIntent(db: SqliteDatabase, input: CreateRunIntentInput): Creat
   return { created: true, runId: intent.runId };
 }
 
-function assertGlobalCapacity(db: SqliteDatabase, limit: number, excludingRunId?: string): void {
+function assertGlobalCapacity(db: SqliteDatabase, repositoryKey: RepositoryKey, limit: number, excludingRunId?: string): void {
+  const parsedRepositoryKey = repositoryKeySchema.parse(repositoryKey);
   const parsedLimit = z.number().int().positive().parse(limit);
   const active = db
     .prepare<unknown[], { count: number }>(
       `SELECT COUNT(*) AS count
-         FROM operational_runs
-        WHERE status IN ('pending', 'started', 'cancel-requested', 'reconciliation-required')
+        FROM operational_runs
+        WHERE repository_key = ?
+          AND status IN ('pending', 'started', 'cancel-requested', 'reconciliation-required')
           AND (? IS NULL OR run_id <> ?)`,
     )
-    .get(excludingRunId ?? null, excludingRunId ?? null);
+    .get(parsedRepositoryKey, excludingRunId ?? null, excludingRunId ?? null);
   if ((active?.count ?? 0) >= parsedLimit) throw new GlobalConcurrencyLimitError(parsedLimit);
+}
+
+function updateRunTaskId(db: SqliteDatabase, runId: string, taskId: string): void {
+  const parsedRunId = z.string().trim().min(1).parse(runId);
+  const parsedTaskId = z.string().trim().min(1).parse(taskId);
+  const result = db
+    .prepare(`UPDATE operational_runs SET task_id = ? WHERE run_id = ? AND status = 'pending'`)
+    .run(parsedTaskId, parsedRunId);
+  if (result.changes !== 1) {
+    throw new Error(`cannot attach task '${parsedTaskId}' to pending run '${parsedRunId}'`);
+  }
 }
 
 function updateRunDispatch(db: SqliteDatabase, input: RunDispatchUpdate): void {
@@ -2212,7 +2241,7 @@ function updateRunDispatch(db: SqliteDatabase, input: RunDispatchUpdate): void {
     .prepare<unknown[], RunRow>(
       `SELECT run_id, repository_key, requested_at, status, started_at, finished_at,
               provider_id, worker_thread_id, project_id, environment_id,
-              queue_item_ids_json, repository_revision_json, canonical_records_json
+              queue_item_ids_json, repository_revision_json, canonical_records_json, task_id
          FROM operational_runs
         WHERE repository_key = ? AND run_id = ?`,
     )
@@ -2236,6 +2265,7 @@ function updateRunDispatch(db: SqliteDatabase, input: RunDispatchUpdate): void {
     workerThreadId: input.workerThreadId,
     projectId: input.projectId,
     environmentId: input.environmentId,
+    taskId: input.taskId === undefined ? currentSummary.taskId : input.taskId,
     repositoryRevision,
     canonicalRecords,
   });
@@ -2243,7 +2273,7 @@ function updateRunDispatch(db: SqliteDatabase, input: RunDispatchUpdate): void {
     `UPDATE operational_runs
         SET status = ?, started_at = ?, finished_at = ?, provider_id = ?,
             worker_thread_id = ?, project_id = ?, environment_id = ?,
-            repository_revision_json = ?, canonical_records_json = ?
+            repository_revision_json = ?, canonical_records_json = ?, task_id = ?
       WHERE repository_key = ? AND run_id = ?`,
   ).run(
     summary.status,
@@ -2255,6 +2285,7 @@ function updateRunDispatch(db: SqliteDatabase, input: RunDispatchUpdate): void {
     summary.environmentId,
     stableJson(summary.repositoryRevision),
     stableJson(summary.canonicalRecords),
+    summary.taskId ?? null,
     repositoryKey,
     input.runId,
   );
@@ -2266,8 +2297,8 @@ function insertDispatchAttempt(db: SqliteDatabase, attempt: DispatchAttempt): vo
   db.prepare(
     `INSERT INTO dispatch_attempts (
        attempt_id, run_id, repository_key, provider_id, model, reasoning_level,
-       worker_thread_id, status, started_at, finished_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       worker_thread_id, status, started_at, finished_at, task_id, tasks_live_status
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     parsed.attemptId,
     parsed.runId,
@@ -2279,6 +2310,8 @@ function insertDispatchAttempt(db: SqliteDatabase, attempt: DispatchAttempt): vo
     parsed.status,
     parsed.startedAt,
     parsed.finishedAt,
+    parsed.taskId ?? null,
+    parsed.tasksLiveStatus ?? null,
   );
 }
 
@@ -2290,7 +2323,7 @@ function updateDispatchAttempt(db: SqliteDatabase, attempt: DispatchAttempt): vo
     `UPDATE dispatch_attempts
         SET run_id = ?, repository_key = ?, provider_id = ?, model = ?,
             reasoning_level = ?, worker_thread_id = ?, status = ?,
-            started_at = ?, finished_at = ?
+            started_at = ?, finished_at = ?, task_id = ?, tasks_live_status = ?
       WHERE attempt_id = ? AND run_id = ?`,
   ).run(
     parsed.runId,
@@ -2302,6 +2335,8 @@ function updateDispatchAttempt(db: SqliteDatabase, attempt: DispatchAttempt): vo
     parsed.status,
     parsed.startedAt,
     parsed.finishedAt,
+    parsed.taskId ?? null,
+    parsed.tasksLiveStatus ?? null,
     parsed.attemptId,
     parsed.runId,
   );
@@ -2673,7 +2708,7 @@ function readRunSummary(db: SqliteDatabase, runId: string): OperationalRunSummar
     .prepare<unknown[], RunRow>(
       `SELECT run_id, repository_key, requested_at, status, started_at, finished_at,
               provider_id, worker_thread_id, project_id, environment_id,
-              queue_item_ids_json, repository_revision_json, canonical_records_json
+              queue_item_ids_json, repository_revision_json, canonical_records_json, task_id
          FROM operational_runs
         WHERE run_id = ?`,
     )
@@ -2685,7 +2720,8 @@ function readActiveAttempt(db: SqliteDatabase, runId: string): DispatchAttempt |
   const row = db
     .prepare<unknown[], AttemptRow>(
       `SELECT attempt_id, run_id, repository_key, provider_id, model,
-              reasoning_level, worker_thread_id, status, started_at, finished_at
+              reasoning_level, worker_thread_id, status, started_at, finished_at,
+              task_id, tasks_live_status
          FROM dispatch_attempts
         WHERE run_id = ?
           AND status IN ('pending', 'started', 'cancel-requested', 'reconciliation-required')
@@ -2714,7 +2750,8 @@ function readDispatchAttempt(db: SqliteDatabase, attemptId: string): DispatchAtt
   const row = db
     .prepare<unknown[], AttemptRow>(
       `SELECT attempt_id, run_id, repository_key, provider_id, model,
-              reasoning_level, worker_thread_id, status, started_at, finished_at
+              reasoning_level, worker_thread_id, status, started_at, finished_at,
+              task_id, tasks_live_status
          FROM dispatch_attempts
         WHERE attempt_id = ?`,
     )
@@ -2766,6 +2803,7 @@ function runSummaryFromRow(row: RunRow): OperationalRunSummary {
     queueItemIds: parseJson(row.queue_item_ids_json),
     repositoryRevision: parseJson(row.repository_revision_json),
     canonicalRecords: parseJson(row.canonical_records_json),
+    ...(row.task_id === null ? {} : { taskId: row.task_id }),
   });
 }
 
@@ -2794,6 +2832,8 @@ function attemptFromRow(row: AttemptRow): DispatchAttempt {
     status: row.status,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
+    ...(row.task_id === null ? {} : { taskId: row.task_id }),
+    ...(row.tasks_live_status === null ? {} : { tasksLiveStatus: row.tasks_live_status }),
   });
 }
 

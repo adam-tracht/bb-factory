@@ -52,6 +52,17 @@ sentinel lease only after dispatch is paused for this repository and the
 durable quarantine timeout has elapsed. A `current.md` marker never authorizes
 lease release.
 
+## Native Tasks run cards
+
+When the Factory prompt includes a Tasks card key, attach this worker to the card before doing work:
+
+1. Run `bb tasks attach <key>`.
+2. Run `bb tasks update <key> --status in_progress`.
+3. Comment material progress with `bb tasks comment <key> --body "<progress>"`.
+4. Write the markdown run record for audit, comment the result, then run `bb tasks update <key> --status in_review`.
+
+The markdown run record remains required for audit. In Tasks mode, Factory settlement uses the attached task thread, its live status, the repository revision, and the fenced run generation; it does not parse the markdown record.
+
 ## Field vocabulary
 
 Every file under `plans/factory/` is parsed by the factory plugin, not just read by people. Field values are closed lists. Write them exactly as listed, character for character. A value that is not on the list is not a softer variant; it is dropped, the entry disappears from the next run's eligible set, and the human sees "Unrecognized status" with no explanation.

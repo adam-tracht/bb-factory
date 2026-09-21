@@ -23,6 +23,7 @@ function ownsPendingRetryGeneration(
     readonly runProviderId: string | null;
     readonly runProjectId: string | null;
     readonly runEnvironmentId: string | null;
+    readonly runTaskId?: string | null;
     readonly runQueueItemIds: readonly string[];
     readonly runRepositoryRevision: OperationalRunSummary["repositoryRevision"];
     readonly runCanonicalRecords: OperationalRunSummary["canonicalRecords"];
@@ -49,6 +50,7 @@ function ownsPendingRetryGeneration(
     && run.workerThreadId === generation.workerThreadId
     && run.projectId === generation.runProjectId
     && run.environmentId === generation.runEnvironmentId
+    && (run.taskId ?? null) === (generation.runTaskId ?? null)
     && sameJson(run.queueItemIds, generation.runQueueItemIds)
     && sameRevision(run.repositoryRevision, generation.runRepositoryRevision)
     && sameJson(run.canonicalRecords, generation.runCanonicalRecords)
@@ -161,6 +163,7 @@ export async function retryAttempt(ctx: DispatchContext, input: RetryAttemptInpu
     // guard while the external call is unresolved.
     startedAt: retryGenerationStartedAt,
     finishedAt: null,
+    taskId: run.taskId,
   };
 
   // Fence stale reconciliation passes before the external retry. The pending
@@ -177,6 +180,7 @@ export async function retryAttempt(ctx: DispatchContext, input: RetryAttemptInpu
     runProviderId: run.providerId,
     runProjectId: run.projectId,
     runEnvironmentId: run.environmentId,
+    runTaskId: run.taskId,
     runQueueItemIds: run.queueItemIds,
     runRepositoryRevision: run.repositoryRevision,
     runCanonicalRecords: run.canonicalRecords,
@@ -223,7 +227,7 @@ export async function retryAttempt(ctx: DispatchContext, input: RetryAttemptInpu
       if (transaction.getActiveAttempt(run.runId) !== null) {
         throw new Error(`run '${run.runId}' already has an active retry attempt`);
       }
-      transaction.assertGlobalCapacity(ctx.settings.concurrencyLimit, run.runId);
+      transaction.assertGlobalCapacity(run.repositoryKey, ctx.settings.concurrencyLimit, run.runId);
       transaction.resetReconciliation(run.runId);
       transaction.updateRunDispatch(runDispatchUpdate(currentRun, {
         status: "started",

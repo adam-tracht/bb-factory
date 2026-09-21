@@ -483,6 +483,8 @@ export const dispatchAttemptSchema = z
     status: z.enum(["pending", "started", "completed", "failed-safe", "blocked", "no-op", "cancel-requested", "reconciliation-required"]),
     startedAt: isoTimestamp.nullable(),
     finishedAt: isoTimestamp.nullable(),
+    taskId: nonEmptyString.nullable().optional(),
+    tasksLiveStatus: z.enum(["starting", "working", "idle", "completed", "failed"]).nullable().optional(),
   })
   .strict();
 export type DispatchAttempt = z.infer<typeof dispatchAttemptSchema>;
@@ -1353,6 +1355,7 @@ const operationalRunSummaryFields = {
   queueItemIds: z.array(nonEmptyString),
   repositoryRevision: repositoryRevisionSchema,
   canonicalRecords: z.array(canonicalFileRecordLinkSchema),
+  taskId: nonEmptyString.nullable().optional(),
 };
 
 const preDispatchOperationalRunSummarySchema = z

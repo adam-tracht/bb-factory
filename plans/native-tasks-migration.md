@@ -43,10 +43,10 @@
 
 ## Phase 2: Execution substrate (high/high/M)
 
-- ⬜ **Attach through the outbox** — durable dispatch intent, existing fenced `threads.spawn` into the provisioned checkout, then the worker self-attaches via `bb tasks attach <key>`; attachment plus `task_threads.live_status` are recorded on the attempt. Ambiguous spawns keep the current quarantine path. Lands in: src/dispatch/start.ts, worker prompt/templates.
-- ⬜ **Settlement on structured signals** — terminal thread state plus expected repository revision change plus current generation; `task_threads.live_status` is the liveness oracle. Lands in: src/dispatch/lifecycle.ts.
-- ⬜ **Simplified worker protocol** — foreman instructions report progress and outcomes via `bb tasks comment` / `bb tasks update`; the run record file is still written as the audit artifact but nothing parses it. Lands in: templates/foreman.md, plans/factory/foreman.md.
-- ⬜ **Per-repo fault containment** — a stuck run quarantines only its repository's dispatch; add a regression test for the verified global-capacity starvation path. Lands in: src/dispatch, src/schedule.
+- ✅ **Attach through the outbox:** Phase 2 creates or reuses a linked tracker project and run card, persists its task id on the run and attempt, and prompts the worker to self-attach after the durable intent is fenced.
+- ✅ **Settlement on structured signals:** Phase 2 records the attached task thread live status and settles only when the BB thread is terminal, the task is in review, the repository commit changed, and the current generation still owns the lease.
+- ✅ **Simplified worker protocol:** Phase 2 adds Tasks attach, progress comments, result comments, and in-review reporting while retaining the markdown run record only as an audit artifact.
+- ✅ **Per-repo fault containment:** Phase 2 scopes active capacity checks by repository and covers the stuck-repository starvation regression.
 
 ## Phase 3: Queue migration (med/high/M)
 
