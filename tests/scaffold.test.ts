@@ -266,4 +266,19 @@ describe("protocol template manifest", () => {
       expect(createHash("sha256").update(content, "utf8").digest("hex")).toBe(entry.sha256);
     }
   });
+
+  it("keeps current.md as the final repository write in both foreman copies", () => {
+    for (const path of [
+      fileURLToPath(new URL("../templates/foreman.md", import.meta.url)),
+      fileURLToPath(new URL("../plans/factory/foreman.md", import.meta.url)),
+    ]) {
+      const content = readFileSync(path, "utf8");
+      const recordStep = content.indexOf("1. Write `plans/factory/runs/");
+      const currentStep = content.indexOf("4. Overwrite `plans/factory/current.md`", recordStep);
+      expect(recordStep).toBeGreaterThanOrEqual(0);
+      expect(currentStep).toBeGreaterThan(recordStep);
+      expect(content.indexOf("git push origin factory", recordStep)).toBeLessThan(currentStep);
+      expect(content.slice(currentStep)).toContain("After this write, do not remove files, commit, or push.");
+    }
+  });
 });

@@ -180,12 +180,13 @@ export class FakeFileSystem {
     };
   }
 
-  async listPaths(args: { path: string; includeFiles?: boolean }) {
+  async listPaths(args: { path: string; includeFiles?: boolean; query?: string; limit?: number }) {
     const prefix = args.path.endsWith("/") ? args.path : `${args.path}/`;
-    const paths = [...this.files.keys()]
-      .filter((key) => key.startsWith(prefix))
+    const allPaths = [...this.files.keys()]
+      .filter((key) => key.startsWith(prefix) && (args.query === undefined || key.includes(args.query)))
       .map((key) => ({ kind: "file" as const, name: posix.basename(key), path: key }));
-    return { paths, truncated: false };
+    const limit = args.limit ?? allPaths.length;
+    return { paths: allPaths.slice(0, limit), truncated: allPaths.length > limit };
   }
 
   async remove(args: { path: string }) {

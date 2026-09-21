@@ -27,6 +27,31 @@ Repo-specific rules live in `plans/factory/repo.md`. Read it right after this fi
 
 - `done.md`: completed entries, never read by the foreman.
 
+## Completion evidence
+
+Write the immutable run record before overwriting `plans/factory/current.md`.
+Remove the lock and finish the run-record commit and push before that final
+write. No lock removal, commit, or push instruction may follow the final write.
+Name the record `plans/factory/runs/<UTC timestamp>-<BB_THREAD_ID>.md` and end
+it with exactly one of `state: success`, `state: blocked`,
+`state: failed-safe`, or `state: no-op`. The final `current.md` write must be
+the final repository write of the run: after it, do not write another protocol
+file. It must be fresh and end with the same state. The dispatcher accepts a terminal
+outcome only when the worker thread, active attempt, lease, immutable record,
+and current state all identify this run. If evidence is malformed, stale, or
+belongs to another worker, leave the run for bounded reconciliation. Do not
+guess a success state. If the outcome is uncertain for any reason, write
+`state: failed-safe`, never a new state value. At the deadline, the dispatcher terminalizes the
+operational run `failed-safe` to free global run capacity. It releases this
+run's lease only after re-observing a known worker as terminated. If the worker
+is still active, stopping, unreadable, or the spawn was ambiguous, the lease
+remains `reconciliation-required`, quarantining this repository until a later
+observation confirms safe release. For an ambiguous spawn with no real thread
+id, the lease remains quarantined. An explicit operator repair may release that
+sentinel lease only after dispatch is paused for this repository and the
+durable quarantine timeout has elapsed. A `current.md` marker never authorizes
+lease release.
+
 ## Field vocabulary
 
 Every file under `plans/factory/` is parsed by the factory plugin, not just read by people. Field values are closed lists. Write them exactly as listed, character for character. A value that is not on the list is not a softer variant; it is dropped, the entry disappears from the next run's eligible set, and the human sees "Unrecognized status" with no explanation.
@@ -50,6 +75,9 @@ Other closed lists:
 - `questions.md` heading kind: exactly `blocking` or `assumption`. Heading dashboard id: exactly one token.
 - `current.md` last line: exactly `state: success`, `state: blocked`, `state: failed-safe`, or `state: no-op`.
 - Run record filename: `<UTC timestamp>-<thread id>.md`, nothing descriptive.
+  Supported legacy UTC forms are compact, dashed, dashed-without-colons, and
+  the older dashed date-time form. Date-only or descriptive names are not
+  attributable to a worker and cannot settle a run.
 - `risk:` exactly `low`, `medium`, or `high`. `priority:` a single digit 1 to 5.
 
 ## Run loop
@@ -66,7 +94,7 @@ Other closed lists:
 
 1. Read `plans/factory/queue.md`. Eligible entries have `status: ready`, no unmet `depends_on`, and no open blocking question referencing them.
 2. Pick the highest-priority eligible entry. Prefer entries whose dependencies were completed in the last few runs.
-3. If none are eligible: remove the lock, write `current.md` with `state: no-op` and one line on why, and stop. Do not invent work.
+3. If none are eligible: write the immutable run record with `state: no-op` and one line on why, remove the lock, commit and push the run record, then overwrite `current.md` with the matching final state and stop. Do not invent work. `current.md` is the final repository write.
 4. Set the entry to `status: in-progress (thread <id>, <timestamp>)` and commit that alone: `factory: claim <ID>`.
 
 While a run is in progress the foreman may append new `status: draft` entries to `queue.md` for follow-up work it notices (never any other status, and never `ready`: the human grants the first transition). Name every appended draft in the run report.
@@ -105,14 +133,14 @@ Repeat from Claim while you have budget (see Hard limits). Before writing the ru
 
 ### 7. Record
 
-1. Write `plans/factory/runs/<UTC timestamp>-<thread id>.md`: tasks attempted, outcome per task, validation results, workers used (provider, model, rough duration), questions raised, anything the next foreman should know.
-2. Overwrite `plans/factory/current.md`: three to six lines for a human, then the last line exactly `state: <success|blocked|failed-safe|no-op>`.
+1. Write `plans/factory/runs/<UTC timestamp>-<thread id>.md`: tasks attempted, outcome per task, validation results, workers used (provider, model, rough duration), questions raised, anything the next foreman should know. If the outcome is uncertain, use `state: failed-safe`.
+2. Remove `plans/factory/lock`.
+3. Commit the run record: `factory: run record <timestamp>`. Push it with `git push origin factory`.
+4. Overwrite `plans/factory/current.md`: three to six lines for a human, then the last line exactly `state: <success|blocked|failed-safe|no-op>`. This must be the final repository write of the run. After this write, do not remove files, commit, or push.
    - `success`: at least one task reached done.
    - `blocked`: nothing could proceed without a human.
    - `failed-safe`: something went wrong and you reverted to a clean state.
    - `no-op`: no eligible work.
-3. Remove `plans/factory/lock`.
-4. Commit: `factory: run record <timestamp>`. Push.
 5. Post the nightly report in this thread. The last message you write in this bb thread is for a human who has not read the queue. Plain English, no IDs without a description. Structure exactly:
    - **Built tonight**: one bullet per task: what now works that did not before, in user terms, then the ID and commit in parentheses. Example: "Storefront review submissions are now covered by a regression pack that exercises the URL token path (MON-0022.03, a1b2c3d)."
    - **Not done and why**: tasks attempted and reverted or left, one line each.

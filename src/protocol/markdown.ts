@@ -330,8 +330,7 @@ export function parseCurrentState(content: string, path: string): {
   readonly state: "success" | "blocked" | "failed-safe" | "no-op";
   readonly lastRunAt: string | null;
 } {
-  const lines = content.split(/\r?\n/u);
-  const stateLine = [...lines].reverse().find((line) => line.trim());
+  const stateLine = [...content.split(/\r?\n/u)].reverse().find((line) => line.trim()) ?? null;
   const stateMatch = stateLine?.match(/^state:\s*(success|blocked|failed-safe|no-op)\s*$/u);
   if (!stateMatch) {
     throw new ProtocolError("malformed-protocol", `The last non-empty line in '${path}' must declare state`, { path });
@@ -349,6 +348,11 @@ export function parseCurrentState(content: string, path: string): {
     state: stateMatch[1] as "success" | "blocked" | "failed-safe" | "no-op",
     lastRunAt,
   };
+}
+
+/** Returns the final non-empty line for diagnostics without weakening parsing. */
+export function lastNonEmptyLine(content: string): string | null {
+  return [...content.split(/\r?\n/u)].reverse().find((line) => line.trim())?.trim() ?? null;
 }
 
 function splitTableRow(line: string): string[] {
