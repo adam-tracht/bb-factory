@@ -15,7 +15,7 @@ import { repositoryLabel } from "../repository-label.js";
 import { GlobalConcurrencyLimitError, IdempotencyConflictError, type OperationalTransaction } from "../storage/index.js";
 import { OwnershipHeldError } from "./ownership.js";
 import { hostPreflight, selectExplicitProvider, selectProvider, type ProviderSelection } from "./preflight.js";
-import { ensureTasksRunCard, tasksWorkerPrompt, type TasksRunCard } from "./tasks.js";
+import { findTasksQueueCard, tasksWorkerPrompt, type TasksRunCard } from "./tasks.js";
 import { boundedDiagnostic, dispatcherNowSeconds, nightKeyAt, nightState, RECONCILIATION_GRACE_MS, runDispatchUpdate, sameJson, spawnEnvironment, withWorkerOperation, type DispatchContext } from "./types.js";
 
 export interface StartRunInput {
@@ -564,14 +564,9 @@ export async function startRun(ctx: DispatchContext, input: StartRunInput): Prom
     }, error);
     if (!ctx.tasksClient) return cardError(new Error("Tasks client is unavailable"));
     const queueEntry = eligible[0];
-    if (!queueEntry) return cardError(new Error("Tasks dispatch has no eligible queue entry for a run card"));
+    if (!queueEntry) return cardError(new Error("Tasks dispatch has no eligible queue entry"));
     try {
-      tasksRunCard = await ensureTasksRunCard(ctx.tasksClient, {
-        repositoryKey: input.repositoryKey,
-        entry,
-        queueEntry,
-        runId,
-      });
+      tasksRunCard = await findTasksQueueCard(ctx.tasksClient, queueEntry.id);
       ctx.store.withTransaction((transaction) => {
         const currentRun = transaction.getRunSummary(runId);
         const currentAttempt = transaction.getActiveAttempt(runId);

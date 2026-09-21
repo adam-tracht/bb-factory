@@ -808,9 +808,9 @@ describe("Factory aggregate scope", () => {
     factory_snapshot: ReturnType<typeof vi.fn>;
     factory_run_detail: ReturnType<typeof vi.fn>;
   };
-  const mountAggregate = (component: (props: FactoryViewProps) => unknown, subPath: string, rpc: PluginRpcTestHandlers<FactoryRpcContract>) => {
+  const mountAggregate = (component: (props: FactoryViewProps) => unknown, subPath: string, rpc: PluginRpcTestHandlers<FactoryRpcContract>, tasksIntegration = false) => {
     const registry = aggregateRegistry();
-    controlledSettingsState = { values: { repositoryRegistry: registry }, isLoading: false };
+    controlledSettingsState = { values: { repositoryRegistry: registry, ...(tasksIntegration ? { tasksIntegration: "enabled" } : {}) }, isLoading: false };
     return renderSlot<FactoryViewProps, FactoryRpcContract>(
       { component: component as never },
       { subPath, panelPath: "factory" },
@@ -1015,6 +1015,24 @@ describe("Factory aggregate scope", () => {
       expect(within(attentionDataGroup).getByRole("alert").textContent).toContain("data overview exploded");
     } finally {
       errorSlot.lifecycle.unmount();
+      controlledSettingsState = { values: { repositoryKey: "demo" }, isLoading: false };
+    }
+  });
+
+  it("renders enabled aggregate snapshot errors with retry instead of permanent loading", async () => {
+    const { FactoryView } = await import("../src/ui/FactoryView.js");
+    const rpc = aggregateRpc((key) => key === "data"
+      ? (() => { throw new Error("data Tasks board unavailable"); })()
+      : snapshotForSwitch(key));
+    const slot = mountAggregate(FactoryView, "all/work", rpc, true);
+    try {
+      expect(await slot.findByRole("heading", { name: "Native Tasks board" })).toBeTruthy();
+      const dataGroup = groupFor(slot, "data");
+      expect(within(dataGroup).getByRole("alert").textContent).toContain("data Tasks board unavailable");
+      expect(within(dataGroup).getByRole("button", { name: "Retry" })).toBeTruthy();
+      expect(within(dataGroup).queryByRole("status")).toBeNull();
+    } finally {
+      slot.lifecycle.unmount();
       controlledSettingsState = { values: { repositoryKey: "demo" }, isLoading: false };
     }
   });

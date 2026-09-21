@@ -7,6 +7,13 @@ export interface TasksRunCard {
   readonly taskKey: string;
 }
 
+/** Resolve the eligible native queue card used as the run's task/thread anchor. */
+export async function findTasksQueueCard(client: TasksClient, taskKey: string): Promise<TasksRunCard> {
+  const task = await client.getTaskByKey(taskKey);
+  if (!task) throw new Error(`Tasks queue card '${taskKey}' was not found`);
+  return { taskId: task.id, taskKey: task.key };
+}
+
 function trackerPrefix(repositoryKey: RepositoryKey): string {
   const letters = repositoryKey.toUpperCase().replace(/[^A-Z0-9]/gu, "");
   const prefix = letters.length === 0 ? "FACTORY" : letters;

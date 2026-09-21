@@ -5,10 +5,11 @@ import { digestText } from "../src/protocol/files.js";
 import { createDispatchEngine } from "../src/dispatch/index.js";
 import { selectProvider } from "../src/dispatch/preflight.js";
 import { ensureTasksRunCard } from "../src/dispatch/tasks.js";
+import { projectTasks } from "../src/tasks/migration.js";
 import { schedulerTick, cronMatches } from "../src/schedule/index.js";
 import { QUARANTINE_ABANDONMENT_GRACE_MS, RECONCILIATION_GRACE_MS } from "../src/dispatch/types.js";
 import type { DispatchContext } from "../src/dispatch/types.js";
-import type { TasksClient, TasksTask, TasksTaskThread } from "../src/tasks/index.js";
+import { deriveTasksContentRevision, type TasksClient, type TasksTask, type TasksTaskThread } from "../src/tasks/index.js";
 import {
   CHECKOUT,
   FakeFileSystem,
@@ -201,6 +202,7 @@ describe("dispatch engine", () => {
     readonly liveStatus?: TasksTaskThread["liveStatus"];
     readonly taskThreads?: readonly TasksTaskThread[];
     readonly onGetTask?: () => void;
+    readonly updateTaskFailures?: number;
   }
 
   function makeTasksClient(options: TasksClientOptions = {}) {
@@ -222,19 +224,24 @@ describe("dispatch engine", () => {
       createTask: [] as unknown[],
       updateTask: [] as unknown[],
     };
+    let updateTaskFailuresRemaining = options.updateTaskFailures ?? 0;
     const client = {
       listProjects: async () => [],
       createProject: async (input: unknown) => {
         calls.createProject.push(input);
         return { id: "tasks-project-1", name: "Factory", prefix: "MONOREPO", color: "#123456", linkedBbProjectId: "project-1" };
       },
-      listAllTasks: async () => [],
+      listAllTasks: async () => [task],
       createTask: async (input: unknown) => {
         calls.createTask.push(input);
         return { ok: true as const, task };
       },
       updateTask: async (input: { taskId: string; status?: TasksTask["status"] }) => {
         calls.updateTask.push(input);
+        if (updateTaskFailuresRemaining > 0) {
+          updateTaskFailuresRemaining -= 1;
+          return { ok: false as const, error: { code: "conflict", message: "Tasks card temporarily unavailable" } };
+        }
         if (input.status !== undefined) task.status = input.status;
         return { ok: true as const, task };
       },
@@ -242,6 +249,7 @@ describe("dispatch engine", () => {
         options.onGetTask?.();
         return task;
       },
+      getTaskByKey: async () => task,
       listTaskThreads: async () => options.taskThreads ?? [{
         threadId: "thread-1",
         presetName: "factory",
@@ -249,7 +257,7 @@ describe("dispatch engine", () => {
         liveStatus: options.liveStatus ?? "idle",
       }],
     } as unknown as TasksClient;
-    return { client, calls };
+    return { client, calls, clientTask: task };
   }
 
   function makeTasksReady(harness: ReturnType<typeof makeHarness>): void {
@@ -312,8 +320,8 @@ describe("dispatch engine", () => {
     const detail = (await harness.store.getRun({ repositoryKey: "monorepo", runId: result.result.runId! })).run!;
     expect(detail.summary.taskId).toBe("task-1");
     expect(detail.attempts[0]?.taskId).toBe("task-1");
-    expect(tasks.calls.createProject[0]).toMatchObject({ linkedBbProjectId: "project-1", prefix: "MONOREPO" });
-    expect(tasks.calls.createTask[0]).toMatchObject({ title: "Sample task", projectId: "tasks-project-1" });
+    expect(tasks.calls.createProject).toHaveLength(0);
+    expect(tasks.calls.createTask).toHaveLength(0);
     expect(harness.threads.spawnCalls[0]?.prompt).toContain("bb tasks attach MONOREPO-1");
     expect(harness.threads.spawnCalls[0]?.prompt).toContain("--status in_progress");
     expect(harness.threads.spawnCalls[0]?.prompt).toContain("--status in_review");
@@ -366,7 +374,15 @@ describe("dispatch engine", () => {
   it("settles Tasks runs only with terminal live status and a changed repository revision", async () => {
     const harness = makeHarness();
     makeTasksReady(harness);
-    const tasks = makeTasksClient();
+    const tasks = makeTasksClient({ taskStatus: "todo" });
+    harness.store.createTasksApproval({
+      approvalId: "approval-task-1",
+      repositoryKey: "monorepo",
+      taskId: "task-1",
+      operationClass: "execute",
+      contentRevision: deriveTasksContentRevision(tasks.clientTask),
+      provenance: { source: "test" },
+    });
     const before = (await harness.ctx.protocolReader.loadSnapshot(harness.entry.configuration)).revision;
     const ctx: DispatchContext = {
       ...harness.ctx,
@@ -385,11 +401,17 @@ describe("dispatch engine", () => {
     const result = await engine.requestRun({ ...MANUAL_REQUEST, idempotencyKey: "bbf:v1:monorepo:run-now:923e4567-e89b-42d3-a456-426614174099" as never });
     if (!result.ok) throw new Error(`expected success: ${result.error.message}`);
     harness.threads.threads.get("thread-1")!.status = "idle";
+    tasks.clientTask.status = "in_review";
     await engine.reconcile("monorepo");
     const detail = (await harness.store.getRun({ repositoryKey: "monorepo", runId: result.result.runId! })).run!;
     expect(detail.summary.status).toBe("completed");
     expect(detail.attempts[0]?.tasksLiveStatus).toBe("idle");
     expect(tasks.calls.updateTask).toContainEqual({ taskId: "task-1", status: "done" });
+    const projection = await projectTasks(tasks.client, harness.store, {
+      repositoryKey: "monorepo",
+      project: { id: "tasks-project-1", name: "Factory", prefix: "MONOREPO", color: "#123456", linkedBbProjectId: "project-1" },
+    });
+    expect(projection.queue.find((entry) => entry.id === "MONOREPO-1")).toMatchObject({ status: { kind: "done" }, eligible: false });
   });
 
   it("does not settle a completed Tasks card when the repository revision is unchanged", async () => {
@@ -413,6 +435,52 @@ describe("dispatch engine", () => {
     const detail = (await harness.store.getRun({ repositoryKey: "monorepo", runId: result.result.runId! })).run!;
     expect(detail.summary.status).toBe("reconciliation-required");
     expect(detail.attempts[0]?.tasksLiveStatus).toBe("idle");
+  });
+
+  it("retries a failed settlement card projection on the next reconciliation", async () => {
+    const harness = makeHarness();
+    makeTasksReady(harness);
+    const tasks = makeTasksClient({ taskStatus: "todo", updateTaskFailures: 1 });
+    harness.store.createTasksApproval({
+      approvalId: "approval-task-retry",
+      repositoryKey: "monorepo",
+      taskId: "task-1",
+      operationClass: "execute",
+      contentRevision: deriveTasksContentRevision(tasks.clientTask),
+      provenance: { source: "test" },
+    });
+    const before = (await harness.ctx.protocolReader.loadSnapshot(harness.entry.configuration)).revision;
+    const ctx: DispatchContext = {
+      ...harness.ctx,
+      tasksIntegration: "enabled",
+      tasksClient: tasks.client,
+      protocolReader: {
+        loadSnapshot: (configuration) => harness.ctx.protocolReader.loadSnapshot(configuration),
+        loadRevision: async () => ({ ...before, gitCommit: "def5678" }),
+      },
+      healthReader: {
+        ...harness.ctx.healthReader,
+        getTasksAvailability: async () => ({ enabled: true, status: "available" as const, message: "Tasks is available." }),
+      },
+    };
+    const engine = createDispatchEngine(ctx, () => ["monorepo"]);
+    const result = await engine.requestRun({ ...MANUAL_REQUEST, idempotencyKey: "bbf:v1:monorepo:run-now:923e4567-e89b-42d3-a456-426614174097" as never });
+    if (!result.ok) throw new Error(`expected success: ${result.error.message}`);
+    tasks.clientTask.status = "in_review";
+    harness.threads.threads.get("thread-1")!.status = "idle";
+    await engine.reconcile("monorepo");
+    const pending = (await harness.store.getRun({ repositoryKey: "monorepo", runId: result.result.runId! })).run!;
+    expect(pending.summary.status).toBe("reconciliation-required");
+    expect(tasks.clientTask.status).toBe("in_review");
+
+    await engine.reconcile("monorepo");
+    const settled = (await harness.store.getRun({ repositoryKey: "monorepo", runId: result.result.runId! })).run!;
+    expect(settled.summary.status).toBe("completed");
+    expect(tasks.clientTask.status).toBe("done");
+    expect(tasks.calls.updateTask).toEqual([
+      { taskId: "task-1", status: "done" },
+      { taskId: "task-1", status: "done" },
+    ]);
   });
 
   it("keeps ownership in reconciliation when the attached Tasks thread is still working", async () => {
@@ -2213,6 +2281,19 @@ describe("scheduler", () => {
         linkedBbProjectId: input.linkedBbProjectId ?? null,
       }),
       listAllTasks: async () => [],
+      getTaskByKey: async () => ({
+        id: "task-other",
+        projectId: "tasks-project-other",
+        key: "OTHER-1",
+        title: "Sample task",
+        status: "todo" as const,
+        priority: "medium" as const,
+        description: null,
+        dueDate: null,
+        labelIds: [],
+        parentTaskId: null,
+        position: 0,
+      }),
       createTask: async (input: { projectId: string; title: string }) => ({
         ok: true as const,
         task: {

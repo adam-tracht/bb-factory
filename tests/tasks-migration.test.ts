@@ -3,8 +3,8 @@ import { EMPTY_REPOSITORY_REVISION, tasksActionRequestSchema } from "../src/cont
 import { createTasksActionExecutor } from "../src/actions/tasks.js";
 import { projectTasks, renderFactoryTaskDescription, type FactoryTaskMetadata } from "../src/tasks/migration.js";
 import { deriveTasksContentRevision, TasksClient, type TasksRpcCall, type TasksTask } from "../src/tasks/index.js";
-import { RepositoryProtocolReader, staticMergeReader, type ProtocolFiles } from "../src/protocol/index.js";
-import { makeConfiguration, makeStore, FakeFileSystem, cleanupStorages } from "./fakes.js";
+import { digestText, RepositoryProtocolReader, staticMergeReader, type ProtocolFiles } from "../src/protocol/index.js";
+import { CURRENT_MD, DASHBOARD_MD, FOREMAN_MD, makeConfiguration, makeStore, FakeFileSystem, cleanupStorages, QUESTIONS_MD, QUEUE_MD, REPO_MD } from "./fakes.js";
 
 afterEach(cleanupStorages);
 
@@ -157,8 +157,8 @@ describe("native Tasks migration projection", () => {
   it("imports queue and questions idempotently by the embedded dashboard id", async () => {
     const files = new FakeFileSystem();
     files.seedProtocol({
-      "plans/factory/queue.md": `# Queue\n\n## T1 Imported task\nstatus: ready\npriority: 2\ndepends_on: none\nrisk: low\nplan: plans/factory/plan.md\napproved: Human approval\nacceptance:\n- works\nvalidate:\n- pnpm test\nnotes: none\n`,
-      "plans/factory/questions.md": `# Questions\n\n## Q1 2026-09-21 blocking T1\nquestion: Which provider?\ncontext: Choose one.\nanswer:\n`,
+      "plans/factory/queue.md": `# Queue\n\n## T1 Imported task\nstatus: ready\npriority: 2\ndepends_on: none\nrisk: low\nplan: plans/factory/plan.md\napproved: Human approval\nacceptance:\n- works\nvalidate:\n- pnpm test\nnotes: none\n\n## T2 Dependent task\nstatus: ready\npriority: 3\ndepends_on: T1\nrisk: low\nplan: plans/factory/plan-2.md\napproved: Second approval\nacceptance:\n- works too\nvalidate:\n- pnpm typecheck\nnotes: none\n`,
+      "plans/factory/questions.md": `# Questions\n\n## Q1 2026-09-21 blocking T1\nquestion: Which provider?\ncontext: Choose one.\nanswer:\n\n## Q2 2026-09-21 blocking STANDALONE\nquestion: Which region?\ncontext: Choose one region.\nanswer:\n`,
     });
     const tasks: TasksTask[] = [];
     const labels: Array<{ id: string; projectId: string; name: string; color: string }> = [];
@@ -178,21 +178,33 @@ describe("native Tasks migration projection", () => {
       expectedRevision: EMPTY_REPOSITORY_REVISION,
     });
     await expect(executor.execute(request)).resolves.toMatchObject({ ok: true, result: { status: "accepted" } });
-    expect(tasks).toHaveLength(1);
+    expect(tasks).toHaveLength(3);
     expect(store.getTasksBlocker("factory:monorepo:question:Q1")).toMatchObject({ taskId: tasks[0]!.id, state: "open" });
+    expect(store.getTasksBlocker("factory:monorepo:question:Q2")).toMatchObject({ taskId: tasks[2]!.id, state: "open" });
     expect(tasks[0]!.description).toContain("Which provider?");
-    expect(store.listTasksApprovals("monorepo", tasks[0]!.id)).toMatchObject([{
-      taskId: tasks[0]!.id,
-      operationClass: "execute",
-      contentRevision: deriveTasksContentRevision(tasks[0]!),
-      provenance: {
-        source: "imported-from-markdown-approval",
-        approvedText: "Human approval",
-      },
+    expect(store.listTasksDependencyEdges("monorepo")).toMatchObject([{
+      taskId: tasks[1]!.id,
+      dependsOnTaskId: tasks[0]!.id,
     }]);
+    expect(store.listTasksApprovals("monorepo")).toMatchObject([
+      {
+        taskId: tasks[0]!.id,
+        operationClass: "execute",
+        contentRevision: deriveTasksContentRevision(tasks[0]!),
+        provenance: { source: "imported-from-markdown-approval", approvedText: "Human approval" },
+      },
+      {
+        taskId: tasks[1]!.id,
+        operationClass: "execute",
+        contentRevision: deriveTasksContentRevision(tasks[1]!),
+        provenance: { source: "imported-from-markdown-approval", approvedText: "Second approval" },
+      },
+    ]);
     await expect(executor.execute(request)).resolves.toMatchObject({ ok: true, result: { status: "already-applied" } });
-    expect(tasks).toHaveLength(1);
-    expect(store.listTasksBlockers("monorepo")).toHaveLength(1);
+    expect(tasks).toHaveLength(3);
+    expect(store.listTasksBlockers("monorepo")).toHaveLength(2);
+    expect(store.listTasksDependencyEdges("monorepo")).toHaveLength(1);
+    expect(store.listTasksApprovals("monorepo")).toHaveLength(2);
   });
 
   it("does not read queue, questions, current, or lock files in enabled mode", async () => {
@@ -227,19 +239,87 @@ describe("native Tasks migration projection", () => {
     expect(reads).not.toEqual(expect.arrayContaining(["plans/factory/queue.md", "plans/factory/questions.md", "plans/factory/current.md", "plans/factory/lock"]));
   });
 
-  it("keeps the disabled reader projection byte-equivalent to the legacy reader", async () => {
+  it("keeps the disabled reader projection equal to the frozen pre-migration baseline", async () => {
     const files = new FakeFileSystem();
     files.seedProtocol();
     const protocolFiles: ProtocolFiles = {
       read: (args) => files.read(args),
       listPaths: (args) => files.listPaths(args),
     };
+    const fileContents = {
+      "plans/factory/foreman.md": FOREMAN_MD,
+      "plans/factory/repo.md": REPO_MD,
+      "plans/factory/queue.md": QUEUE_MD,
+      "plans/factory/questions.md": QUESTIONS_MD,
+      "plans/factory/current.md": CURRENT_MD,
+      "plans/README.md": DASHBOARD_MD,
+    };
+    const fileDigests = Object.fromEntries(Object.entries(fileContents).map(([path, content]) => [path, digestText(content)]));
+    const revision = {
+      gitCommit: "abcdef1",
+      protocolDigest: digestText(Object.entries(fileDigests).map(([path, sha256]) => `${path}\0${sha256}`).sort().join("\n")),
+      fileDigests,
+    };
+    const baseline = {
+      repository: makeConfiguration(),
+      revision,
+      capturedAt: "2026-09-21T00:00:00.000Z",
+      foremanTemplate: {
+        authority: "repository-protocol" as const,
+        relativePath: "plans/factory/foreman.md" as const,
+        contentSha256: fileDigests["plans/factory/foreman.md"],
+        repositoryRevision: revision,
+      },
+      queue: [{
+        id: "T1",
+        title: "Sample task",
+        status: { kind: "blocked-by" as const, questionId: "Q6" },
+        priority: 2,
+        dependsOn: [],
+        risk: "low" as const,
+        planPath: "plans/factory/plan-t1.md",
+        approved: { kind: "none" as const, source: "none" as const },
+        acceptance: ["the task is done"],
+        validate: ["pnpm test"],
+        notes: "none",
+        blockingQuestionIds: ["Q6"],
+        staleBlockingQuestionIds: [],
+        blockedBy: ["Q6"],
+        eligible: false,
+        eligibilityReasons: ["not-ready" as const, "blocking-question" as const],
+      }],
+      questions: [{
+        id: "Q6",
+        date: "2026-09-10",
+        classification: "blocking" as const,
+        dashboardId: "T1",
+        question: "Which provider should run this?",
+        context: "The plan needs a choice.",
+        assumed: null,
+        answer: null,
+      }],
+      dashboard: {
+        canonicalPath: "plans/README.md" as const,
+        factoryBranch: "factory" as const,
+        mainRef: "origin/main",
+        factoryAhead: 0,
+        mainBehind: 0,
+        taskCommits: [],
+        safeFastForward: true,
+        canonicalDashboardUrl: null,
+      },
+      currentRun: {
+        state: "no-op" as const,
+        lastRunAt: null,
+        currentPath: "plans/factory/current.md" as const,
+        latestRunPath: null,
+      },
+    };
     const options = {
       mergeReader: staticMergeReader({ gitCommit: "abcdef1", factoryAhead: 0, mainBehind: 0, taskCommits: [], safeFastForward: true }),
       now: () => new Date("2026-09-21T00:00:00Z"),
     };
-    const legacy = await new RepositoryProtocolReader(protocolFiles, options).loadSnapshot(makeConfiguration());
     const disabled = await new RepositoryProtocolReader(protocolFiles, { ...options, tasksIntegration: "disabled" }).loadSnapshot(makeConfiguration());
-    expect(disabled).toEqual(legacy);
+    expect(disabled).toEqual(baseline);
   });
 });

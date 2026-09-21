@@ -597,7 +597,6 @@ export const actionKindSchema = z.enum([
   "answer-question",
   "approve-queue",
   "approve-task",
-  "set-task-status",
   "import-tasks",
   "recommend-question",
   "recommend-approval",
@@ -714,18 +713,8 @@ const approveQueueActionSchema = z
 const approveTaskActionSchema = z
   .object({ kind: z.literal("approve-task"), taskId: nonEmptyString, operationClass: nonEmptyString })
   .strict();
-const tasksQueueApprovalActionSchema = z
-  .object({ kind: z.literal("approve-queue"), queueItemId: nonEmptyString, approvedText: nonEmptyString })
-  .strict();
 const tasksQuestionAnswerActionSchema = z
   .object({ kind: z.literal("answer-question"), source: z.literal("repository-question"), questionId: nonEmptyString, answer: nonEmptyString })
-  .strict();
-const setTaskStatusActionSchema = z
-  .object({
-    kind: z.literal("set-task-status"),
-    taskId: nonEmptyString,
-    status: z.enum(["backlog", "todo", "in_progress", "in_review", "done", "canceled"]),
-  })
   .strict();
 const importTasksActionSchema = z.object({ kind: z.literal("import-tasks") }).strict();
 
@@ -736,9 +725,8 @@ export const repositoryActionSchema = z.union([
 export type RepositoryAction = z.infer<typeof repositoryActionSchema>;
 export const tasksActionSchema = z.union([
   approveTaskActionSchema,
-  tasksQueueApprovalActionSchema,
+  approveQueueActionSchema,
   tasksQuestionAnswerActionSchema,
-  setTaskStatusActionSchema,
   importTasksActionSchema,
 ]);
 export type TasksAction = z.infer<typeof tasksActionSchema>;
@@ -1042,7 +1030,6 @@ const nonAnswerActionKindSchema = z.enum([
   "pause",
   "resume",
   "approve-queue",
-  "set-task-status",
   "import-tasks",
   "retry",
   "stop",

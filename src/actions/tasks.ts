@@ -23,6 +23,7 @@ import {
   dashboardIdFromDescription,
   factoryQuestionBlockerId,
   metadataForQueueEntry,
+  parseFactoryQuestionMetadata,
   priorityToTaskPriority,
   queueStatusToTaskStatus,
   renderFactoryQuestionDescription,
@@ -195,9 +196,12 @@ async function importProtocol(options: TasksActionExecutorOptions, repositoryKey
   const project = await ensureProject(options, repositoryKey);
   const existingTasks = await options.tasksClient.listAllTasks({ projectId: project.id });
   const byDashboardId = new Map<string, TasksTask>();
+  const byQuestionId = new Map<string, TasksTask>();
   for (const task of existingTasks) {
     const dashboardId = dashboardIdFromDescription(task.description);
     if (dashboardId) byDashboardId.set(dashboardId, task);
+    const questionMetadata = parseFactoryQuestionMetadata(task);
+    if (questionMetadata?.questionId) byQuestionId.set(questionMetadata.questionId, task);
   }
   const labels = new Map((await options.tasksClient.listLabels(project.id)).map((label) => [label.name.toLowerCase(), label.id]));
   const taskByDashboardId = new Map<string, TasksTask>();
@@ -239,7 +243,9 @@ async function importProtocol(options: TasksActionExecutorOptions, repositoryKey
   const existingBlockers = new Map(options.store.listTasksBlockers(repositoryKey).map((blocker) => [blocker.blockerId, blocker]));
   let blockerCount = 0;
   for (const question of questions.filter((candidate) => candidate.classification === "blocking")) {
-    let task = taskByDashboardId.get(question.dashboardId) ?? byDashboardId.get(question.dashboardId);
+    let task = taskByDashboardId.get(question.dashboardId)
+      ?? byDashboardId.get(question.dashboardId)
+      ?? byQuestionId.get(question.id);
     const questionLabel = await ensureLabel(options.tasksClient, project.id, labels, "question");
     const questionDescription = renderFactoryQuestionDescription({
       questionId: question.id,
@@ -257,6 +263,7 @@ async function importProtocol(options: TasksActionExecutorOptions, repositoryKey
         labelIds: [questionLabel],
       }));
       created += 1;
+      byQuestionId.set(question.id, task);
     } else {
       const labelIds = (task.labelIds ?? []).includes(questionLabel)
         ? task.labelIds
@@ -265,9 +272,11 @@ async function importProtocol(options: TasksActionExecutorOptions, repositoryKey
         ? task.description
         : `${task.description?.trim() ?? ""}\n\n${questionDescription}`.trim();
       if (labelIds !== task.labelIds || description !== task.description) {
-        await options.tasksClient.updateTask({ taskId: task.id, labelIds, description });
+        const result = await options.tasksClient.updateTask({ taskId: task.id, labelIds, description });
+        if (result.ok) task = result.task;
       }
     }
+    byQuestionId.set(question.id, task);
     const blockerId = factoryQuestionBlockerId(repositoryKey, question.id);
     if (!existingBlockers.has(blockerId)) {
       const blocker = options.store.createTasksBlocker({
@@ -391,27 +400,6 @@ export function createTasksActionExecutor(options: TasksActionExecutorOptions) {
       }
     }
 
-    if (valid.action.kind === "set-task-status") {
-      try {
-        const task = await options.tasksClient.getTask(valid.action.taskId)
-          ?? await options.tasksClient.getTaskByKey(valid.action.taskId);
-        if (!task) return actionError("not-found", `Tasks task '${valid.action.taskId}' was not found.`, valid.idempotencyKey);
-        const result = await options.tasksClient.updateTask({ taskId: task.id, status: valid.action.status });
-        if (!result.ok) return actionError("conflict", `Tasks rejected the status move: ${result.error.message}`, valid.idempotencyKey);
-        return actionSuccess({
-          status: "accepted",
-          message: `Moved Tasks card ${task.key} to ${valid.action.status}.`,
-          revision: null,
-          runId: null,
-          leaseId: null,
-          queueItemId: task.key,
-          action: "set-task-status" as const,
-        }, null);
-      } catch (error) {
-        return tasksFailure(error, valid.idempotencyKey);
-      }
-    }
-
     if (valid.action.kind === "answer-question") {
       try {
         const blocker = options.store.getTasksBlocker(valid.action.questionId);
@@ -477,11 +465,19 @@ export function createTasksActionExecutor(options: TasksActionExecutorOptions) {
       try {
         const task = await options.tasksClient.getTaskByKey(valid.action.queueItemId);
         if (!task) return actionError("not-found", `Tasks card '${valid.action.queueItemId}' was not found.`, valid.idempotencyKey);
+        const statusMove = await options.tasksClient.updateTask({ taskId: task.id, status: "todo" });
+        if (!statusMove.ok || statusMove.task.status !== "todo") {
+          return actionError(
+            "conflict",
+            `Could not move Tasks card '${task.key}' to todo: ${statusMove.ok ? "unexpected card status" : statusMove.error.message}`,
+            valid.idempotencyKey,
+          );
+        }
         const grant = recordTasksApproval({
           store: options.store,
           approvalId: valid.idempotencyKey,
           repositoryKey: valid.repositoryKey,
-          task,
+          task: statusMove.task,
           operationClass: "execute",
           provenance: { source: "factory-guarded-action", action: "approve-queue", approvedText: valid.action.approvedText },
           createdAt: now().toISOString(),
@@ -498,9 +494,6 @@ export function createTasksActionExecutor(options: TasksActionExecutorOptions) {
             questionId: null,
             interactionId: null,
           }, null);
-        }
-        if (task.status === "backlog") {
-          await options.tasksClient.updateTask({ taskId: task.id, status: "todo" });
         }
         return actionSuccess({
           status: "accepted",

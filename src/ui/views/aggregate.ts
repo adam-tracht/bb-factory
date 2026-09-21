@@ -1280,7 +1280,17 @@ export function AggregateSectionView(props: {
     return h("div", { className: "space-y-6" },
       ...props.groups.map((group) => {
         const snapshot = group.bundle.snapshot.status === "ready" ? group.bundle.snapshot.data : null;
-        if (!snapshot) return h(LoadingNotice, { key: group.entry.configuration.repositoryKey, label: `Loading ${entryLabel(group.entry)} Tasks state` });
+        if (!snapshot) {
+          return h(RepositoryStatusGroup, {
+            key: group.entry.configuration.repositoryKey,
+            group,
+            tab: props.section,
+            section: "native-tasks",
+            children: group.bundle.snapshot.status === "error"
+              ? h(ErrorNotice, { message: group.bundle.snapshot.error, onRetry: props.onRetry })
+              : h(LoadingNotice, { label: `Loading ${entryLabel(group.entry)} Tasks state` }),
+          });
+        }
         const health = group.bundle.health.status === "ready" ? group.bundle.health.data : null;
         return h(TasksDeferredView, {
           key: group.entry.configuration.repositoryKey,

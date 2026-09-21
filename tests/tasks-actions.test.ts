@@ -20,6 +20,61 @@ import {
 afterEach(cleanupStorages);
 
 describe("Tasks approval action", () => {
+  it("recovers approve-queue after a failed status move and reconciles retries", async () => {
+    const task: TasksTask = {
+      id: "task-partial",
+      projectId: "project-1",
+      key: "FAC-PARTIAL",
+      title: "Recover approval",
+      description: "Implement the approved scope.",
+      status: "backlog",
+      priority: "high",
+      dueDate: null,
+      labelIds: [],
+      parentTaskId: null,
+      position: 1,
+    };
+    let statusMoveAttempts = 0;
+    const tasksClient = new TasksClient((async ({ method, input }: Parameters<TasksRpcCall>[0]) => {
+      const args = (input ?? {}) as Record<string, unknown>;
+      if (method === "getTaskByKey") return { task };
+      if (method === "updateTask") {
+        statusMoveAttempts += 1;
+        if (statusMoveAttempts === 1) return { ok: false, error: { code: "conflict", message: "card changed" } };
+        task.status = String(args.status);
+        return { ok: true, task };
+      }
+      throw new Error(`Unexpected Tasks RPC ${method}`);
+    }) as never);
+    const store = makeStore();
+    const request = tasksActionRequestSchema.parse({
+      repositoryKey: "monorepo",
+      action: { kind: "approve-queue", queueItemId: task.key, approvedText: "Approved after recovery." },
+      idempotencyKey: "bbf:v1:monorepo:approve-queue:223e4567-e89b-42d3-a456-426614174000",
+      expectedRevision: EMPTY_REPOSITORY_REVISION,
+    });
+    const executor = createTasksActionExecutor({
+      tasksClient,
+      store,
+      repositoryLookup: (key) => key === "monorepo" ? makeConfiguration() : null,
+      now: () => new Date("2026-09-21T16:00:00Z"),
+    });
+
+    await expect(executor.execute(request)).resolves.toMatchObject({ ok: false, error: { category: "conflict" } });
+    expect(store.listTasksApprovals("monorepo")).toHaveLength(0);
+    await expect(executor.execute(request)).resolves.toMatchObject({
+      ok: true,
+      result: { status: "accepted", action: "approve-queue", queueItemId: task.key },
+    });
+    await expect(executor.execute(request)).resolves.toMatchObject({
+      ok: true,
+      result: { status: "already-applied", action: "approve-queue", queueItemId: task.key },
+    });
+    expect(statusMoveAttempts).toBe(3);
+    expect(task.status).toBe("todo");
+    expect(store.listTasksApprovals("monorepo", task.id)).toHaveLength(1);
+  });
+
   it("routes approve-queue through the revision-bound grant path", async () => {
     let task: TasksTask = {
       id: "task-queue",
