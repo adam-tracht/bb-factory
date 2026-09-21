@@ -220,6 +220,7 @@ describe("dispatch engine", () => {
     const calls = {
       createProject: [] as unknown[],
       createTask: [] as unknown[],
+      updateTask: [] as unknown[],
     };
     const client = {
       listProjects: async () => [],
@@ -230,6 +231,11 @@ describe("dispatch engine", () => {
       listAllTasks: async () => [],
       createTask: async (input: unknown) => {
         calls.createTask.push(input);
+        return { ok: true as const, task };
+      },
+      updateTask: async (input: { taskId: string; status?: TasksTask["status"] }) => {
+        calls.updateTask.push(input);
+        if (input.status !== undefined) task.status = input.status;
         return { ok: true as const, task };
       },
       getTask: async () => {
@@ -382,6 +388,7 @@ describe("dispatch engine", () => {
     const detail = (await harness.store.getRun({ repositoryKey: "monorepo", runId: result.result.runId! })).run!;
     expect(detail.summary.status).toBe("completed");
     expect(detail.attempts[0]?.tasksLiveStatus).toBe("idle");
+    expect(tasks.calls.updateTask).toContainEqual({ taskId: "task-1", status: "done" });
   });
 
   it("does not settle a completed Tasks card when the repository revision is unchanged", async () => {

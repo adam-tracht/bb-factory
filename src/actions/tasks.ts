@@ -101,6 +101,35 @@ function approvalOutcome(
   };
 }
 
+function recordTasksApproval(input: {
+  readonly store: Pick<OperationalStateStore, "createTasksApproval" | "getTasksApproval">;
+  readonly repositoryKey: TasksActionRequest["repositoryKey"];
+  readonly task: TasksTask;
+  readonly approvalId: string;
+  readonly operationClass: TasksOperationClass;
+  readonly provenance: JsonValue;
+  readonly createdAt: string;
+}): { readonly contentRevision: string; readonly alreadyApplied: boolean } {
+  const contentRevision = deriveTasksContentRevision(input.task);
+  const existing = input.store.getTasksApproval({
+    repositoryKey: input.repositoryKey,
+    taskId: input.task.id,
+    operationClass: input.operationClass,
+    contentRevision,
+  });
+  if (existing !== null) return { contentRevision, alreadyApplied: true };
+  input.store.createTasksApproval({
+    approvalId: input.approvalId,
+    repositoryKey: input.repositoryKey,
+    taskId: input.task.id,
+    operationClass: input.operationClass,
+    contentRevision,
+    provenance: input.provenance,
+    createdAt: input.createdAt,
+  });
+  return { contentRevision, alreadyApplied: false };
+}
+
 function taskFromMutation(result: Awaited<ReturnType<TasksClient["createTask"]>>): TasksTask {
   if (result.ok) return result.task;
   throw new Error(result.error.message);
@@ -310,14 +339,17 @@ async function importProtocol(options: TasksActionExecutorOptions, repositoryKey
   for (const entry of entries.filter((candidate) => candidate.approved.kind === "explicit")) {
     const task = finalByDashboardId.get(entry.id);
     if (!task) continue;
-    options.store.createTasksApproval({
+    recordTasksApproval({
+      store: options.store,
       approvalId: importApprovalId(repositoryKey, task.id),
       repositoryKey,
-      taskId: task.id,
+      task,
       operationClass: "execute",
-      contentRevision: deriveTasksContentRevision(task),
-      provenance: { source: "queue-import", approvedText: entry.approved.kind === "explicit" ? entry.approved.text : "" },
-      createdAt: options.now?.().toISOString(),
+      provenance: {
+        source: "imported-from-markdown-approval",
+        approvedText: entry.approved.kind === "explicit" ? entry.approved.text : "",
+      },
+      createdAt: importNow().toISOString(),
     });
   }
   return { created, blockers: blockerCount };
@@ -445,9 +477,16 @@ export function createTasksActionExecutor(options: TasksActionExecutorOptions) {
       try {
         const task = await options.tasksClient.getTaskByKey(valid.action.queueItemId);
         if (!task) return actionError("not-found", `Tasks card '${valid.action.queueItemId}' was not found.`, valid.idempotencyKey);
-        const contentRevision = deriveTasksContentRevision(task);
-        const existing = options.store.getTasksApproval({ repositoryKey: valid.repositoryKey, taskId: task.id, operationClass: "execute", contentRevision });
-        if (existing) {
+        const grant = recordTasksApproval({
+          store: options.store,
+          approvalId: valid.idempotencyKey,
+          repositoryKey: valid.repositoryKey,
+          task,
+          operationClass: "execute",
+          provenance: { source: "factory-guarded-action", action: "approve-queue", approvedText: valid.action.approvedText },
+          createdAt: now().toISOString(),
+        });
+        if (grant.alreadyApplied) {
           return actionSuccess({
             status: "already-applied",
             message: "The current Tasks approval was already recorded.",
@@ -460,15 +499,6 @@ export function createTasksActionExecutor(options: TasksActionExecutorOptions) {
             interactionId: null,
           }, null);
         }
-        options.store.createTasksApproval({
-          approvalId: valid.idempotencyKey,
-          repositoryKey: valid.repositoryKey,
-          taskId: task.id,
-          operationClass: "execute",
-          contentRevision,
-          provenance: { source: "factory-guarded-action", action: "approve-queue", approvedText: valid.action.approvedText },
-          createdAt: now().toISOString(),
-        });
         if (task.status === "backlog") {
           await options.tasksClient.updateTask({ taskId: task.id, status: "todo" });
         }
@@ -498,26 +528,16 @@ export function createTasksActionExecutor(options: TasksActionExecutorOptions) {
       return actionError("not-found", `Tasks task '${valid.action.taskId}' was not found.`, valid.idempotencyKey);
     }
 
-    const contentRevision = deriveTasksContentRevision(task);
-    const existing = options.store.getTasksApproval({
-      repositoryKey: valid.repositoryKey,
-      taskId: task.id,
-      operationClass: valid.action.operationClass,
-      contentRevision,
-    });
-    if (existing !== null) {
-      return actionSuccess(approvalOutcome(valid, "already-applied", contentRevision), null);
-    }
-
+    let grant: { readonly contentRevision: string; readonly alreadyApplied: boolean };
     try {
       // This grant is issued only by a guarded Factory action. Phase 0 showed
       // that Tasks comments, labels, and status changes are not authorization.
-      options.store.createTasksApproval({
+      grant = recordTasksApproval({
+        store: options.store,
         approvalId: valid.idempotencyKey,
         repositoryKey: valid.repositoryKey,
-        taskId: task.id,
+        task,
         operationClass: valid.action.operationClass,
-        contentRevision,
         provenance: {
           source: "factory-guarded-action",
           surface: "factory-ui",
@@ -529,7 +549,7 @@ export function createTasksActionExecutor(options: TasksActionExecutorOptions) {
     } catch (error) {
       return actionError("conflict", `Could not record the Tasks approval: ${errorMessage(error)}`, valid.idempotencyKey);
     }
-    return actionSuccess(approvalOutcome(valid, "accepted", contentRevision), null);
+    return actionSuccess(approvalOutcome(valid, grant.alreadyApplied ? "already-applied" : "accepted", grant.contentRevision), null);
   }
 
   return { execute };

@@ -157,7 +157,7 @@ describe("native Tasks migration projection", () => {
   it("imports queue and questions idempotently by the embedded dashboard id", async () => {
     const files = new FakeFileSystem();
     files.seedProtocol({
-      "plans/factory/queue.md": `# Queue\n\n## T1 Imported task\nstatus: ready\npriority: 2\ndepends_on: none\nrisk: low\nplan: plans/factory/plan.md\napproved: none\nacceptance:\n- works\nvalidate:\n- pnpm test\nnotes: none\n`,
+      "plans/factory/queue.md": `# Queue\n\n## T1 Imported task\nstatus: ready\npriority: 2\ndepends_on: none\nrisk: low\nplan: plans/factory/plan.md\napproved: Human approval\nacceptance:\n- works\nvalidate:\n- pnpm test\nnotes: none\n`,
       "plans/factory/questions.md": `# Questions\n\n## Q1 2026-09-21 blocking T1\nquestion: Which provider?\ncontext: Choose one.\nanswer:\n`,
     });
     const tasks: TasksTask[] = [];
@@ -181,6 +181,15 @@ describe("native Tasks migration projection", () => {
     expect(tasks).toHaveLength(1);
     expect(store.getTasksBlocker("factory:monorepo:question:Q1")).toMatchObject({ taskId: tasks[0]!.id, state: "open" });
     expect(tasks[0]!.description).toContain("Which provider?");
+    expect(store.listTasksApprovals("monorepo", tasks[0]!.id)).toMatchObject([{
+      taskId: tasks[0]!.id,
+      operationClass: "execute",
+      contentRevision: deriveTasksContentRevision(tasks[0]!),
+      provenance: {
+        source: "imported-from-markdown-approval",
+        approvedText: "Human approval",
+      },
+    }]);
     await expect(executor.execute(request)).resolves.toMatchObject({ ok: true, result: { status: "already-applied" } });
     expect(tasks).toHaveLength(1);
     expect(store.listTasksBlockers("monorepo")).toHaveLength(1);

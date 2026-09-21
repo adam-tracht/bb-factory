@@ -1068,7 +1068,7 @@ async function reconcileTasksTerminalRun(
   const terminalAttempt = [...detail.attempts].reverse().find((attempt) =>
     attempt.runId === run.runId && ACTIVE_ATTEMPT_STATUSES.includes(attempt.status as typeof ACTIVE_ATTEMPT_STATUSES[number]),
   );
-  finalizeRun(ctx, detail, {
+  const finalized = finalizeRun(ctx, detail, {
     ...finalizationInput(
       run,
       revision,
@@ -1085,8 +1085,18 @@ async function reconcileTasksTerminalRun(
     expectedLeaseId: detail.lease?.leaseId ?? null,
     expectedLeaseStatus: detail.lease?.status,
   });
+  if (finalized && status === "completed") {
+    try {
+      const result = await ctx.tasksClient.updateTask({ taskId: run.taskId, status: "done" });
+      if (!result.ok) {
+        ctx.log?.(`run ${run.runId}: settlement completed but Tasks card could not move to done: ${result.error.message}`);
+      }
+    } catch (error) {
+      ctx.log?.(`run ${run.runId}: settlement completed but Tasks card could not move to done: ${errorMessage(error)}`);
+    }
+  }
   ctx.log?.(`run ${run.runId}: structured Tasks settlement accepted on ${threadStatus}`);
-  return true;
+  return finalized;
 }
 
 async function reconcileStartedRun(ctx: DispatchContext, detail: OperationalRunDetail): Promise<void> {
