@@ -3,8 +3,6 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 
 const TASKS_PLUGIN_ID = "tasks";
-const TASKS_PAGE_LIMIT = 500;
-const TASKS_STALE_RESTARTS = 1;
 
 export const tasksIntegrationModeSchema = z.enum(["disabled", "enabled"]);
 export type TasksIntegrationMode = z.infer<typeof tasksIntegrationModeSchema>;
@@ -50,14 +48,6 @@ export const tasksTaskSchema = z
   })
   .passthrough();
 
-export const tasksPresetSchema = z
-  .object({
-    id: z.string().min(1),
-    name: z.string(),
-    instructions: z.string(),
-  })
-  .passthrough();
-
 export const tasksTaskThreadSchema = z
   .object({
     threadId: z.string().min(1),
@@ -82,19 +72,7 @@ export const tasksCommentSchema = z
   })
   .passthrough();
 
-export const tasksLabelSchema = z
-  .object({
-    id: z.string().min(1),
-    name: z.string(),
-    color: z.string(),
-  })
-  .passthrough();
-
 const tasksProjectListSchema = z.object({ projects: z.array(tasksProjectSchema) }).passthrough();
-const tasksListSchema = z
-  .object({ tasks: z.array(tasksTaskSchema), nextCursor: z.string().nullable() })
-  .passthrough();
-const tasksPresetListSchema = z.object({ presets: z.array(tasksPresetSchema) }).passthrough();
 const tasksThreadListSchema = z.object({ taskThreads: z.array(tasksTaskThreadSchema) }).passthrough();
 const tasksBbProjectListSchema = z
   .object({
@@ -103,23 +81,14 @@ const tasksBbProjectListSchema = z
   .passthrough();
 const tasksGetTaskSchema = z.object({ task: tasksTaskSchema.nullable() }).passthrough();
 const tasksCommentListSchema = z.object({ comments: z.array(tasksCommentSchema) }).passthrough();
-const tasksLabelListSchema = z.object({ labels: z.array(tasksLabelSchema) }).passthrough();
 const tasksDomainErrorSchema = z.object({ code: z.string().min(1), message: z.string() }).passthrough();
 const tasksMutationSchema = z.discriminatedUnion("ok", [
   z.object({ ok: z.literal(true), task: tasksTaskSchema }).passthrough(),
   z.object({ ok: z.literal(false), error: tasksDomainErrorSchema }).passthrough(),
 ]);
-const tasksProjectResultSchema = z.union([
-  tasksProjectSchema,
-  z.object({ project: tasksProjectSchema }).passthrough(),
-]);
 const tasksCommentResultSchema = z.union([
   tasksCommentSchema,
   z.object({ comment: tasksCommentSchema }).passthrough(),
-]);
-const tasksLabelResultSchema = z.union([
-  tasksLabelSchema,
-  z.object({ label: tasksLabelSchema }).passthrough(),
 ]);
 const tasksDeleteResultSchema = z
   .object({ ok: z.boolean(), error: tasksDomainErrorSchema.optional() })
@@ -127,10 +96,8 @@ const tasksDeleteResultSchema = z
 
 export type TasksProject = z.infer<typeof tasksProjectSchema>;
 export type TasksTask = z.infer<typeof tasksTaskSchema>;
-export type TasksPreset = z.infer<typeof tasksPresetSchema>;
 export type TasksTaskThread = z.infer<typeof tasksTaskThreadSchema>;
 export type TasksComment = z.infer<typeof tasksCommentSchema>;
-export type TasksLabel = z.infer<typeof tasksLabelSchema>;
 export type TasksMutationResult = z.infer<typeof tasksMutationSchema>;
 export type TasksTaskStatus = z.infer<typeof taskStatusSchema>;
 export type TasksWorkStatus = Exclude<TasksTaskStatus, "canceled">;
@@ -166,30 +133,6 @@ export function deriveTasksContentRevision(
   return createHash("sha256").update(JSON.stringify(content), "utf8").digest("hex");
 }
 
-export interface TasksListFilters {
-  readonly projectId?: string;
-  readonly statuses?: readonly TasksTaskStatus[];
-  readonly parentTaskId?: string | null;
-  readonly activeOnly?: boolean;
-  readonly limit?: number;
-  readonly cursor?: string;
-}
-
-export interface TasksCreateProjectInput {
-  readonly name: string;
-  readonly prefix?: string;
-  readonly color?: string;
-  readonly linkedBbProjectId?: string | null;
-}
-
-export interface TasksUpdateProjectInput {
-  readonly projectId: string;
-  readonly name?: string;
-  readonly prefix?: string;
-  readonly color?: string;
-  readonly linkedBbProjectId?: string | null;
-}
-
 export interface TasksCreateInput {
   readonly projectId: string;
   readonly title: string;
@@ -215,17 +158,6 @@ export interface TasksUpdateInput {
 export interface TasksCreateCommentInput {
   readonly taskId: string;
   readonly body: string;
-}
-
-export interface TasksCreateLabelInput {
-  readonly name: string;
-  readonly color: string;
-}
-
-export interface TasksUpdateLabelInput {
-  readonly labelId: string;
-  readonly name?: string;
-  readonly color?: string;
 }
 
 export type TasksIntegrationErrorCode =
@@ -279,11 +211,22 @@ function errorText(error: unknown): string {
   return parts.join(" ");
 }
 
-function isStaleCursorError(error: unknown): boolean {
-  const text = errorText(error).toLowerCase();
-  return text.includes("stale_cursor")
-    || text.includes("task-list data changed after this cursor")
-    || (text.includes("cursor") && text.includes("restart pagination"));
+function hasHttpStatus(error: unknown, status: number, detail: string): boolean {
+  if (new RegExp(`\\bHTTP\\s+${status}\\b`, "i").test(detail)) return true;
+  const pending: unknown[] = [error];
+  const visited = new Set<unknown>();
+  while (pending.length > 0) {
+    const current = pending.shift();
+    if (current === undefined || current === null || visited.has(current)) continue;
+    visited.add(current);
+    if (typeof current === "object") {
+      const value = current as { status?: unknown; statusCode?: unknown; body?: unknown; error?: unknown; cause?: unknown };
+      if (value.status === status || value.statusCode === status) return true;
+      if (String(value.status ?? "") === String(status) || String(value.statusCode ?? "") === String(status)) return true;
+      pending.push(value.body, value.error, value.cause);
+    }
+  }
+  return false;
 }
 
 function classifyRpcFailure(method: string, error: unknown): TasksIntegrationError {
@@ -297,21 +240,21 @@ function classifyRpcFailure(method: string, error: unknown): TasksIntegrationErr
   }
   const detail = errorText(error);
   const lower = detail.toLowerCase();
-  if (lower.includes("unknown_method")
-    || lower.includes("unknown method")
-    || lower.includes("method not found")
-    || lower.includes("plugin not found")
-    || lower.includes("not installed")
-    || lower.includes("not running")
-    || lower.includes("disabled")
-    || lower.includes("404")) {
+  const unknownRpcMethod = hasHttpStatus(error, 404, detail) && lower.includes("no rpc method");
+  const pluginUnavailable = /\bplugin(?:\s+is)?\s+(?:not found|not running|disabled)\b/i.test(detail);
+  if (unknownRpcMethod || pluginUnavailable) {
     return new TasksIntegrationError(
       "tasks_unavailable",
       `Tasks ${method} is unavailable. Enable a compatible Tasks plugin and refresh Factory. ${detail}`.trim(),
       { cause: error },
     );
   }
-  if (lower.includes("invalid_output") || lower.includes("output validation") || lower.includes("contract") || lower.includes("400")) {
+  const rpcInputValidation = hasHttpStatus(error, 400, detail) && lower.includes("rpc input validation");
+  if (rpcInputValidation
+    || lower.includes("invalid_output")
+    || lower.includes("output validation")
+    || lower.includes("contract")
+    || lower.includes("zod")) {
     return new TasksIntegrationError(
       "tasks_contract_incompatible",
       `Tasks ${method} is incompatible with this Factory build. Update Tasks and Factory, then refresh. ${detail}`.trim(),
@@ -325,11 +268,9 @@ function classifyRpcFailure(method: string, error: unknown): TasksIntegrationErr
   );
 }
 
-function unwrap<T extends TasksProject | TasksComment | TasksLabel>(value: T | { project: T } | { comment: T } | { label: T }): T {
-  if ("project" in value) return value.project as T;
-  if ("comment" in value) return value.comment as T;
-  if ("label" in value) return value.label as T;
-  return value;
+function unwrap<T extends TasksComment>(value: T | { comment: T }): T {
+  if ("comment" in value) return (value as { comment: T }).comment;
+  return value as T;
 }
 
 function optionalFields(input: Record<string, unknown>): Record<string, JsonValue> {
@@ -366,49 +307,13 @@ export class TasksClient {
     }
   }
 
+  /** Health probe only. Project management stays deferred to cutover. */
   public async listProjects(): Promise<TasksProject[]> {
     return (await this.call("listProjects", {}, tasksProjectListSchema)).projects;
   }
 
-  public async createProject(input: TasksCreateProjectInput): Promise<TasksProject> {
-    const output = await this.call(
-      "createProject",
-      optionalFields({
-        name: input.name,
-        prefix: input.prefix,
-        color: input.color,
-        linkedBbProjectId: input.linkedBbProjectId,
-      }),
-      tasksProjectResultSchema,
-    );
-    return unwrap(output);
-  }
-
-  public async updateProject(input: TasksUpdateProjectInput): Promise<TasksProject> {
-    const output = await this.call(
-      "updateProject",
-      optionalFields({
-        projectId: input.projectId,
-        name: input.name,
-        prefix: input.prefix,
-        color: input.color,
-        linkedBbProjectId: input.linkedBbProjectId,
-      }),
-      tasksProjectResultSchema,
-    );
-    return unwrap(output);
-  }
-
-  public async linkProjectToBbProject(projectId: string, bbProjectId: string): Promise<TasksProject> {
-    return this.updateProject({ projectId, linkedBbProjectId: bbProjectId });
-  }
-
   public async listBbProjects(): Promise<Array<{ id: string; name: string }>> {
     return (await this.call("listBbProjects", null, tasksBbProjectListSchema)).bbProjects;
-  }
-
-  public async listPresets(): Promise<TasksPreset[]> {
-    return (await this.call("listPresets", null, tasksPresetListSchema)).presets;
   }
 
   public async listTaskThreads(taskId: string): Promise<TasksTaskThread[]> {
@@ -421,54 +326,6 @@ export class TasksClient {
 
   public async getTaskByKey(taskKey: string): Promise<TasksTask | null> {
     return (await this.call("getTaskByKey", { taskKey }, tasksGetTaskSchema)).task;
-  }
-
-  public async listTasks(filters: TasksListFilters = {}): Promise<z.infer<typeof tasksListSchema>> {
-    return this.call(
-      "listTasks",
-      optionalFields({
-        ...(filters.projectId === undefined ? {} : { projectId: filters.projectId }),
-        ...(filters.statuses === undefined ? {} : { statuses: [...filters.statuses] }),
-        ...(filters.parentTaskId === undefined ? {} : { parentTaskId: filters.parentTaskId }),
-        ...(filters.activeOnly === undefined ? {} : { activeOnly: filters.activeOnly }),
-        sort: "manual",
-        limit: filters.limit ?? TASKS_PAGE_LIMIT,
-        cursor: filters.cursor,
-      }),
-      tasksListSchema,
-    );
-  }
-
-  public async listAllTasks(filters: Omit<TasksListFilters, "cursor" | "limit"> = {}): Promise<TasksTask[]> {
-    for (let restart = 0; restart <= TASKS_STALE_RESTARTS; restart += 1) {
-      const tasks: TasksTask[] = [];
-      const seenCursors = new Set<string>();
-      let cursor: string | undefined;
-      try {
-        do {
-          const page = await this.listTasks({ ...filters, cursor });
-          tasks.push(...page.tasks);
-          if (page.nextCursor === null) return tasks;
-          if (seenCursors.has(page.nextCursor)) {
-            throw new TasksIntegrationError(
-              "tasks_contract_incompatible",
-              "Tasks listTasks repeated a pagination cursor. Update Tasks and Factory, then refresh.",
-            );
-          }
-          seenCursors.add(page.nextCursor);
-          cursor = page.nextCursor;
-        } while (cursor !== undefined);
-      } catch (error) {
-        if (!isStaleCursorError(error)) throw error;
-        if (restart < TASKS_STALE_RESTARTS) continue;
-        throw new TasksIntegrationError(
-          "tasks_pagination_unstable",
-          "Tasks changed repeatedly while Factory was loading pages. Wait for active task edits to settle, then refresh.",
-          { cause: error },
-        );
-      }
-    }
-    throw new TasksIntegrationError("tasks_pagination_unstable", "Tasks pagination could not settle. Refresh Factory to try again.");
   }
 
   public async createTask(input: TasksCreateInput): Promise<TasksMutationResult> {
@@ -515,22 +372,6 @@ export class TasksClient {
 
   public async listComments(taskId: string): Promise<TasksComment[]> {
     return (await this.call("listComments", { taskId }, tasksCommentListSchema)).comments;
-  }
-
-  public async createLabel(input: TasksCreateLabelInput): Promise<TasksLabel> {
-    return unwrap(await this.call("createLabel", { name: input.name, color: input.color }, tasksLabelResultSchema));
-  }
-
-  public async updateLabel(input: TasksUpdateLabelInput): Promise<TasksLabel> {
-    return unwrap(await this.call(
-      "updateLabel",
-      optionalFields({ id: input.labelId, name: input.name, color: input.color }),
-      tasksLabelResultSchema,
-    ));
-  }
-
-  public async listLabels(): Promise<TasksLabel[]> {
-    return (await this.call("listLabels", null, tasksLabelListSchema)).labels;
   }
 }
 

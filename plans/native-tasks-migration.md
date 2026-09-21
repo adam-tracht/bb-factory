@@ -34,8 +34,8 @@
 
 - ✅ **Tasks adapter behind a setting** — narrow port in the contract layer; the current direct-spawn path stays default; the tasks implementation uses validated cross-plugin RPC. Lands in: src/contracts.ts, new src/tasks adapter.
   Implementation note: Added the disabled-by-default `tasksIntegration` setting and tolerant, injected `TasksClient` in `src/tasks/index.ts`; frozen v1.2 factory contracts remain unchanged.
-- ✅ **Immutable approval records** — approvals keyed to task id plus operation class plus content revision; a material task edit invalidates the grant. A card move or plain human comment initiates; factory records the grant. Replaces `approved:` syntax. Lands in: src/storage, src/actions.
-  Implementation note: Added append-only, repository-scoped approval records plus guarded `approve-task` wiring; the adapter hashes title, description, dueDate, label ids, and parentTaskId, while status and comments remain outside the fence.
+- ✅ **Immutable approval records**: approvals keyed to task id plus operation class plus content revision; a material task edit invalidates the grant. Card moves and plain human comments do not initiate grants; Factory records them. Replaces `approved:` syntax. Lands in: src/storage, src/actions.
+  Implementation note: Added repository-scoped approval records with SQL append-only triggers plus guarded `approve-task` wiring; the adapter hashes title, description, dueDate, label ids, and parentTaskId, while status and comments remain outside the fence.
 - ✅ **Dependency and blocker edges** — explicit task-id edges in factory storage; Tasks labels and parent/child are display only. Lands in: src/storage.
   Implementation note: Added repository-scoped dependency edges with recursive cycle rejection and typed blocker records with answer/resolution timestamps in `src/storage/index.ts`.
 - ✅ **Availability degradation** — tasks disabled, unavailable, or contract-incompatible produces a visible health state and pauses dispatch rather than failing silently. Lands in: src/lifecycle, health surfaces.

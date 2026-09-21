@@ -5,7 +5,12 @@ import {
   createTasksActionExecutor,
   hasCurrentTasksApproval,
 } from "../src/actions/tasks.js";
-import { TasksClient, type TasksRpcCall, type TasksTask } from "../src/tasks/index.js";
+import {
+  deriveTasksContentRevision,
+  TasksClient,
+  type TasksRpcCall,
+  type TasksTask,
+} from "../src/tasks/index.js";
 import {
   cleanupStorages,
   makeConfiguration,
@@ -15,7 +20,7 @@ import {
 afterEach(cleanupStorages);
 
 describe("Tasks approval action", () => {
-  it("fences bound content while ignoring status and comments", async () => {
+  it("fences every bound field while ignoring normalized and excluded changes", async () => {
     let task: TasksTask = {
       id: "task-1",
       projectId: "project-1",
@@ -29,6 +34,7 @@ describe("Tasks approval action", () => {
       parentTaskId: null,
       position: 1,
     };
+    const baseTask = { ...task };
     const tasksClient = new TasksClient((async ({ method }: Parameters<TasksRpcCall>[0]) => {
       if (method === "getTask") return { task };
       if (method === "createComment") {
@@ -60,30 +66,50 @@ describe("Tasks approval action", () => {
       ok: true,
       result: { status: "accepted", action: "approve-task", taskId: task.id },
     });
-    await expect(hasCurrentTasksApproval(tasksClient, store, {
+    const hasCurrentApproval = () => hasCurrentTasksApproval(tasksClient, store, {
       repositoryKey: "monorepo",
       taskId: task.id,
       operationClass: "execute",
-    })).resolves.toBe(true);
+    });
+    await expect(hasCurrentApproval()).resolves.toBe(true);
 
-    task = { ...task, title: "Ship the changed migration" };
-    await expect(hasCurrentTasksApproval(tasksClient, store, {
-      repositoryKey: "monorepo",
-      taskId: task.id,
-      operationClass: "execute",
-    })).resolves.toBe(false);
+    const expectBoundChangeToInvalidate = async (
+      change: Partial<Pick<TasksTask, "title" | "description" | "dueDate" | "labelIds" | "parentTaskId">>,
+    ) => {
+      task = { ...baseTask, ...change };
+      await expect(hasCurrentApproval()).resolves.toBe(false);
+      task = { ...baseTask };
+      await expect(hasCurrentApproval()).resolves.toBe(true);
+    };
 
-    task = { ...task, title: "Ship the migration", status: "done" };
-    await expect(hasCurrentTasksApproval(tasksClient, store, {
-      repositoryKey: "monorepo",
-      taskId: task.id,
-      operationClass: "execute",
-    })).resolves.toBe(true);
+    await expectBoundChangeToInvalidate({ title: "Ship the changed migration" });
+    await expectBoundChangeToInvalidate({ description: "A changed implementation scope." });
+    await expectBoundChangeToInvalidate({ dueDate: "2026-10-01" });
+    await expectBoundChangeToInvalidate({ labelIds: ["label-c"] });
+    await expectBoundChangeToInvalidate({ parentTaskId: "task-parent" });
+
+    task = { ...baseTask, labelIds: ["label-b", "label-a"] };
+    await expect(hasCurrentApproval()).resolves.toBe(true);
+
+    const missingOptionalFields = {
+      title: baseTask.title,
+      dueDate: baseTask.dueDate,
+      parentTaskId: baseTask.parentTaskId,
+    };
+    expect(deriveTasksContentRevision(missingOptionalFields)).toBe(deriveTasksContentRevision({
+      ...missingOptionalFields,
+      description: undefined,
+      labelIds: undefined,
+    }));
+
     await tasksClient.createComment({ taskId: task.id, body: "Progress update" });
-    await expect(hasCurrentTasksApproval(tasksClient, store, {
-      repositoryKey: "monorepo",
-      taskId: task.id,
-      operationClass: "execute",
-    })).resolves.toBe(true);
+    task = {
+      ...baseTask,
+      status: "done",
+      priority: "urgent",
+      updatedAt: "2026-09-21T17:00:00Z",
+      comments: [{ id: "comment-1", body: "Progress update" }],
+    };
+    await expect(hasCurrentApproval()).resolves.toBe(true);
   });
 });

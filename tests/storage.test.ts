@@ -806,6 +806,15 @@ describe("operational SQLite storage", () => {
     expect(store.db.prepare<[], { count: number }>(
       "SELECT COUNT(*) AS count FROM tasks_approval_records",
     ).get()?.count).toBe(1);
+    expect(store.db.prepare<[], { name: string }>(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'tasks_approval_lookup'",
+    ).get()).toBeUndefined();
+    expect(() => store.db.prepare(
+      "UPDATE tasks_approval_records SET content_revision = ? WHERE approval_id = ?",
+    ).run("rev-2", "approval-1")).toThrow("tasks approval records are append-only");
+    expect(() => store.db.prepare(
+      "DELETE FROM tasks_approval_records WHERE approval_id = ?",
+    ).run("approval-1")).toThrow("tasks approval records are append-only");
 
     store.createTasksDependencyEdge({
       repositoryKey: "monorepo",

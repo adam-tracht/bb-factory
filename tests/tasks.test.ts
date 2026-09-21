@@ -48,10 +48,25 @@ describe("Tasks adapter", () => {
     }));
   });
 
-  it("classifies unavailable and incompatible RPC failures", async () => {
-    const unavailableRpc = vi.fn().mockRejectedValue(new Error("HTTP 404 unknown method"));
+  it("classifies only anchored unavailable and incompatible RPC failures", async () => {
+    const unavailableRpc = vi.fn().mockRejectedValue(new Error("HTTP 404 no rpc method: listProjects"));
     const unavailableClient = new TasksClient(unavailableRpc as never);
     await expect(unavailableClient.listProjects()).rejects.toMatchObject({
+      code: "tasks_unavailable",
+    });
+
+    const inputValidationRpc = vi.fn().mockRejectedValue({
+      status: 400,
+      body: { message: "rpc input validation: expected an object" },
+    });
+    const inputValidationClient = new TasksClient(inputValidationRpc as never);
+    await expect(inputValidationClient.getTask("task-1")).rejects.toMatchObject({
+      code: "tasks_contract_incompatible",
+    });
+
+    const pluginUnavailableRpc = vi.fn().mockRejectedValue(new Error("Tasks plugin not running"));
+    const pluginUnavailableClient = new TasksClient(pluginUnavailableRpc as never);
+    await expect(pluginUnavailableClient.listProjects()).rejects.toMatchObject({
       code: "tasks_unavailable",
     });
 
@@ -60,20 +75,12 @@ describe("Tasks adapter", () => {
     await expect(incompatibleClient.listProjects()).rejects.toMatchObject({
       code: "tasks_contract_incompatible",
     });
-  });
 
-  it("classifies repeated stale pagination as unstable", async () => {
-    const callRpc = vi.fn()
-      .mockResolvedValueOnce({ tasks: [], nextCursor: "cursor-1" })
-      .mockRejectedValueOnce(new Error("stale_cursor"))
-      .mockResolvedValueOnce({ tasks: [], nextCursor: "cursor-1" })
-      .mockRejectedValueOnce(new Error("stale_cursor"));
-    const client = new TasksClient(callRpc as never);
-
-    await expect(client.listAllTasks()).rejects.toMatchObject({
-      code: "tasks_pagination_unstable",
+    const taskIdWith404Rpc = vi.fn().mockRejectedValue(new Error("failed to load task task-404"));
+    const taskIdWith404Client = new TasksClient(taskIdWith404Rpc as never);
+    await expect(taskIdWith404Client.getTask("task-404")).rejects.toMatchObject({
+      code: "tasks_rpc_failed",
     });
-    expect(callRpc).toHaveBeenCalledTimes(4);
   });
 
   it("reports an available Tasks plugin through the health probe", async () => {

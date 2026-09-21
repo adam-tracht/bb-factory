@@ -450,6 +450,18 @@ export const OPERATIONAL_STORAGE_MIGRATIONS = [
   )`,
   `CREATE INDEX tasks_blocker_lookup
     ON tasks_blocker_records(repository_key, task_id, state)`,
+  // The approval table's UNIQUE constraint already supplies this lookup.
+  `DROP INDEX IF EXISTS tasks_approval_lookup`,
+  `CREATE TRIGGER tasks_approval_records_no_update
+    BEFORE UPDATE ON tasks_approval_records
+    BEGIN
+      SELECT RAISE(ABORT, 'tasks approval records are append-only');
+    END`,
+  `CREATE TRIGGER tasks_approval_records_no_delete
+    BEFORE DELETE ON tasks_approval_records
+    BEGIN
+      SELECT RAISE(ABORT, 'tasks approval records are append-only');
+    END`,
 ] as const;
 
 const tasksOperationClassSchema = z.string().trim().min(1).max(128);
