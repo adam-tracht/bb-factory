@@ -72,6 +72,7 @@ export function tasksWorkerPrompt(taskKey: string): string {
   return [
     "Factory run. Read plans/factory/foreman.md first, then plans/factory/repo.md, and execute one run following the protocol. Your thread id is in $BB_THREAD_ID.",
     "",
+    "In Tasks mode, in_review is the worker status ceiling. Never set this card to done; Factory moves it to done only after settlement verification.",
     `This run is tracked by Tasks card ${taskKey}. Before doing work, run: bb tasks attach ${taskKey}`,
     `Then report start with: bb tasks update ${taskKey} --status in_progress`,
     `Report material progress with: bb tasks comment ${taskKey} --body "<progress>"`,

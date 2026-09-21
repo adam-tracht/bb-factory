@@ -317,6 +317,7 @@ describe("dispatch engine", () => {
     expect(harness.threads.spawnCalls[0]?.prompt).toContain("bb tasks attach MONOREPO-1");
     expect(harness.threads.spawnCalls[0]?.prompt).toContain("--status in_progress");
     expect(harness.threads.spawnCalls[0]?.prompt).toContain("--status in_review");
+    expect(harness.threads.spawnCalls[0]?.prompt).toContain("Never set this card to done");
   });
 
   it("reuses an existing Tasks card carrying the run id instead of creating a second card", async () => {
