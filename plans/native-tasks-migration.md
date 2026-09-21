@@ -44,7 +44,7 @@
 ## Phase 2: Execution substrate (high/high/M)
 
 - ✅ **Attach through the outbox:** Phase 2 creates or reuses a linked tracker project and run card, persists its task id on the run and attempt, and prompts the worker to self-attach after the durable intent is fenced.
-- ✅ **Settlement on structured signals:** Phase 2 records the attached task thread live status and settles only when the BB thread is terminal, the task is in review, the repository commit changed, and the current generation still owns the lease.
+- ✅ **Settlement on structured signals:** Phase 2 records the attached task thread live status and settles only when the BB thread is terminal, the task is in review, the repository commit changed, and the current generation still owns the lease; stale generation or lease evidence is reconciled conservatively.
 - ✅ **Simplified worker protocol:** Phase 2 adds Tasks attach, progress comments, result comments, and in-review reporting while retaining the markdown run record only as an audit artifact.
 - ✅ **Per-repo fault containment:** Phase 2 scopes active capacity checks by repository only when Tasks integration is enabled, preserves the disabled global limit, and covers the stuck-repository starvation regression.
 

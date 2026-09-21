@@ -840,7 +840,6 @@ export interface OperationalStateStore extends OperationalStateReader {
   withTransaction<T>(callback: (transaction: OperationalTransaction) => T): T;
   createRunIntent(input: CreateRunIntentInput): CreateRunIntentResult;
   updateRunDispatch(input: RunDispatchUpdate): void;
-  updateRunTaskId(runId: string, taskId: string): void;
   createDispatchAttempt(attempt: DispatchAttempt): void;
   updateDispatchAttempt(attempt: DispatchAttempt): void;
   createOwnershipLease(lease: OwnershipLease): void;
@@ -1082,10 +1081,6 @@ class OperationalSqliteStore implements OperationalStateStore {
 
   updateRunDispatch(input: RunDispatchUpdate): void {
     this.withTransaction((transaction) => transaction.updateRunDispatch(input));
-  }
-
-  updateRunTaskId(runId: string, taskId: string): void {
-    this.withTransaction((transaction) => transaction.updateRunTaskId(runId, taskId));
   }
 
   createDispatchAttempt(attempt: DispatchAttempt): void {

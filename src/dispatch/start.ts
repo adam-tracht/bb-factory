@@ -59,6 +59,22 @@ function noSpawn(
   return { result, runId: null, leaseId: null };
 }
 
+function sameCanonicalRecords(
+  left: readonly CanonicalFileRecordLink[],
+  right: readonly CanonicalFileRecordLink[],
+  tasksMode: boolean,
+): boolean {
+  if (!tasksMode) return sameJson(left, right);
+  return left.length === right.length && left.every((record, index) => {
+    const candidate = right[index];
+    return candidate !== undefined
+      && record.relativePath === candidate.relativePath
+      && record.recordType === candidate.recordType
+      && record.recordId === candidate.recordId
+      && sameRevision(record.repositoryRevision, candidate.repositoryRevision);
+  });
+}
+
 function ownsPendingSpawnGeneration(
   transaction: OperationalTransaction,
   generation: {
@@ -96,7 +112,7 @@ function ownsPendingSpawnGeneration(
     && run.projectId === generation.projectId
     && run.environmentId === generation.environmentId
     && sameRevision(run.repositoryRevision, generation.repositoryRevision)
-    && sameJson(run.canonicalRecords, generation.canonicalRecords)
+    && sameCanonicalRecords(run.canonicalRecords, generation.canonicalRecords, generation.taskId !== null)
     && sameJson(run.queueItemIds, generation.queueItemIds)
     && attempt?.attemptId === generation.attemptId
     && attempt.runId === generation.runId
@@ -134,6 +150,7 @@ async function quarantineLateSpawn(
     readonly canonicalRecords: readonly CanonicalFileRecordLink[];
     readonly queueItemIds: readonly string[];
     readonly leaseAuthorizationProvenance: readonly string[];
+    readonly taskId?: string | null;
     readonly projectId: string;
     readonly environmentId: string | null;
     readonly acquiredAt: string;
@@ -173,7 +190,7 @@ async function quarantineLateSpawn(
         || currentRun.requestedAt !== input.requestedAt
         || currentRun.startedAt !== null
         || !sameRevision(currentRun.repositoryRevision, input.repositoryRevision)
-        || !sameJson(currentRun.canonicalRecords, input.canonicalRecords)
+        || !sameCanonicalRecords(currentRun.canonicalRecords, input.canonicalRecords, input.taskId !== undefined && input.taskId !== null)
         || !sameJson(currentRun.queueItemIds, input.queueItemIds)
         || !attempt
         || attempt.runId !== input.runId
@@ -235,7 +252,7 @@ async function quarantineLateSpawn(
       && (currentRun.projectId === input.projectId || currentRun.projectId === "unknown")
       && (currentRun.environmentId === input.environmentId || currentRun.environmentId === null)
       && sameRevision(currentRun.repositoryRevision, input.repositoryRevision)
-      && sameJson(currentRun.canonicalRecords, input.canonicalRecords)
+      && sameCanonicalRecords(currentRun.canonicalRecords, input.canonicalRecords, input.taskId !== undefined && input.taskId !== null)
       && sameJson(currentRun.queueItemIds, input.queueItemIds)
       && currentAttempt !== null
       && currentAttempt.attemptId === input.attemptId
@@ -695,6 +712,7 @@ export async function startRun(ctx: DispatchContext, input: StartRunInput): Prom
       canonicalRecords,
       queueItemIds: intent.queueItemIds,
       leaseAuthorizationProvenance: intent.queueItemIds,
+      taskId: tasksRunCard?.taskId ?? null,
       projectId: entry.projectId,
       environmentId: entry.environmentId ?? null,
       acquiredAt: requestedAt,

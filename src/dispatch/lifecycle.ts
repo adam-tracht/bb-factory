@@ -987,7 +987,10 @@ function recordTasksLiveStatus(
   return ctx.store.withTransaction((transaction) => {
     const currentRun = transaction.getRunSummary(detail.summary.runId);
     const currentAttempt = transaction.getActiveAttempt(detail.summary.runId);
-    if (!sameRunGeneration(currentRun, detail.summary) || !sameAttemptGeneration(currentAttempt, expectedAttempt)) return false;
+    const currentLease = transaction.getLeaseForRun(detail.summary.runId);
+    if (!sameRunGeneration(currentRun, detail.summary)
+      || !sameAttemptGeneration(currentAttempt, expectedAttempt)
+      || !sameLeaseGeneration(currentLease, detail.lease)) return false;
     if (currentAttempt === null) return false;
     transaction.updateDispatchAttempt({ ...currentAttempt, tasksLiveStatus: liveStatus });
     return true;
@@ -1036,6 +1039,10 @@ async function reconcileTasksTerminalRun(
     return false;
   }
   if (!recordTasksLiveStatus(ctx, detail, liveStatus)) {
+    const current = (await ctx.store.getRun({ repositoryKey: run.repositoryKey, runId: run.runId })).run;
+    if (current) {
+      markRunForReconciliation(ctx, current, "Tasks settlement evidence generation changed before status recording");
+    }
     ctx.log?.(`run ${run.runId}: ignored stale Tasks live status for generation ${activeAttemptId(detail) ?? "unknown"}`);
     return false;
   }

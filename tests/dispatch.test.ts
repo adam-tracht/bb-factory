@@ -4,10 +4,11 @@ import { PROTOCOL_PATHS } from "../src/protocol/paths.js";
 import { digestText } from "../src/protocol/files.js";
 import { createDispatchEngine } from "../src/dispatch/index.js";
 import { selectProvider } from "../src/dispatch/preflight.js";
+import { ensureTasksRunCard } from "../src/dispatch/tasks.js";
 import { schedulerTick, cronMatches } from "../src/schedule/index.js";
 import { QUARANTINE_ABANDONMENT_GRACE_MS, RECONCILIATION_GRACE_MS } from "../src/dispatch/types.js";
 import type { DispatchContext } from "../src/dispatch/types.js";
-import type { TasksClient } from "../src/tasks/index.js";
+import type { TasksClient, TasksTask, TasksTaskThread } from "../src/tasks/index.js";
 import {
   CHECKOUT,
   FakeFileSystem,
@@ -195,13 +196,20 @@ const MANUAL_REQUEST = {
 };
 
 describe("dispatch engine", () => {
-  function makeTasksClient() {
+  interface TasksClientOptions {
+    readonly taskStatus?: TasksTask["status"];
+    readonly liveStatus?: TasksTaskThread["liveStatus"];
+    readonly taskThreads?: readonly TasksTaskThread[];
+    readonly onGetTask?: () => void;
+  }
+
+  function makeTasksClient(options: TasksClientOptions = {}) {
     const task = {
       id: "task-1",
       projectId: "tasks-project-1",
       key: "MONOREPO-1",
       title: "Sample task",
-      status: "in_review" as const,
+      status: options.taskStatus ?? "in_review",
       priority: "medium" as const,
       description: "Factory run card",
       dueDate: null,
@@ -224,12 +232,15 @@ describe("dispatch engine", () => {
         calls.createTask.push(input);
         return { ok: true as const, task };
       },
-      getTask: async () => task,
-      listTaskThreads: async () => [{
+      getTask: async () => {
+        options.onGetTask?.();
+        return task;
+      },
+      listTaskThreads: async () => options.taskThreads ?? [{
         threadId: "thread-1",
         presetName: "factory",
         title: task.title,
-        liveStatus: "idle" as const,
+        liveStatus: options.liveStatus ?? "idle",
       }],
     } as unknown as TasksClient;
     return { client, calls };
@@ -242,6 +253,37 @@ describe("dispatch engine", () => {
       .replace("approved: none", "approved: task scope");
     harness.files.put(queuePath, queue);
     harness.files.put(`${CHECKOUT}/plans/factory/questions.md`, "# Questions\n");
+  }
+
+  async function reconcileTasksCase(options: TasksClientOptions = {}) {
+    const harness = makeHarness();
+    makeTasksReady(harness);
+    const tasks = makeTasksClient(options);
+    const before = (await harness.ctx.protocolReader.loadSnapshot(harness.entry.configuration)).revision;
+    const ctx: DispatchContext = {
+      ...harness.ctx,
+      tasksIntegration: "enabled",
+      tasksClient: tasks.client,
+      protocolReader: {
+        loadSnapshot: (configuration) => harness.ctx.protocolReader.loadSnapshot(configuration),
+        loadRevision: async () => ({ ...before, gitCommit: "def5678" }),
+      },
+      healthReader: {
+        ...harness.ctx.healthReader,
+        getTasksAvailability: async () => ({ enabled: true, status: "available" as const, message: "Tasks is available." }),
+      },
+    };
+    const engine = createDispatchEngine(ctx, () => ["monorepo"]);
+    const result = await engine.requestRun({ ...MANUAL_REQUEST, idempotencyKey: "bbf:v1:monorepo:run-now:923e4567-e89b-42d3-a456-426614174096" as never });
+    if (!result.ok) throw new Error(`expected success: ${result.error.message}`);
+    const runId = result.result.runId!;
+    harness.threads.threads.get("thread-1")!.status = "idle";
+    await engine.reconcile("monorepo");
+    const detail = (await harness.store.getRun({ repositoryKey: "monorepo", runId })).run!;
+    expect(detail.summary.status).toBe("reconciliation-required");
+    expect(detail.lease?.runId).toBe(runId);
+    expect(harness.store.getCurrentOwnership("monorepo")?.runId).toBe(runId);
+    return { detail, harness, runId };
   }
 
   it("creates and maps a Tasks run card, then includes the self-attach protocol", async () => {
@@ -269,6 +311,49 @@ describe("dispatch engine", () => {
     expect(harness.threads.spawnCalls[0]?.prompt).toContain("bb tasks attach MONOREPO-1");
     expect(harness.threads.spawnCalls[0]?.prompt).toContain("--status in_progress");
     expect(harness.threads.spawnCalls[0]?.prompt).toContain("--status in_review");
+  });
+
+  it("reuses an existing Tasks card carrying the run id instead of creating a second card", async () => {
+    const harness = makeHarness();
+    makeTasksReady(harness);
+    const snapshot = await harness.ctx.protocolReader.loadSnapshot(harness.entry.configuration);
+    const queueEntry = snapshot.queue.find((item) => item.id === "T1");
+    if (!queueEntry) throw new Error("expected the ready queue entry");
+    const runId = "run-reuse";
+    let createdTask: TasksTask | null = null;
+    let createCount = 0;
+    const client = {
+      listProjects: async () => [{
+        id: "tasks-project-1",
+        name: "Factory",
+        prefix: "MONOREPO",
+        color: "#123456",
+        linkedBbProjectId: "project-1",
+      }],
+      listAllTasks: async () => createdTask === null ? [] : [createdTask],
+      createTask: async (input: { projectId: string; title: string; description?: string }) => {
+        createCount += 1;
+        const task: TasksTask = {
+          id: "task-reused",
+          projectId: input.projectId,
+          key: "MONOREPO-2",
+          title: input.title,
+          status: "todo",
+          priority: "medium",
+          description: input.description ?? null,
+          dueDate: null,
+          labelIds: [],
+          parentTaskId: null,
+          position: 0,
+        };
+        createdTask = task;
+        return { ok: true as const, task };
+      },
+    } as unknown as TasksClient;
+    const first = await ensureTasksRunCard(client, { repositoryKey: "monorepo", entry: harness.entry, queueEntry, runId });
+    const second = await ensureTasksRunCard(client, { repositoryKey: "monorepo", entry: harness.entry, queueEntry, runId });
+    expect(createCount).toBe(1);
+    expect(second).toEqual(first);
   });
 
   it("settles Tasks runs only with terminal live status and a changed repository revision", async () => {
@@ -320,6 +405,63 @@ describe("dispatch engine", () => {
     const detail = (await harness.store.getRun({ repositoryKey: "monorepo", runId: result.result.runId! })).run!;
     expect(detail.summary.status).toBe("reconciliation-required");
     expect(detail.attempts[0]?.tasksLiveStatus).toBe("idle");
+  });
+
+  it("keeps ownership in reconciliation when the attached Tasks thread is still working", async () => {
+    await reconcileTasksCase({ liveStatus: "working" });
+  });
+
+  it("keeps ownership in reconciliation when the worker never attaches", async () => {
+    await reconcileTasksCase({ taskThreads: [] });
+  });
+
+  it("keeps ownership in reconciliation when the Tasks card is not in review", async () => {
+    await reconcileTasksCase({ taskStatus: "todo" });
+  });
+
+  it("keeps ownership in reconciliation when the lease changes between evidence reads", async () => {
+    const harness = makeHarness();
+    makeTasksReady(harness);
+    let runId: string | null = null;
+    const tasks = makeTasksClient({
+      onGetTask: () => {
+        if (runId === null) throw new Error("expected a run id before reading Tasks evidence");
+        harness.store.withTransaction((transaction) => {
+          const currentRun = transaction.getRunSummary(runId!);
+          const currentAttempt = transaction.getActiveAttempt(runId!);
+          const currentLease = transaction.getLeaseForRun(runId!);
+          if (!currentRun || !currentAttempt || !currentLease) throw new Error("expected current run generations");
+          transaction.updateOwnershipLease({
+            ...currentLease,
+            expiresAt: new Date(harness.clock.value.getTime() + 120_000).toISOString(),
+          });
+        });
+      },
+    });
+    const before = (await harness.ctx.protocolReader.loadSnapshot(harness.entry.configuration)).revision;
+    const ctx: DispatchContext = {
+      ...harness.ctx,
+      tasksIntegration: "enabled",
+      tasksClient: tasks.client,
+      protocolReader: {
+        loadSnapshot: (configuration) => harness.ctx.protocolReader.loadSnapshot(configuration),
+        loadRevision: async () => ({ ...before, gitCommit: "def5678" }),
+      },
+      healthReader: {
+        ...harness.ctx.healthReader,
+        getTasksAvailability: async () => ({ enabled: true, status: "available" as const, message: "Tasks is available." }),
+      },
+    };
+    const engine = createDispatchEngine(ctx, () => ["monorepo"]);
+    const result = await engine.requestRun({ ...MANUAL_REQUEST, idempotencyKey: "bbf:v1:monorepo:run-now:923e4567-e89b-42d3-a456-426614174097" as never });
+    if (!result.ok) throw new Error(`expected success: ${result.error.message}`);
+    runId = result.result.runId!;
+    harness.threads.threads.get("thread-1")!.status = "idle";
+    await engine.reconcile("monorepo");
+    const detail = (await harness.store.getRun({ repositoryKey: "monorepo", runId })).run!;
+    expect(detail.summary.status).toBe("reconciliation-required");
+    expect(detail.lease?.status).toBe("reconciliation-required");
+    expect(harness.store.getCurrentOwnership("monorepo")?.runId).toBe(runId);
   });
 
   it("refuses to dispatch while paused", async () => {

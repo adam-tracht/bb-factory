@@ -169,14 +169,6 @@ export interface TasksCreateProjectInput {
   readonly linkedBbProjectId?: string | null;
 }
 
-export interface TasksUpdateProjectInput {
-  readonly projectId: string;
-  readonly name?: string;
-  readonly prefix?: string;
-  readonly color?: string;
-  readonly linkedBbProjectId?: string | null;
-}
-
 export interface TasksUpdateInput {
   readonly taskId: string;
   readonly title?: string;
@@ -367,24 +359,6 @@ export class TasksClient {
       }),
       tasksProjectResultSchema,
     ));
-  }
-
-  public async updateProject(input: TasksUpdateProjectInput): Promise<TasksProject> {
-    return unwrapProject(await this.call(
-      "updateProject",
-      optionalFields({
-        projectId: input.projectId,
-        name: input.name,
-        prefix: input.prefix,
-        color: input.color,
-        linkedBbProjectId: input.linkedBbProjectId,
-      }),
-      tasksProjectResultSchema,
-    ));
-  }
-
-  public async linkProjectToBbProject(projectId: string, bbProjectId: string): Promise<TasksProject> {
-    return this.updateProject({ projectId, linkedBbProjectId: bbProjectId });
   }
 
   public async listBbProjects(): Promise<Array<{ id: string; name: string }>> {
