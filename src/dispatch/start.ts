@@ -15,7 +15,7 @@ import { repositoryLabel } from "../repository-label.js";
 import { GlobalConcurrencyLimitError, IdempotencyConflictError, type OperationalTransaction } from "../storage/index.js";
 import { OwnershipHeldError } from "./ownership.js";
 import { hostPreflight, selectExplicitProvider, selectProvider, type ProviderSelection } from "./preflight.js";
-import { boundedDiagnostic, dispatcherNowSeconds, nightKeyAt, nightState, RECONCILIATION_GRACE_MS, runDispatchUpdate, sameJson, spawnEnvironment, withWorkerOperation, type DispatchContext } from "./types.js";
+import { boundedDiagnostic, dispatcherNowSeconds, nightKeyAt, nightState, RECONCILIATION_GRACE_MS, runDispatchUpdate, sameCanonicalRecords, sameJson, spawnEnvironment, withWorkerOperation, type DispatchContext } from "./types.js";
 
 export interface StartRunInput {
   readonly repositoryKey: RepositoryKey;
@@ -93,7 +93,7 @@ function ownsPendingSpawnGeneration(
     && run.projectId === generation.projectId
     && run.environmentId === generation.environmentId
     && sameRevision(run.repositoryRevision, generation.repositoryRevision)
-    && sameJson(run.canonicalRecords, generation.canonicalRecords)
+    && sameCanonicalRecords(run.canonicalRecords, generation.canonicalRecords)
     && sameJson(run.queueItemIds, generation.queueItemIds)
     && attempt?.attemptId === generation.attemptId
     && attempt.runId === generation.runId
@@ -170,7 +170,7 @@ async function quarantineLateSpawn(
         || currentRun.requestedAt !== input.requestedAt
         || currentRun.startedAt !== null
         || !sameRevision(currentRun.repositoryRevision, input.repositoryRevision)
-        || !sameJson(currentRun.canonicalRecords, input.canonicalRecords)
+        || !sameCanonicalRecords(currentRun.canonicalRecords, input.canonicalRecords)
         || !sameJson(currentRun.queueItemIds, input.queueItemIds)
         || !attempt
         || attempt.runId !== input.runId
@@ -232,7 +232,7 @@ async function quarantineLateSpawn(
       && (currentRun.projectId === input.projectId || currentRun.projectId === "unknown")
       && (currentRun.environmentId === input.environmentId || currentRun.environmentId === null)
       && sameRevision(currentRun.repositoryRevision, input.repositoryRevision)
-      && sameJson(currentRun.canonicalRecords, input.canonicalRecords)
+      && sameCanonicalRecords(currentRun.canonicalRecords, input.canonicalRecords)
       && sameJson(currentRun.queueItemIds, input.queueItemIds)
       && currentAttempt !== null
       && currentAttempt.attemptId === input.attemptId

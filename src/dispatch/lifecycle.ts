@@ -24,7 +24,7 @@ import {
   nightKeyAt,
   nightState,
   runDispatchUpdate,
-  sameJson,
+  sameCanonicalRecords,
   withWorkerOperation,
   type DispatchContext,
 } from "./types.js";
@@ -305,7 +305,7 @@ function sameRunGeneration(actual: OperationalRunSummary | null, expected: Opera
     && actual.environmentId === expected.environmentId
     && sameStringArray(actual.queueItemIds, expected.queueItemIds)
     && sameRevision(actual.repositoryRevision, expected.repositoryRevision)
-    && sameJson(actual.canonicalRecords, expected.canonicalRecords);
+    && sameCanonicalRecords(actual.canonicalRecords, expected.canonicalRecords);
 }
 
 function sameAttemptGeneration(

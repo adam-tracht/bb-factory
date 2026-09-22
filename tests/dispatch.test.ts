@@ -218,6 +218,37 @@ describe("dispatch engine", () => {
     expect(store.getDispatcherState("monorepo").lastStartProvider).toBe("codex");
   });
 
+  it("starts a run that claims an eligible queue item", async () => {
+    const { engine, files, store } = makeHarness({ settings: { providerPreference: "codex" } });
+    files.seed("plans/factory/questions.md", "# Questions\n");
+    files.seed("plans/factory/queue.md", [
+      "# Queue",
+      "",
+      "## T1 Sample task",
+      "status: ready",
+      "priority: 2",
+      "depends_on: none",
+      "risk: low",
+      "plan: plans/factory/plan-t1.md",
+      "approved: adam",
+      "acceptance:",
+      "- the task is done",
+      "validate:",
+      "- pnpm test",
+      "notes: none",
+      "",
+    ].join("\n"));
+    const result = await engine.requestRun(MANUAL_REQUEST);
+    expect(result).toMatchObject({ ok: true, result: { status: "accepted", action: "run-now" } });
+    if (!result.ok) throw new Error("expected success");
+    const detail = await store.getRun({ repositoryKey: "monorepo", runId: result.result.runId! });
+    expect(detail.run?.summary.status).toBe("started");
+    expect(detail.run?.summary.workerThreadId).toBe("thread-1");
+    expect(detail.run?.summary.queueItemIds).toEqual(["T1"]);
+    expect(detail.run?.summary.canonicalRecords).toHaveLength(1);
+    expect(detail.run?.lease?.status).toBe("held");
+  });
+
   it("atomically enforces global capacity for concurrent manual starts", async () => {
     const { engine, store, threads } = makeMultiRepositoryHarness({ settings: { concurrencyLimit: 1 } });
     const [first, second] = await Promise.all([
