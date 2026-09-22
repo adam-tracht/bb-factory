@@ -50,6 +50,9 @@ The observation write is a narrow metadata update, so it cannot consume or
 erase a pending stop intent. Older observations cannot overwrite newer ones.
 Reconciliation passes share an async mutex, timestamps are captured at thread
 read start, and equal timestamps prefer the live observation.
+The mutex is keyed by repository and drains after each pass. External reads and
+writes in a pass have a bounded timeout, so a hung repository cannot stall
+other repositories or prevent its own next retry.
 
 ## States and their single exits
 
@@ -120,3 +123,5 @@ how the original lease ended up quarantined with no worker recorded.
 - Spawn in flight inside the grace window still blocks a second dispatch.
 - A live worker still blocks.
 - Ambiguous-spawn quarantine releases through the abandonment deadline.
+- A hung reconciliation call releases its repository mutex, and another
+  repository can reconcile while it remains hung.

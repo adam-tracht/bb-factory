@@ -1,8 +1,9 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HostPreflight, ProviderStatus } from "../src/contracts.js";
 import { PROTOCOL_PATHS } from "../src/protocol/paths.js";
 import { digestText } from "../src/protocol/files.js";
 import { createDispatchEngine } from "../src/dispatch/index.js";
+import { RECONCILE_EXTERNAL_TIMEOUT_MS } from "../src/dispatch/lifecycle.js";
 import { selectProvider } from "../src/dispatch/preflight.js";
 import { ensureTasksRunCard } from "../src/dispatch/tasks.js";
 import { projectTasks } from "../src/tasks/migration.js";
@@ -22,6 +23,7 @@ import {
 } from "./fakes.js";
 
 afterEach(cleanupStorages);
+afterEach(() => vi.useRealTimers());
 
 type SpawnInput = Parameters<DispatchContext["sdk"]["threads"]["spawn"]>[0];
 
@@ -714,6 +716,85 @@ describe("dispatch engine", () => {
     releaseGet();
     await Promise.all([first, second]);
     expect(getCount).toBe(2);
+  });
+
+  it("releases a repository lock after a hung worker read times out", async () => {
+    vi.useFakeTimers();
+    const { engine, threads, store } = makeHarness();
+    const started = await engine.requestRun({
+      ...MANUAL_REQUEST,
+      idempotencyKey: "bbf:v1:monorepo:run-now:923e4567-e89b-42d3-a456-426614174039" as never,
+    });
+    if (!started.ok) throw new Error("expected success");
+    const runId = started.result.runId!;
+    const originalGet = threads.get.bind(threads);
+    let hung = true;
+    let getCalls = 0;
+    let markGetEntered!: () => void;
+    const getEntered = new Promise<void>((resolve) => { markGetEntered = resolve; });
+    threads.get = async (input) => {
+      getCalls += 1;
+      markGetEntered();
+      if (hung) return new Promise<never>(() => {});
+      return originalGet(input);
+    };
+
+    const first = engine.reconcile("monorepo");
+    await getEntered;
+    expect(getCalls).toBe(1);
+    vi.advanceTimersByTime(RECONCILE_EXTERNAL_TIMEOUT_MS);
+    await first;
+
+    hung = false;
+    await engine.reconcile("monorepo");
+    expect(getCalls).toBe(2);
+    expect((await store.getRun({ repositoryKey: "monorepo", runId })).run?.summary.workerObservedAt).not.toBeNull();
+  });
+
+  it("does not let a hung repository pass block another repository", async () => {
+    vi.useFakeTimers();
+    const { engine, threads, store } = makeMultiRepositoryHarness({ settings: { concurrencyLimit: 2 } });
+    const firstStarted = await engine.requestRun({
+      ...MANUAL_REQUEST,
+      idempotencyKey: "bbf:v1:monorepo:run-now:923e4567-e89b-42d3-a456-426614174040" as never,
+    });
+    const secondStarted = await engine.requestRun({
+      ...MANUAL_REQUEST,
+      repositoryKey: "other",
+      idempotencyKey: "bbf:v1:other:run-now:923e4567-e89b-42d3-a456-426614174041" as never,
+    });
+    if (!firstStarted.ok || !secondStarted.ok) throw new Error("expected both dispatches to succeed");
+    const originalGet = threads.get.bind(threads);
+    let markGetEntered!: () => void;
+    const getEntered = new Promise<void>((resolve) => { markGetEntered = resolve; });
+    let otherGetStarted = false;
+    threads.get = async (input) => {
+      if (input.threadId === "thread-1") {
+        markGetEntered();
+        return new Promise<never>(() => {});
+      }
+      otherGetStarted = true;
+      return originalGet(input);
+    };
+
+    let first: Promise<void> | undefined;
+    let second: Promise<void> | undefined;
+    try {
+      first = engine.reconcile("monorepo");
+      await getEntered;
+      second = engine.reconcile("other");
+      for (let attempt = 0; attempt < 10 && !otherGetStarted; attempt += 1) {
+        await Promise.resolve();
+      }
+      expect(otherGetStarted).toBe(true);
+      if (second) await second;
+    } finally {
+      vi.advanceTimersByTime(RECONCILE_EXTERNAL_TIMEOUT_MS);
+      if (first) await first;
+      if (second) await second;
+    }
+    const otherDetail = (await store.getRun({ repositoryKey: "other", runId: secondStarted.result.runId! })).run;
+    expect(otherDetail?.summary.workerObservedAt).not.toBeNull();
   });
 
   it("runs an explicit provider override with caller-explicit execution inputs", async () => {

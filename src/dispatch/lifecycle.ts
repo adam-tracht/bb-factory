@@ -34,18 +34,46 @@ type ThreadStatusValue = "active" | "error" | "idle" | "pending" | "starting" | 
 type ForemanState = "success" | "blocked" | "failed-safe" | "no-op";
 const ACTIVE_ATTEMPT_STATUSES = ["pending", "started", "cancel-requested", "reconciliation-required"] as const;
 const LOOKUP_DAY_MS = 24 * 60 * 60 * 1000;
+export const RECONCILE_EXTERNAL_TIMEOUT_MS = 60_000;
 
-let reconcileMutexTail = Promise.resolve();
+class ReconcileTimeoutError extends Error {
+  constructor(readonly operation: string) {
+    super(`reconciliation operation timed out: ${operation}`);
+    this.name = "ReconcileTimeoutError";
+  }
+}
 
-async function withReconcileMutex(callback: () => Promise<void>): Promise<void> {
-  const previous = reconcileMutexTail;
-  let release!: () => void;
-  reconcileMutexTail = new Promise<void>((resolve) => { release = resolve; });
-  await previous;
+function isReconcileTimeout(error: unknown): error is ReconcileTimeoutError {
+  return error instanceof ReconcileTimeoutError;
+}
+
+async function withReconcileTimeout<T>(operation: Promise<T>, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new ReconcileTimeoutError(label)), RECONCILE_EXTERNAL_TIMEOUT_MS);
+  });
   try {
+    return await Promise.race([operation, timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+const reconcileMutexTails = new Map<RepositoryKey, Promise<void>>();
+
+async function withReconcileMutex(repositoryKey: RepositoryKey, callback: () => Promise<void>): Promise<void> {
+  const previous = reconcileMutexTails.get(repositoryKey) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => { release = resolve; });
+  reconcileMutexTails.set(repositoryKey, current);
+  try {
+    await previous;
     await callback();
   } finally {
     release();
+    if (reconcileMutexTails.get(repositoryKey) === current) {
+      reconcileMutexTails.delete(repositoryKey);
+    }
   }
 }
 
@@ -98,7 +126,7 @@ async function readCurrentState(
   }
   let content = "";
   try {
-    const file = await readTextFile(
+    const file = await withReconcileTimeout(readTextFile(
       { read: (args) => ctx.sdk.files.read(args), listPaths: (args) => ctx.sdk.files.listPaths(args) },
       {
         hostId: entry.configuration.connectedHostId,
@@ -106,7 +134,7 @@ async function readCurrentState(
         relativePath: PROTOCOL_PATHS.current,
         repositoryKey,
       },
-    );
+    ), `${PROTOCOL_PATHS.current} read for ${repositoryKey}`);
     content = file.content;
     if (file.modifiedAtMs === undefined) {
       return {
@@ -134,6 +162,7 @@ async function readCurrentState(
       reason: fresh ? null : `${PROTOCOL_PATHS.current} is not newer than the run start at filesystem-second precision`,
     };
   } catch (error) {
+    if (isReconcileTimeout(error)) throw error;
     if (error instanceof ProtocolError && error.code === "file-not-found") {
       return { state: null, lastRunAt: null, modifiedAtMs: null, sha256: null, fresh: false, kind: "retryable", rawObservation: null, reason: `${PROTOCOL_PATHS.current} is not present` };
     }
@@ -191,7 +220,7 @@ async function postRunRecords(
     }
     for (const prefix of timestampVariants(timestampMs).prefixes) {
       try {
-        const page = await listFilesPage(files, {
+        const page = await withReconcileTimeout(listFilesPage(files, {
           hostId: entry.configuration.connectedHostId,
           rootPath: entry.configuration.checkoutPath,
           relativePath: PROTOCOL_PATHS.runs,
@@ -199,7 +228,7 @@ async function postRunRecords(
           query: prefix,
           limit: 256,
           allowTruncated: true,
-        });
+        }), `immutable run listing for ${run.runId}`);
         if (page.truncated) {
           throw new ProtocolError(
             "malformed-protocol",
@@ -212,13 +241,14 @@ async function postRunRecords(
           strictPaths.add(relativePath);
         }
       } catch (error) {
+        if (isReconcileTimeout(error)) throw error;
         if (!(error instanceof ProtocolError && error.code === "file-not-found")) throw error;
       }
     }
   }
   for (const query of [threadId]) {
     try {
-      const page = await listFilesPage(files, {
+      const page = await withReconcileTimeout(listFilesPage(files, {
         hostId: entry.configuration.connectedHostId,
         rootPath: entry.configuration.checkoutPath,
         relativePath: PROTOCOL_PATHS.runs,
@@ -226,7 +256,7 @@ async function postRunRecords(
         query,
         limit: 256,
         allowTruncated: true,
-      });
+      }), `worker run listing for ${run.runId}`);
       if (page.truncated) {
         throw new ProtocolError(
           "malformed-protocol",
@@ -239,6 +269,7 @@ async function postRunRecords(
         strictPaths.add(relativePath);
       }
     } catch (error) {
+      if (isReconcileTimeout(error)) throw error;
       if (!(error instanceof ProtocolError && error.code === "file-not-found")) throw error;
     }
   }
@@ -248,21 +279,22 @@ async function postRunRecords(
     const identity = recordIdentity(relativePath);
     if (identity === null && !isMalformedCandidatePath(relativePath, threadId)) continue;
     try {
-      const file = await readTextFile(files, {
+      const file = await withReconcileTimeout(readTextFile(files, {
         hostId: entry.configuration.connectedHostId,
         rootPath: entry.configuration.checkoutPath,
         relativePath,
         repositoryKey: run.repositoryKey,
-      });
+      }), `immutable run read ${relativePath}`);
       immutableRecords.push(parseRunRecord(file.content, relativePath, file.sha256));
       if (strictPaths.has(relativePath) && identity === null) invalidImmutablePaths.push(relativePath);
     } catch (error) {
+      if (isReconcileTimeout(error)) throw error;
       if (!(error instanceof ProtocolError && error.code === "file-not-found")) throw error;
     }
   }
   const postRunRevision = ctx.protocolReader.loadRevision !== undefined
-    ? await ctx.protocolReader.loadRevision(entry.configuration)
-    : (await ctx.protocolReader.loadSnapshot(entry.configuration)).revision;
+    ? await withReconcileTimeout(ctx.protocolReader.loadRevision(entry.configuration), `post-run revision for ${run.runId}`)
+    : (await withReconcileTimeout(ctx.protocolReader.loadSnapshot(entry.configuration), `post-run snapshot for ${run.runId}`)).revision;
   const revision = refreshedEvidenceRevision({
     ...postRunRevision,
     // Historical run records are immutable and were already part of the
@@ -345,7 +377,9 @@ function recordWorkerObservation(
         && currentRun?.status !== "cancel-requested"
         && currentRun?.status !== "reconciliation-required")
       || currentRun?.workerThreadId !== workerThreadId
-      || (currentLease !== null && currentLease.workerThreadId !== workerThreadId)) return false;
+      || (currentLease !== null && currentLease.workerThreadId !== workerThreadId)) {
+      return false;
+    }
     const currentObservedAt = currentRun.workerObservedAt;
     const currentObservationIsTerminal = currentRun.workerTerminalObservedAt !== null
       && currentRun.workerTerminalObservedAt !== undefined
@@ -879,8 +913,12 @@ async function settlePendingAttemptAtDeadline(
 
   let threadStatus: ThreadStatusValue;
   try {
-    threadStatus = (await ctx.sdk.threads.get({ threadId: workerThreadId })).status as ThreadStatusValue;
+    threadStatus = (await withReconcileTimeout(
+      ctx.sdk.threads.get({ threadId: workerThreadId }),
+      `worker ${workerThreadId} read for ${detail.summary.runId}`,
+    )).status as ThreadStatusValue;
   } catch (error) {
+    if (isReconcileTimeout(error)) throw error;
     finalizeRun(ctx, detail, {
       ...finalizationInput(
         run,
@@ -905,8 +943,12 @@ async function settlePendingAttemptAtDeadline(
 
   if (!isTerminalThreadStatus(threadStatus)) {
     try {
-      await withWorkerOperation(ctx, workerThreadId, "stop", () => ctx.sdk.threads.stop({ threadId: workerThreadId }));
+      await withReconcileTimeout(
+        withWorkerOperation(ctx, workerThreadId, "stop", () => ctx.sdk.threads.stop({ threadId: workerThreadId })),
+        `worker ${workerThreadId} stop for ${detail.summary.runId}`,
+      );
     } catch (error) {
+      if (isReconcileTimeout(error)) throw error;
       finalizeRun(ctx, detail, {
         ...finalizationInput(
           run,
@@ -992,6 +1034,7 @@ async function reconcileTerminalRun(
   try {
     evidence = await postRunRecords(ctx, run, threadId, current, startedAtMs);
   } catch (error) {
+    if (isReconcileTimeout(error)) throw error;
     markRunForReconciliation(ctx, detail, `could not read immutable terminal evidence: ${errorMessage(error)}`, current.rawObservation);
     return false;
   }
@@ -1084,8 +1127,8 @@ async function reconcileTasksTerminalRun(
   let liveStatus: "starting" | "working" | "idle" | "completed" | "failed";
   try {
     const [task, threads] = await Promise.all([
-      ctx.tasksClient.getTask(run.taskId),
-      ctx.tasksClient.listTaskThreads(run.taskId),
+      withReconcileTimeout(ctx.tasksClient.getTask(run.taskId), `Tasks card read for ${run.runId}`),
+      withReconcileTimeout(ctx.tasksClient.listTaskThreads(run.taskId), `Tasks thread read for ${run.runId}`),
     ]);
     const attached = threads.find((candidate) => candidate.threadId === threadId);
     if (!task || !attached) {
@@ -1095,6 +1138,7 @@ async function reconcileTasksTerminalRun(
     taskStatus = task.status;
     liveStatus = attached.liveStatus;
   } catch (error) {
+    if (isReconcileTimeout(error)) throw error;
     markRunForReconciliation(ctx, detail, `could not read structured Tasks settlement evidence: ${errorMessage(error)}`);
     return false;
   }
@@ -1122,9 +1166,10 @@ async function reconcileTasksTerminalRun(
   let revision: RepositoryRevision;
   try {
     revision = ctx.protocolReader.loadRevision !== undefined
-      ? await ctx.protocolReader.loadRevision(entry.configuration)
-      : (await ctx.protocolReader.loadSnapshot(entry.configuration)).revision;
+      ? await withReconcileTimeout(ctx.protocolReader.loadRevision(entry.configuration), `Tasks settlement revision for ${run.runId}`)
+      : (await withReconcileTimeout(ctx.protocolReader.loadSnapshot(entry.configuration), `Tasks settlement snapshot for ${run.runId}`)).revision;
   } catch (error) {
+    if (isReconcileTimeout(error)) throw error;
     markRunForReconciliation(ctx, detail, `could not read repository revision for Tasks settlement: ${errorMessage(error)}`);
     return false;
   }
@@ -1138,12 +1183,16 @@ async function reconcileTasksTerminalRun(
   );
   if (status === "completed") {
     try {
-      const result = await ctx.tasksClient.updateTask({ taskId: run.taskId, status: "done" });
+      const result = await withReconcileTimeout(
+        ctx.tasksClient.updateTask({ taskId: run.taskId, status: "done" }),
+        `Tasks card settlement for ${run.runId}`,
+      );
       if (!result.ok || result.task.status !== "done") {
         markRunForReconciliation(ctx, detail, `Tasks card done projection was not confirmed: ${result.ok ? "unexpected card status" : result.error.message}`);
         return false;
       }
     } catch (error) {
+      if (isReconcileTimeout(error)) throw error;
       markRunForReconciliation(ctx, detail, `Tasks card done projection failed: ${errorMessage(error)}`);
       return false;
     }
@@ -1197,9 +1246,13 @@ async function reconcileStartedRun(ctx: DispatchContext, detail: OperationalRunD
   const observedAt = ctx.now().toISOString();
   let threadStatus: ThreadStatusValue;
   try {
-    const thread = await ctx.sdk.threads.get({ threadId });
+    const thread = await withReconcileTimeout(
+      ctx.sdk.threads.get({ threadId }),
+      `worker ${threadId} read for ${run.runId}`,
+    );
     threadStatus = thread.status as ThreadStatusValue;
   } catch (error) {
+    if (isReconcileTimeout(error)) throw error;
     if (run.status === "cancel-requested" && lease !== null && Date.parse(lease.expiresAt) <= ctx.now().getTime()) {
       finalizeCancellationDeadline(ctx, detail, threadId, `cancellation deadline expired while worker was unreadable: ${errorMessage(error)}`);
       return;
@@ -1220,8 +1273,12 @@ async function reconcileStartedRun(ctx: DispatchContext, detail: OperationalRunD
     const expired = lease !== null && Date.parse(lease.expiresAt) <= ctx.now().getTime();
     if (!expired) return;
     try {
-      await withWorkerOperation(ctx, threadId, "stop", () => ctx.sdk.threads.stop({ threadId }));
+      await withReconcileTimeout(
+        withWorkerOperation(ctx, threadId, "stop", () => ctx.sdk.threads.stop({ threadId })),
+        `worker ${threadId} stop for ${run.runId}`,
+      );
     } catch (error) {
+      if (isReconcileTimeout(error)) throw error;
       finalizeCancellationDeadline(ctx, detail, threadId, `cancellation deadline expired; stop failed: ${errorMessage(error)}`);
       return;
     }
@@ -1234,8 +1291,12 @@ async function reconcileStartedRun(ctx: DispatchContext, detail: OperationalRunD
     const expired = lease !== null && Date.parse(lease.expiresAt) <= nowMs;
     if (!expired) return;
     try {
-      await withWorkerOperation(ctx, threadId, "stop", () => ctx.sdk.threads.stop({ threadId }));
+      await withReconcileTimeout(
+        withWorkerOperation(ctx, threadId, "stop", () => ctx.sdk.threads.stop({ threadId })),
+        `worker ${threadId} stop for ${run.runId}`,
+      );
     } catch (error) {
+      if (isReconcileTimeout(error)) throw error;
       markRunForReconciliation(ctx, detail, `stop request for '${threadId}' failed: ${errorMessage(error)}`);
       return;
     }
@@ -1306,9 +1367,13 @@ async function reconcileReconciliationRun(ctx: DispatchContext, detail: Operatio
   const observedAt = ctx.now().toISOString();
   let threadStatus: ThreadStatusValue;
   try {
-    const thread = await ctx.sdk.threads.get({ threadId });
+    const thread = await withReconcileTimeout(
+      ctx.sdk.threads.get({ threadId }),
+      `worker ${threadId} read for ${run.runId}`,
+    );
     threadStatus = thread.status as ThreadStatusValue;
   } catch (error) {
+    if (isReconcileTimeout(error)) throw error;
     const reason = `could not read worker thread '${threadId}': ${errorMessage(error)}`;
     if (deadlinePassed) {
       finalizeAtReconciliationDeadline(ctx, detail, metadata, threadId, false, reason);
@@ -1323,8 +1388,12 @@ async function reconcileReconciliationRun(ctx: DispatchContext, detail: Operatio
   if (!isTerminalThreadStatus(threadStatus)) {
     if (!deadlinePassed) return;
     try {
-      await withWorkerOperation(ctx, threadId, "stop", () => ctx.sdk.threads.stop({ threadId }));
+      await withReconcileTimeout(
+        withWorkerOperation(ctx, threadId, "stop", () => ctx.sdk.threads.stop({ threadId })),
+        `worker ${threadId} stop for ${run.runId}`,
+      );
     } catch (error) {
+      if (isReconcileTimeout(error)) throw error;
       const reason = `stop request for '${threadId}' failed: ${errorMessage(error)}`;
       finalizeAtReconciliationDeadline(ctx, detail, metadata, threadId, false, reason);
       return;
@@ -1409,8 +1478,12 @@ async function reconcileQuarantinedLease(
 
   let threadStatus: ThreadStatusValue;
   try {
-    threadStatus = (await ctx.sdk.threads.get({ threadId })).status as ThreadStatusValue;
-  } catch {
+    threadStatus = (await withReconcileTimeout(
+      ctx.sdk.threads.get({ threadId }),
+      `quarantined worker ${threadId} read for ${lease.runId}`,
+    )).status as ThreadStatusValue;
+  } catch (error) {
+    if (isReconcileTimeout(error)) throw error;
     if (metadata === null) {
       recordQuarantineDeadline(ctx, lease, `worker '${threadId}' could not be read`);
     } else if (quarantineDeadlinePassed(ctx, metadata.deadlineAt)) {
@@ -1427,8 +1500,12 @@ async function reconcileQuarantinedLease(
     });
     if (!stillOwnsWorker) return;
     try {
-      await withWorkerOperation(ctx, threadId, "stop", () => ctx.sdk.threads.stop({ threadId }));
-    } catch {
+      await withReconcileTimeout(
+        withWorkerOperation(ctx, threadId, "stop", () => ctx.sdk.threads.stop({ threadId })),
+        `quarantined worker ${threadId} stop for ${lease.runId}`,
+      );
+    } catch (error) {
+      if (isReconcileTimeout(error)) throw error;
       // The lease remains quarantined until a later observation confirms exit.
     }
     if (metadata !== null && quarantineDeadlinePassed(ctx, metadata.deadlineAt)) {
@@ -1578,49 +1655,57 @@ function settleExpiredPendingRun(ctx: DispatchContext, detail: OperationalRunDet
 }
 
 async function reconcileRepositoryPass(ctx: DispatchContext, repositoryKey: RepositoryKey): Promise<void> {
-  for (const run of ctx.store.listActiveRuns(repositoryKey)) {
-    const detail = (await ctx.store.getRun({ repositoryKey, runId: run.runId })).run;
-    if (!detail) continue;
-    const currentStatus = detail.summary.status;
-    if (["completed", "blocked", "failed-safe", "no-op"].includes(currentStatus)) continue;
-    if (currentStatus === "pending") {
-      const ageMs = ctx.now().getTime() - Date.parse(detail.summary.requestedAt);
-      if (ageMs > PENDING_RUN_GRACE_MS) {
-        settleExpiredPendingRun(ctx, detail);
+  try {
+    for (const run of ctx.store.listActiveRuns(repositoryKey)) {
+      const detail = (await ctx.store.getRun({ repositoryKey, runId: run.runId })).run;
+      if (!detail) continue;
+      const currentStatus = detail.summary.status;
+      if (["completed", "blocked", "failed-safe", "no-op"].includes(currentStatus)) continue;
+      if (currentStatus === "pending") {
+        const ageMs = ctx.now().getTime() - Date.parse(detail.summary.requestedAt);
+        if (ageMs > PENDING_RUN_GRACE_MS) {
+          settleExpiredPendingRun(ctx, detail);
+        }
+        continue;
       }
-      continue;
+      if (currentStatus === "reconciliation-required") {
+        await reconcileReconciliationRun(ctx, detail);
+        continue;
+      }
+      await reconcileStartedRun(ctx, detail);
     }
-    if (currentStatus === "reconciliation-required") {
-      await reconcileReconciliationRun(ctx, detail);
-      continue;
-    }
-    await reconcileStartedRun(ctx, detail);
-  }
 
-  const lease = ctx.store.getCurrentOwnership(repositoryKey);
-  if (lease && lease.status === "reconciliation-required") {
-    const detail = (await ctx.store.getRun({ repositoryKey, runId: lease.runId })).run;
-    if (detail && TERMINAL_RUN_STATUSES.includes(detail.summary.status as typeof TERMINAL_RUN_STATUSES[number])) {
-      await reconcileQuarantinedLease(ctx, lease, detail);
-    }
-  } else if (lease && lease.status !== "released") {
-    const detail = (await ctx.store.getRun({ repositoryKey, runId: lease.runId })).run;
-    if (detail === null) {
-      updateLeaseIfExact(ctx, lease, "reconciliation-required");
-    } else if (!["pending", "started", "cancel-requested", "reconciliation-required"].includes(detail.summary.status)) {
-      // A terminal run is not proof that its worker stopped. Quarantine the
-      // lease first, then release it only through the trusted worker
-      // re-observation path. Unknown workers remain quarantined for the
-      // explicit operator repair seam.
-      updateLeaseIfExact(ctx, lease, "reconciliation-required", detail.summary);
-      const quarantined = ctx.store.getCurrentOwnership(repositoryKey);
-      if (quarantined?.leaseId === lease.leaseId) {
-        await reconcileQuarantinedLease(ctx, quarantined, detail);
+    const lease = ctx.store.getCurrentOwnership(repositoryKey);
+    if (lease && lease.status === "reconciliation-required") {
+      const detail = (await ctx.store.getRun({ repositoryKey, runId: lease.runId })).run;
+      if (detail && TERMINAL_RUN_STATUSES.includes(detail.summary.status as typeof TERMINAL_RUN_STATUSES[number])) {
+        await reconcileQuarantinedLease(ctx, lease, detail);
+      }
+    } else if (lease && lease.status !== "released") {
+      const detail = (await ctx.store.getRun({ repositoryKey, runId: lease.runId })).run;
+      if (detail === null) {
+        updateLeaseIfExact(ctx, lease, "reconciliation-required");
+      } else if (!["pending", "started", "cancel-requested", "reconciliation-required"].includes(detail.summary.status)) {
+        // A terminal run is not proof that its worker stopped. Quarantine the
+        // lease first, then release it only through the trusted worker
+        // re-observation path. Unknown workers remain quarantined for the
+        // explicit operator repair seam.
+        updateLeaseIfExact(ctx, lease, "reconciliation-required", detail.summary);
+        const quarantined = ctx.store.getCurrentOwnership(repositoryKey);
+        if (quarantined?.leaseId === lease.leaseId) {
+          await reconcileQuarantinedLease(ctx, quarantined, detail);
+        }
       }
     }
+  } catch (error) {
+    if (isReconcileTimeout(error)) {
+      ctx.log?.(`reconciliation for '${repositoryKey}' timed out; leaving state for the next pass`);
+      return;
+    }
+    throw error;
   }
 }
 
 export async function reconcileRepository(ctx: DispatchContext, repositoryKey: RepositoryKey): Promise<void> {
-  await withReconcileMutex(() => reconcileRepositoryPass(ctx, repositoryKey));
+  await withReconcileMutex(repositoryKey, () => reconcileRepositoryPass(ctx, repositoryKey));
 }
