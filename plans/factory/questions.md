@@ -42,4 +42,10 @@ answer:
 question: Can the `factory` branch receive a manual rebase onto `origin/main` before BBF-0049 claim recovery proceeds?
 context: Factory preflight required `git rebase origin/main`; it conflicted while replaying `edea29a` (`release: bump version to 0.1.1`) in README.md and package.json, so the rebase was aborted per foreman.md.
 recommended: Resolve the factory/main history conflict manually, then rerun the factory bookkeeping session.
+answer: Not a blocker, 2026-09-22. The preflight was misapplied. plans/factory/repo.md requires skipping `git rebase origin/main` while main is release-shaped, and it is: the nine most recent commits on origin/main are all `release:` dist artifacts above the known `chore:`/`docs:` v0.1.0 cleanup at the branch base. The run that filed this question rebased anyway and hit the exact conflict the override exists to avoid. No rebase is required and none should be performed. Q3 already settled this rule.
+
+## Q6 2026-09-22 blocking BBF-0049
+question: `bb plugin types --check .` is a required repo standard check and fails on `factory`: pinned @get-bb/plugin-sdk is 0.4.87 while the host runs 0.4.104. Branch `factory-tasks` already carries the 0.4.104 pin and passes. Repinning is a dependency change, which repo.md forbids without an `approved:` line. May the repin to 0.4.104 proceed on `factory` so the required check goes green? This is only the SDK pin; no other dependency changes.
+context: plans/factory/repo.md standard checks table and the dependency rule; package.json devDependencies on `factory`; Q2 is the 0.4.84 to 0.4.87 precedent, approved 2026-09-14.
+recommended: Yes; authorize the repin to 0.4.104 and rerun the full validation suite, matching the Q2 resolution.
 answer:

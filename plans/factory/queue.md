@@ -32,7 +32,8 @@ Rules:
 - `risk: high` entries need at least one `approved:` item or they will be skipped.
 
 ## BBF-0049 Native Tasks core rebuild
-status: in-progress (thread thr_wswppd4ja4, 2026-09-21T19:12Z)
+status: ready
+recovered: 2026-09-22T16:17Z released the stale claim from thread thr_wswppd4ja4 after that thread died mid-review, per the claim-recovery rule in this file's header.
 priority: 1
 depends_on: none
 risk: high
@@ -52,7 +53,7 @@ validate:
 - pnpm build
 - bb plugin types --check .
 - git diff --check
-notes: Human authorized the plan and implementation in thread thr_wswppd4ja4. Work lands on branch factory-tasks in worktree /Users/adamtracht/Desktop/Code/bb-factory-tasks so the installed stable checkout is untouched. Phase 3 cutover, dependency changes, and any protected operations still need an explicit approved: line before a run may do them.
+notes: Human authorized the plan and implementation in thread thr_wswppd4ja4. Work lands on branch factory-tasks in worktree /Users/adamtracht/Desktop/Code/bb-factory-tasks so the installed stable checkout is untouched. Phases 0 through 3 are implemented and reviewed on factory-tasks across commits 2e5e7cc, ce2bce7, 8253791, and 47c4b9f; three independent reviews returned PASS with no blocking findings, and 660 tests plus typecheck, lint, build, SDK freshness, and whitespace pass at 47c4b9f. Remaining work is the Go-live and cutover section of plans/native-tasks-migration.md only. Go-live, per-repo cutover, dependency changes, and any protected operations still need an explicit approved: line before a run may do them.
 
 ## BBF-0007 Marketplace listing
 status: ready
