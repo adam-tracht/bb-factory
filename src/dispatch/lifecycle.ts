@@ -309,16 +309,17 @@ function sameRunGeneration(actual: OperationalRunSummary | null, expected: Opera
     && sameCanonicalRecords(actual.canonicalRecords, expected.canonicalRecords);
 }
 
-function recordWorkerTerminalObservation(
+function recordWorkerObservation(
   ctx: DispatchContext,
   detail: OperationalRunDetail,
   workerThreadId: string,
+  kind: "terminal" | "live",
 ): boolean {
   const expectedAttempt = [...detail.attempts].reverse().find((attempt) =>
     attempt.runId === detail.summary.runId && ACTIVE_ATTEMPT_STATUSES.includes(attempt.status as typeof ACTIVE_ATTEMPT_STATUSES[number]),
   );
   if (!expectedAttempt) return false;
-  const observedAt = ctx.now().toISOString();
+  const observedAt = kind === "terminal" ? ctx.now().toISOString() : null;
   return ctx.store.withTransaction((transaction) => {
     const currentRun = transaction.getRunSummary(detail.summary.runId);
     const currentAttempt = transaction.getActiveAttempt(detail.summary.runId);
@@ -326,10 +327,16 @@ function recordWorkerTerminalObservation(
     if (!sameRunGeneration(currentRun, detail.summary)
       || !sameAttemptGeneration(currentAttempt, expectedAttempt)
       || (detail.lease === null ? currentLease !== null : !sameLeaseGeneration(currentLease, detail.lease))
-      || (currentRun?.status !== "started" && currentRun?.status !== "reconciliation-required")
+      || (currentRun?.status !== "started"
+        && currentRun?.status !== "cancel-requested"
+        && currentRun?.status !== "reconciliation-required")
       || currentRun?.workerThreadId !== workerThreadId
       || (currentLease !== null && currentLease.workerThreadId !== workerThreadId)) return false;
-    if (currentRun.workerTerminalObservedAt !== null && currentRun.workerTerminalObservedAt !== undefined) return true;
+    if (kind === "terminal") {
+      if (currentRun.workerTerminalObservedAt !== null && currentRun.workerTerminalObservedAt !== undefined) return true;
+    } else if (currentRun.workerTerminalObservedAt == null) {
+      return true;
+    }
     transaction.updateRunDispatch(runDispatchUpdate(currentRun, {
       status: currentRun.status,
       finishedAt: currentRun.finishedAt,
@@ -945,7 +952,7 @@ async function reconcileTerminalRun(
   threadId: string,
   threadStatus: ThreadStatusValue,
 ): Promise<boolean> {
-  if (!recordWorkerTerminalObservation(ctx, detail, threadId)) {
+  if (!recordWorkerObservation(ctx, detail, threadId, "terminal")) {
     ctx.log?.(`run ${detail.summary.runId}: ignored terminal worker observation for a stale generation`);
     return false;
   }
@@ -1174,6 +1181,10 @@ async function reconcileStartedRun(ctx: DispatchContext, detail: OperationalRunD
     return;
   }
 
+  if (!isTerminalThreadStatus(threadStatus)) {
+    recordWorkerObservation(ctx, detail, threadId, "live");
+  }
+
   if (run.status === "cancel-requested") {
     if (isTerminalThreadStatus(threadStatus)) {
       finalizeCancelledRun(ctx, detail, { releaseLease: true, workerThreadId: threadId });
@@ -1277,6 +1288,9 @@ async function reconcileReconciliationRun(ctx: DispatchContext, detail: Operatio
       markRunForReconciliation(ctx, detail, reason);
     }
     return;
+  }
+  if (!isTerminalThreadStatus(threadStatus)) {
+    recordWorkerObservation(ctx, detail, threadId, "live");
   }
   if (!isTerminalThreadStatus(threadStatus)) {
     if (!deadlinePassed) return;

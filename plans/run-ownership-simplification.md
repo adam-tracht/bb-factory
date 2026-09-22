@@ -44,6 +44,9 @@ lives only long enough for settlement to run.
 A terminal-worker observation is durable settlement metadata and frees capacity
 immediately while settlement continues.
 
+Observations are latest-wins within the fenced generation: a later live-worker
+observation clears the terminal marker and restores capacity accounting.
+
 ## States and their single exits
 
 - `held`, no worker yet (spawn in flight). Exits: spawn resolves with a thread

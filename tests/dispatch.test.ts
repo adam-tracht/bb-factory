@@ -637,13 +637,19 @@ describe("dispatch engine", () => {
     expect(pendingSettlement.summary.workerTerminalObservedAt).not.toBeNull();
     expect(dispatchRunOccupiesSlot(pendingSettlement.summary, clock.value.getTime())).toBe(false);
 
+    threads.threads.get("thread-1")!.status = "active";
+    await engine.reconcile("monorepo");
+    const revived = (await store.getRun({ repositoryKey: "monorepo", runId })).run!;
+    expect(revived.summary.workerTerminalObservedAt).toBeNull();
+    expect(dispatchRunOccupiesSlot(revived.summary, clock.value.getTime())).toBe(true);
+
     const second = await engine.requestRun({
       repositoryKey: "other",
       trigger: "manual",
       idempotencyKey: "bbf:v1:other:run-now:823e4567-e89b-42d3-a456-426614174004" as never,
     });
-    expect(second).toMatchObject({ ok: true, result: { status: "accepted" } });
-    expect(threads.spawnCalls).toHaveLength(2);
+    expect(second).toMatchObject({ ok: false, error: { category: "conflict" } });
+    expect(threads.spawnCalls).toHaveLength(1);
   });
 
   it("runs an explicit provider override with caller-explicit execution inputs", async () => {
