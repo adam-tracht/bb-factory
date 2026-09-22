@@ -307,11 +307,23 @@ describe("operational SQLite storage", () => {
         workerObservedAt: "2026-09-10T00:01:00Z",
         workerTerminalObservedAt: null,
       })).toBe(false);
+      expect(transaction.updateRunWorkerObservation({
+        repositoryKey: intent.repositoryKey,
+        runId: intent.runId,
+        workerObservedAt: "2026-09-10T00:02:00Z",
+        workerTerminalObservedAt: null,
+      })).toBe(true);
+      expect(transaction.updateRunWorkerObservation({
+        repositoryKey: intent.repositoryKey,
+        runId: intent.runId,
+        workerObservedAt: "2026-09-10T00:02:00Z",
+        workerTerminalObservedAt: "2026-09-10T00:02:00Z",
+      })).toBe(false);
     });
 
     expect((await store.getRun({ repositoryKey: intent.repositoryKey, runId: intent.runId })).run?.summary).toMatchObject({
       workerObservedAt: "2026-09-10T00:02:00Z",
-      workerTerminalObservedAt: "2026-09-10T00:02:00Z",
+      workerTerminalObservedAt: null,
     });
   });
 

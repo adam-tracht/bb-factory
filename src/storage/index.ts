@@ -2367,13 +2367,23 @@ function updateRunWorkerObservation(db: SqliteDatabase, input: RunWorkerObservat
     `UPDATE operational_runs
         SET worker_observed_at = ?, worker_terminal_observed_at = ?
       WHERE repository_key = ? AND run_id = ?
-        AND (worker_observed_at IS NULL OR worker_observed_at < ?)`,
+        AND (
+          worker_observed_at IS NULL
+          OR worker_observed_at < ?
+          OR (
+            worker_observed_at = ?
+            AND worker_terminal_observed_at IS NOT NULL
+            AND ? IS NULL
+          )
+        )`,
   ).run(
     workerObservedAt,
     workerTerminalObservedAt,
     repositoryKey,
     runId,
     workerObservedAt,
+    workerObservedAt,
+    workerTerminalObservedAt,
   );
   return result.changes === 1;
 }

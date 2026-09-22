@@ -35,6 +35,20 @@ type ForemanState = "success" | "blocked" | "failed-safe" | "no-op";
 const ACTIVE_ATTEMPT_STATUSES = ["pending", "started", "cancel-requested", "reconciliation-required"] as const;
 const LOOKUP_DAY_MS = 24 * 60 * 60 * 1000;
 
+let reconcileMutexTail = Promise.resolve();
+
+async function withReconcileMutex(callback: () => Promise<void>): Promise<void> {
+  const previous = reconcileMutexTail;
+  let release!: () => void;
+  reconcileMutexTail = new Promise<void>((resolve) => { release = resolve; });
+  await previous;
+  try {
+    await callback();
+  } finally {
+    release();
+  }
+}
+
 function outcomeToStatus(state: ForemanState): "completed" | "blocked" | "failed-safe" | "no-op" {
   return state === "success" ? "completed" : state;
 }
@@ -336,10 +350,17 @@ function recordWorkerObservation(
     const currentObservationIsTerminal = currentRun.workerTerminalObservedAt !== null
       && currentRun.workerTerminalObservedAt !== undefined
       && currentRun.workerTerminalObservedAt === currentObservedAt;
-    if (currentObservedAt !== null
-      && currentObservedAt !== undefined
-      && Date.parse(observedAt) <= Date.parse(currentObservedAt)) {
-      return kind === "terminal" && currentObservationIsTerminal;
+    if (currentObservedAt !== null && currentObservedAt !== undefined) {
+      const incomingMs = Date.parse(observedAt);
+      const currentMs = Date.parse(currentObservedAt);
+      if (incomingMs < currentMs) return kind === "terminal" && currentObservationIsTerminal;
+      if (incomingMs === currentMs) {
+        if (kind === "live" && currentObservationIsTerminal) {
+          // Equal timestamps resolve toward the safer state, live.
+        } else {
+          return kind === "terminal" && currentObservationIsTerminal;
+        }
+      }
     }
     const applied = transaction.updateRunWorkerObservation({
       repositoryKey: currentRun.repositoryKey,
@@ -1173,11 +1194,10 @@ async function reconcileStartedRun(ctx: DispatchContext, detail: OperationalRunD
     return;
   }
 
+  const observedAt = ctx.now().toISOString();
   let threadStatus: ThreadStatusValue;
-  let observedAt: string;
   try {
     const thread = await ctx.sdk.threads.get({ threadId });
-    observedAt = ctx.now().toISOString();
     threadStatus = thread.status as ThreadStatusValue;
   } catch (error) {
     if (run.status === "cancel-requested" && lease !== null && Date.parse(lease.expiresAt) <= ctx.now().getTime()) {
@@ -1283,11 +1303,10 @@ async function reconcileReconciliationRun(ctx: DispatchContext, detail: Operatio
     markRunForReconciliation(ctx, detail, "has no recorded worker thread to observe");
     return;
   }
+  const observedAt = ctx.now().toISOString();
   let threadStatus: ThreadStatusValue;
-  let observedAt: string;
   try {
     const thread = await ctx.sdk.threads.get({ threadId });
-    observedAt = ctx.now().toISOString();
     threadStatus = thread.status as ThreadStatusValue;
   } catch (error) {
     const reason = `could not read worker thread '${threadId}': ${errorMessage(error)}`;
@@ -1558,7 +1577,7 @@ function settleExpiredPendingRun(ctx: DispatchContext, detail: OperationalRunDet
   });
 }
 
-export async function reconcileRepository(ctx: DispatchContext, repositoryKey: RepositoryKey): Promise<void> {
+async function reconcileRepositoryPass(ctx: DispatchContext, repositoryKey: RepositoryKey): Promise<void> {
   for (const run of ctx.store.listActiveRuns(repositoryKey)) {
     const detail = (await ctx.store.getRun({ repositoryKey, runId: run.runId })).run;
     if (!detail) continue;
@@ -1600,4 +1619,8 @@ export async function reconcileRepository(ctx: DispatchContext, repositoryKey: R
       }
     }
   }
+}
+
+export async function reconcileRepository(ctx: DispatchContext, repositoryKey: RepositoryKey): Promise<void> {
+  await withReconcileMutex(() => reconcileRepositoryPass(ctx, repositoryKey));
 }

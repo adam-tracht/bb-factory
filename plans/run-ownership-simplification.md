@@ -48,6 +48,8 @@ Observations are latest-wins within the fenced generation: a later live-worker
 observation clears the terminal marker and restores capacity accounting.
 The observation write is a narrow metadata update, so it cannot consume or
 erase a pending stop intent. Older observations cannot overwrite newer ones.
+Reconciliation passes share an async mutex, timestamps are captured at thread
+read start, and equal timestamps prefer the live observation.
 
 ## States and their single exits
 

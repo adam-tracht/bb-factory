@@ -653,6 +653,69 @@ describe("dispatch engine", () => {
     expect(threads.spawnCalls).toHaveLength(1);
   });
 
+  it("stamps worker observations at the thread-read call start", async () => {
+    const { engine, threads, store, clock } = makeHarness({
+      now: new Date("2026-09-10T02:00:00.000Z"),
+    });
+    const started = await engine.requestRun({
+      ...MANUAL_REQUEST,
+      idempotencyKey: "bbf:v1:monorepo:run-now:923e4567-e89b-42d3-a456-426614174037" as never,
+    });
+    if (!started.ok) throw new Error("expected success");
+    const runId = started.result.runId!;
+    const originalGet = threads.get.bind(threads);
+    let releaseGet!: () => void;
+    let markGetEntered!: () => void;
+    const getGate = new Promise<void>((resolve) => { releaseGet = resolve; });
+    const getEntered = new Promise<void>((resolve) => { markGetEntered = resolve; });
+    threads.get = async (input) => {
+      markGetEntered();
+      await getGate;
+      return originalGet(input);
+    };
+
+    const reconciling = engine.reconcile("monorepo");
+    await getEntered;
+    const callStart = clock.value.toISOString();
+    clock.value = new Date(clock.value.getTime() + 60_000);
+    releaseGet();
+    await reconciling;
+
+    expect((await store.getRun({ repositoryKey: "monorepo", runId })).run?.summary.workerObservedAt).toBe(callStart);
+  });
+
+  it("serializes overlapping reconciliation passes", async () => {
+    const { engine, threads } = makeHarness();
+    const started = await engine.requestRun({
+      ...MANUAL_REQUEST,
+      idempotencyKey: "bbf:v1:monorepo:run-now:923e4567-e89b-42d3-a456-426614174038" as never,
+    });
+    if (!started.ok) throw new Error("expected success");
+    const originalGet = threads.get.bind(threads);
+    let getCount = 0;
+    let releaseGet!: () => void;
+    let markGetEntered!: () => void;
+    const getGate = new Promise<void>((resolve) => { releaseGet = resolve; });
+    const getEntered = new Promise<void>((resolve) => { markGetEntered = resolve; });
+    threads.get = async (input) => {
+      getCount += 1;
+      if (getCount === 1) {
+        markGetEntered();
+        await getGate;
+      }
+      return originalGet(input);
+    };
+
+    const first = engine.reconcile("monorepo");
+    await getEntered;
+    const second = engine.reconcile("monorepo");
+    await Promise.resolve();
+    expect(getCount).toBe(1);
+    releaseGet();
+    await Promise.all([first, second]);
+    expect(getCount).toBe(2);
+  });
+
   it("runs an explicit provider override with caller-explicit execution inputs", async () => {
     const { engine, threads, store } = makeHarness({ settings: { providerPreference: "codex" } });
     const result = await engine.requestRun({
