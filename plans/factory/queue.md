@@ -31,7 +31,7 @@ Rules:
 - Validation commands must run to completion inside this worktree without a human.
 - `risk: high` entries need at least one `approved:` item or they will be skipped.
 
-## BBF-0039 Native Tasks core rebuild
+## BBF-0048 Native Tasks core rebuild
 status: in-progress (thread thr_wswppd4ja4, 2026-09-21T19:12Z)
 priority: 1
 depends_on: none
