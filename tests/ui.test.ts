@@ -311,6 +311,23 @@ describe("Factory view shell", () => {
     }
   });
 
+  it("renders the standard Work view over an enabled Tasks-backed snapshot", async () => {
+    const { FactoryView } = await import("../src/ui/FactoryView.js");
+    controlledSettingsState = { values: { repositoryKey: "demo", tasksIntegration: "enabled" }, isLoading: false };
+    const slot = renderSlot<FactoryViewProps, FactoryRpcContract>(
+      { component: FactoryView },
+      { subPath: "work", panelPath: "factory" },
+      { rpc: baseRpc(), settings: { repositoryKey: "demo", tasksIntegration: "enabled" } },
+    );
+    try {
+      expect(await slot.findByText("Ready work")).toBeTruthy();
+      expect(slot.queryByRole("heading", { name: "Native Tasks board" })).toBeNull();
+    } finally {
+      slot.lifecycle.unmount();
+      controlledSettingsState = { values: { repositoryKey: "demo" }, isLoading: false };
+    }
+  });
+
   it("switches repositories through the segmented switcher while keeping the tab", async () => {
     const { FactoryView } = await import("../src/ui/FactoryView.js");
     const rpc = {
@@ -1026,7 +1043,8 @@ describe("Factory aggregate scope", () => {
       : snapshotForSwitch(key));
     const slot = mountAggregate(FactoryView, "all/work", rpc, true);
     try {
-      expect(await slot.findByRole("heading", { name: "Native Tasks board" })).toBeTruthy();
+      expect(await slot.findByText("Ready work")).toBeTruthy();
+      expect(slot.queryByRole("heading", { name: "Native Tasks board" })).toBeNull();
       const dataGroup = groupFor(slot, "data");
       expect(within(dataGroup).getByRole("alert").textContent).toContain("data Tasks board unavailable");
       expect(within(dataGroup).getByRole("button", { name: "Retry" })).toBeTruthy();

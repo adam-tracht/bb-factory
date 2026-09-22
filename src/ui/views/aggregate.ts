@@ -51,7 +51,6 @@ import { bucketWorkEntries, WorkGroupSection, WORK_GROUPS } from "./work.js";
 import { nextCronTimes } from "../../schedule/cron.js";
 import { describeSchedule } from "../../schedule/describe.js";
 import { repositoryLabel } from "../../repository-label.js";
-import { TasksDeferredView } from "./tasks-deferred.js";
 
 const h = createElement;
 const AGGREGATE_REPOSITORY_KEY = "@aggregate";
@@ -99,17 +98,6 @@ export function splitAggregateAnchor(anchor: string | null): { repositoryKey: st
 function preferredProvider(bundle: RepositoryBundle): string | null {
   const preference = bundle.settings.status === "ready" ? bundle.settings.data.settings.providerPreference : null;
   return preference && preference !== "alternate" ? preference : null;
-}
-
-function bundleAttentionInput(bundle: RepositoryBundle): import("../attention.js").AttentionInput {
-  return {
-    snapshot: bundle.snapshot.status === "ready" ? bundle.snapshot.data : null,
-    snapshotError: bundle.snapshot.status === "error",
-    settings: bundle.settings.status === "ready" ? bundle.settings.data : null,
-    health: bundle.health.status === "ready" ? bundle.health.data : null,
-    interactions: bundle.interactions.status === "ready" ? bundle.interactions.data : null,
-    runs: bundle.runs.status === "ready" ? bundle.runs.data : null,
-  };
 }
 
 function RepositoryStatusGroup(props: {
@@ -1268,39 +1256,12 @@ export function AggregateSectionView(props: {
   groups: readonly AggregateGroup[];
   anchor: string | null;
   onRetry: () => void;
-  tasksIntegrationEnabled?: boolean;
 }): ReactNode {
   if (props.groups.length === 0) {
     return h(EmptyNotice, {
       title: "No repositories configured",
       detail: "Add a repository registry entry to start dispatching factory runs.",
     });
-  }
-  if (props.tasksIntegrationEnabled) {
-    return h("div", { className: "space-y-6" },
-      ...props.groups.map((group) => {
-        const snapshot = group.bundle.snapshot.status === "ready" ? group.bundle.snapshot.data : null;
-        if (!snapshot) {
-          return h(RepositoryStatusGroup, {
-            key: group.entry.configuration.repositoryKey,
-            group,
-            tab: props.section,
-            section: "native-tasks",
-            children: group.bundle.snapshot.status === "error"
-              ? h(ErrorNotice, { message: group.bundle.snapshot.error, onRetry: props.onRetry })
-              : h(LoadingNotice, { label: `Loading ${entryLabel(group.entry)} Tasks state` }),
-          });
-        }
-        const health = group.bundle.health.status === "ready" ? group.bundle.health.data : null;
-        return h(TasksDeferredView, {
-          key: group.entry.configuration.repositoryKey,
-          section: props.section,
-          snapshot,
-          health,
-          attention: computeAttention(bundleAttentionInput(group.bundle)),
-        });
-      }),
-    );
   }
   if (props.section === "work") return h(AggregateWorkView, props);
   if (props.section === "questions") return h(AggregateQuestionsView, props);

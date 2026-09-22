@@ -52,7 +52,7 @@
 
 - ✅ **Queue items become task cards** — enabled reads project the linked Tasks cards as the queue, ledger edges and approvals gate dispatch, and the guarded import is idempotent by embedded dashboard id; markdown remains for disabled mode and audit. Review follow-up: dispatch reuses the eligible queue card, approval grants are revision-bound, imports preserve migrated approvals, and settlement retries the card done projection through reconciliation.
 - ✅ **Blocking questions and current state** — enabled reads project ledger blockers as question cards, answers resolve blockers and record submissions, and current.md plus the repo lock are excluded from the enabled correctness path. Review follow-up: standalone question cards deduplicate by their embedded question id, while unsafe direct status mutation is removed.
-- ✅ **UI deferral** — enabled Work, Questions, Runs, and aggregate surfaces point to the native Tasks board while retaining Factory-owned attention and health state; settings and dispatch controls remain unchanged. Review follow-up: aggregate enabled snapshot failures retain an error and Retry surface.
+- ✅ **Factory UI over the Tasks projection**: enabled Work, Questions, Runs, and aggregate views use the existing factory UI over the Tasks-backed snapshot and ledger, with no board redirection; settings, dispatch controls, and existing actions remain unchanged.
 
 ## Go-live / cutover (sequence last)
 
