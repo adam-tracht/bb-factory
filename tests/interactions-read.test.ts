@@ -45,6 +45,7 @@ function makeThread(
     id: "thread-default",
     lastReadAt: null,
     latestAttentionAt: Date.parse("2026-09-10T11:00:00Z"),
+    lifecycleOwnerThreadId: null,
     originKind: null,
     originPluginId: null,
     parentThreadId: null,
