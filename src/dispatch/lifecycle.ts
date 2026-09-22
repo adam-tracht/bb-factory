@@ -1146,7 +1146,8 @@ async function reconcileTasksTerminalRun(
     markRunForReconciliation(ctx, detail, `attached Tasks thread is still ${liveStatus}`);
     return false;
   }
-  if (taskStatus !== "in_review") {
+  const cardAlreadyDone = taskStatus === "done" && liveStatus !== "failed";
+  if (taskStatus !== "in_review" && !cardAlreadyDone) {
     markRunForReconciliation(ctx, detail, `Tasks card is '${taskStatus}', expected in_review for worker settlement`);
     return false;
   }
@@ -1181,19 +1182,40 @@ async function reconcileTasksTerminalRun(
   const terminalAttempt = [...detail.attempts].reverse().find((attempt) =>
     attempt.runId === run.runId && ACTIVE_ATTEMPT_STATUSES.includes(attempt.status as typeof ACTIVE_ATTEMPT_STATUSES[number]),
   );
-  if (status === "completed") {
+  if (status === "completed" && !cardAlreadyDone) {
+    let cardDone = false;
+    let mutationTimedOut = false;
+    let mutationFailureReason: string | null = null;
     try {
       const result = await withReconcileTimeout(
         ctx.tasksClient.updateTask({ taskId: run.taskId, status: "done" }),
         `Tasks card settlement for ${run.runId}`,
       );
-      if (!result.ok || result.task.status !== "done") {
-        markRunForReconciliation(ctx, detail, `Tasks card done projection was not confirmed: ${result.ok ? "unexpected card status" : result.error.message}`);
-        return false;
+      if (result.ok && result.task.status === "done") {
+        cardDone = true;
+      } else {
+        mutationFailureReason = result.ok ? "unexpected card status" : result.error.message;
       }
     } catch (error) {
-      if (isReconcileTimeout(error)) throw error;
-      markRunForReconciliation(ctx, detail, `Tasks card done projection failed: ${errorMessage(error)}`);
+      mutationTimedOut = isReconcileTimeout(error);
+      mutationFailureReason = errorMessage(error);
+    }
+    if (!cardDone) {
+      try {
+        const currentTask = await withReconcileTimeout(
+          ctx.tasksClient.getTask(run.taskId),
+          `Tasks card post-settlement read for ${run.runId}`,
+        );
+        cardDone = currentTask?.status === "done";
+      } catch (error) {
+        if (isReconcileTimeout(error)) throw error;
+        markRunForReconciliation(ctx, detail, `Tasks card done projection failed: ${errorMessage(error)}`);
+        return false;
+      }
+    }
+    if (!cardDone) {
+      if (mutationTimedOut) throw new ReconcileTimeoutError(`Tasks card settlement for ${run.runId}: ${mutationFailureReason ?? "unknown failure"}`);
+      markRunForReconciliation(ctx, detail, `Tasks card done projection failed: ${mutationFailureReason ?? "unknown failure"}`);
       return false;
     }
   }
@@ -1373,7 +1395,6 @@ async function reconcileReconciliationRun(ctx: DispatchContext, detail: Operatio
     );
     threadStatus = thread.status as ThreadStatusValue;
   } catch (error) {
-    if (isReconcileTimeout(error)) throw error;
     const reason = `could not read worker thread '${threadId}': ${errorMessage(error)}`;
     if (deadlinePassed) {
       finalizeAtReconciliationDeadline(ctx, detail, metadata, threadId, false, reason);
@@ -1393,7 +1414,6 @@ async function reconcileReconciliationRun(ctx: DispatchContext, detail: Operatio
         `worker ${threadId} stop for ${run.runId}`,
       );
     } catch (error) {
-      if (isReconcileTimeout(error)) throw error;
       const reason = `stop request for '${threadId}' failed: ${errorMessage(error)}`;
       finalizeAtReconciliationDeadline(ctx, detail, metadata, threadId, false, reason);
       return;
@@ -1514,6 +1534,23 @@ async function reconcileQuarantinedLease(
     return;
   }
   releaseTerminalLease(ctx, lease, detail, false);
+}
+
+async function reconcileQuarantinedLeaseWithTimeout(
+  ctx: DispatchContext,
+  lease: NonNullable<ReturnType<DispatchContext["store"]["getCurrentOwnership"]>>,
+  detail: OperationalRunDetail,
+): Promise<void> {
+  try {
+    await reconcileQuarantinedLease(ctx, lease, detail);
+  } catch (error) {
+    if (!isReconcileTimeout(error)) throw error;
+    recordQuarantineDeadline(ctx, lease, `worker '${lease.workerThreadId ?? "unknown"}' state is unverifiable`);
+    const metadata = ctx.store.getReconciliation(lease.runId);
+    if (metadata !== null && quarantineDeadlinePassed(ctx, metadata.deadlineAt)) {
+      releaseTerminalLease(ctx, lease, detail, true);
+    }
+  }
 }
 
 function quarantineDeadlinePassed(ctx: DispatchContext, deadlineAt: string): boolean {
@@ -1655,54 +1692,56 @@ function settleExpiredPendingRun(ctx: DispatchContext, detail: OperationalRunDet
 }
 
 async function reconcileRepositoryPass(ctx: DispatchContext, repositoryKey: RepositoryKey): Promise<void> {
-  try {
-    for (const run of ctx.store.listActiveRuns(repositoryKey)) {
-      const detail = (await ctx.store.getRun({ repositoryKey, runId: run.runId })).run;
-      if (!detail) continue;
-      const currentStatus = detail.summary.status;
-      if (["completed", "blocked", "failed-safe", "no-op"].includes(currentStatus)) continue;
-      if (currentStatus === "pending") {
-        const ageMs = ctx.now().getTime() - Date.parse(detail.summary.requestedAt);
-        if (ageMs > PENDING_RUN_GRACE_MS) {
-          settleExpiredPendingRun(ctx, detail);
-        }
-        continue;
+  for (const run of ctx.store.listActiveRuns(repositoryKey)) {
+    const detail = (await ctx.store.getRun({ repositoryKey, runId: run.runId })).run;
+    if (!detail) continue;
+    const currentStatus = detail.summary.status;
+    if (["completed", "blocked", "failed-safe", "no-op"].includes(currentStatus)) continue;
+    if (currentStatus === "pending") {
+      const ageMs = ctx.now().getTime() - Date.parse(detail.summary.requestedAt);
+      if (ageMs > PENDING_RUN_GRACE_MS) {
+        settleExpiredPendingRun(ctx, detail);
       }
-      if (currentStatus === "reconciliation-required") {
+      continue;
+    }
+    if (currentStatus === "reconciliation-required") {
+      try {
         await reconcileReconciliationRun(ctx, detail);
-        continue;
+      } catch (error) {
+        if (!isReconcileTimeout(error)) throw error;
+        markRunForReconciliation(ctx, detail, `worker state unverifiable: ${error.operation}`);
       }
+      continue;
+    }
+    try {
       await reconcileStartedRun(ctx, detail);
+    } catch (error) {
+      if (!isReconcileTimeout(error)) throw error;
+      markRunForReconciliation(ctx, detail, `worker state unverifiable: ${error.operation}`);
     }
+  }
 
-    const lease = ctx.store.getCurrentOwnership(repositoryKey);
-    if (lease && lease.status === "reconciliation-required") {
-      const detail = (await ctx.store.getRun({ repositoryKey, runId: lease.runId })).run;
-      if (detail && TERMINAL_RUN_STATUSES.includes(detail.summary.status as typeof TERMINAL_RUN_STATUSES[number])) {
-        await reconcileQuarantinedLease(ctx, lease, detail);
-      }
-    } else if (lease && lease.status !== "released") {
-      const detail = (await ctx.store.getRun({ repositoryKey, runId: lease.runId })).run;
-      if (detail === null) {
-        updateLeaseIfExact(ctx, lease, "reconciliation-required");
-      } else if (!["pending", "started", "cancel-requested", "reconciliation-required"].includes(detail.summary.status)) {
-        // A terminal run is not proof that its worker stopped. Quarantine the
-        // lease first, then release it only through the trusted worker
-        // re-observation path. Unknown workers remain quarantined for the
-        // explicit operator repair seam.
-        updateLeaseIfExact(ctx, lease, "reconciliation-required", detail.summary);
-        const quarantined = ctx.store.getCurrentOwnership(repositoryKey);
-        if (quarantined?.leaseId === lease.leaseId) {
-          await reconcileQuarantinedLease(ctx, quarantined, detail);
-        }
+  const lease = ctx.store.getCurrentOwnership(repositoryKey);
+  if (lease && lease.status === "reconciliation-required") {
+    const detail = (await ctx.store.getRun({ repositoryKey, runId: lease.runId })).run;
+    if (detail && TERMINAL_RUN_STATUSES.includes(detail.summary.status as typeof TERMINAL_RUN_STATUSES[number])) {
+      await reconcileQuarantinedLeaseWithTimeout(ctx, lease, detail);
+    }
+  } else if (lease && lease.status !== "released") {
+    const detail = (await ctx.store.getRun({ repositoryKey, runId: lease.runId })).run;
+    if (detail === null) {
+      updateLeaseIfExact(ctx, lease, "reconciliation-required");
+    } else if (!["pending", "started", "cancel-requested", "reconciliation-required"].includes(detail.summary.status)) {
+      // A terminal run is not proof that its worker stopped. Quarantine the
+      // lease first, then release it only through the trusted worker
+      // re-observation path. Unknown workers remain quarantined for the
+      // explicit operator repair seam.
+      updateLeaseIfExact(ctx, lease, "reconciliation-required", detail.summary);
+      const quarantined = ctx.store.getCurrentOwnership(repositoryKey);
+      if (quarantined?.leaseId === lease.leaseId) {
+        await reconcileQuarantinedLeaseWithTimeout(ctx, quarantined, detail);
       }
     }
-  } catch (error) {
-    if (isReconcileTimeout(error)) {
-      ctx.log?.(`reconciliation for '${repositoryKey}' timed out; leaving state for the next pass`);
-      return;
-    }
-    throw error;
   }
 }
 

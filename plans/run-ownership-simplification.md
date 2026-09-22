@@ -125,3 +125,7 @@ how the original lease ended up quarantined with no worker recorded.
 - Ambiguous-spawn quarantine releases through the abandonment deadline.
 - A hung reconciliation call releases its repository mutex, and another
   repository can reconcile while it remains hung.
+- A timed-out worker read records unverifiability once, preserves the original
+  deadline, and reaches reconciliation or quarantine release on later passes.
+- Scheduler repository ticks run concurrently with per-repository error
+  isolation.

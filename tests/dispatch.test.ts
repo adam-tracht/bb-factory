@@ -7,7 +7,7 @@ import { RECONCILE_EXTERNAL_TIMEOUT_MS } from "../src/dispatch/lifecycle.js";
 import { selectProvider } from "../src/dispatch/preflight.js";
 import { ensureTasksRunCard } from "../src/dispatch/tasks.js";
 import { projectTasks } from "../src/tasks/migration.js";
-import { schedulerTick, cronMatches } from "../src/schedule/index.js";
+import { createScheduler, schedulerTick, cronMatches } from "../src/schedule/index.js";
 import { dispatchRunOccupiesSlot, QUARANTINE_ABANDONMENT_GRACE_MS, RECONCILIATION_GRACE_MS } from "../src/dispatch/types.js";
 import type { DispatchContext } from "../src/dispatch/types.js";
 import { deriveTasksContentRevision, type TasksClient, type TasksTask, type TasksTaskThread } from "../src/tasks/index.js";
@@ -416,6 +416,56 @@ describe("dispatch engine", () => {
     expect(projection.queue.find((entry) => entry.id === "MONOREPO-1")).toMatchObject({ status: { kind: "done" }, eligible: false });
   });
 
+  it("settles when a late Tasks card mutation already left the card done", async () => {
+    vi.useFakeTimers();
+    const harness = makeHarness();
+    makeTasksReady(harness);
+    const tasks = makeTasksClient({ taskStatus: "todo" });
+    harness.store.createTasksApproval({
+      approvalId: "approval-task-late-done",
+      repositoryKey: "monorepo",
+      taskId: "task-1",
+      operationClass: "execute",
+      contentRevision: deriveTasksContentRevision(tasks.clientTask),
+      provenance: { source: "test" },
+    });
+    const before = await harness.ctx.protocolReader.loadSnapshot(harness.entry.configuration);
+    const ctx: DispatchContext = {
+      ...harness.ctx,
+      tasksIntegration: "enabled",
+      tasksClient: tasks.client,
+      protocolReader: {
+        loadSnapshot: (configuration) => harness.ctx.protocolReader.loadSnapshot(configuration),
+        loadRevision: async () => ({ ...before.revision, gitCommit: "def5678" }),
+      },
+      healthReader: {
+        ...harness.ctx.healthReader,
+        getTasksAvailability: async () => ({ enabled: true, status: "available" as const, message: "Tasks is available." }),
+      },
+    };
+    const engine = createDispatchEngine(ctx, () => ["monorepo"]);
+    const result = await engine.requestRun({ ...MANUAL_REQUEST, idempotencyKey: "bbf:v1:monorepo:run-now:923e4567-e89b-42d3-a456-426614174043" as never });
+    if (!result.ok) throw new Error(`expected success: ${result.error.message}`);
+    tasks.clientTask.status = "in_review";
+    let updateStarted = false;
+    tasks.client.updateTask = async () => {
+      updateStarted = true;
+      tasks.clientTask.status = "done";
+      return new Promise<never>(() => {});
+    };
+    harness.threads.threads.get("thread-1")!.status = "idle";
+    const pass = engine.reconcile("monorepo");
+    for (let attempt = 0; attempt < 20 && !updateStarted; attempt += 1) {
+      await Promise.resolve();
+    }
+    expect(updateStarted).toBe(true);
+    vi.advanceTimersByTime(RECONCILE_EXTERNAL_TIMEOUT_MS);
+    await pass;
+    const detail = (await harness.store.getRun({ repositoryKey: "monorepo", runId: result.result.runId! })).run!;
+    expect(detail.summary.status).toBe("completed");
+    expect(tasks.clientTask.status).toBe("done");
+  });
+
   it("does not settle a completed Tasks card when the repository revision is unchanged", async () => {
     const harness = makeHarness();
     makeTasksReady(harness);
@@ -749,6 +799,48 @@ describe("dispatch engine", () => {
     await engine.reconcile("monorepo");
     expect(getCalls).toBe(2);
     expect((await store.getRun({ repositoryKey: "monorepo", runId })).run?.summary.workerObservedAt).not.toBeNull();
+  });
+
+  it("keeps the unverifiable-worker deadline fixed across repeated read timeouts", async () => {
+    vi.useFakeTimers();
+    const { engine, threads, store, clock } = makeHarness();
+    const started = await engine.requestRun({
+      ...MANUAL_REQUEST,
+      idempotencyKey: "bbf:v1:monorepo:run-now:923e4567-e89b-42d3-a456-426614174042" as never,
+    });
+    if (!started.ok) throw new Error("expected success");
+    const runId = started.result.runId!;
+    let getCalls = 0;
+    threads.get = async () => {
+      getCalls += 1;
+      return new Promise<never>(() => {});
+    };
+
+    const timeoutPass = async (expectedCalls: number, timerCount: number): Promise<void> => {
+      const pass = engine.reconcile("monorepo");
+      for (let attempt = 0; attempt < 20 && getCalls < expectedCalls; attempt += 1) {
+        await Promise.resolve();
+      }
+      expect(getCalls).toBeGreaterThanOrEqual(expectedCalls);
+      for (let timer = 0; timer < timerCount; timer += 1) {
+        vi.advanceTimersByTime(RECONCILE_EXTERNAL_TIMEOUT_MS);
+        await vi.runAllTimersAsync();
+      }
+      await pass;
+    };
+
+    await timeoutPass(1, 1);
+    const firstMetadata = store.getReconciliation(runId);
+    expect(firstMetadata).not.toBeNull();
+    const deadlineAt = firstMetadata!.deadlineAt;
+    clock.value = new Date(clock.value.getTime() + RECONCILIATION_GRACE_MS / 2);
+    await timeoutPass(2, 1);
+    expect(store.getReconciliation(runId)?.deadlineAt).toBe(deadlineAt);
+
+    clock.value = new Date(Date.parse(deadlineAt) + QUARANTINE_ABANDONMENT_GRACE_MS + 1);
+    await timeoutPass(3, 3);
+    expect((await store.getRun({ repositoryKey: "monorepo", runId })).run?.summary.status).toBe("failed-safe");
+    expect(store.getCurrentOwnership("monorepo")).toBeNull();
   });
 
   it("does not let a hung repository pass block another repository", async () => {
@@ -2688,6 +2780,48 @@ describe("scheduler", () => {
 
     const started = await schedulerTick(ctx, "other", ["monorepo", "other"]);
     expect(started.action).toBe("started");
+  });
+
+  it("runs repository scheduler ticks concurrently", async () => {
+    vi.useFakeTimers();
+    const harness = makeMultiRepositoryHarness({
+      settings: { scheduleCron: "* * * * *", concurrencyLimit: 2 },
+    });
+    const started = await harness.engine.requestRun({
+      ...MANUAL_REQUEST,
+      idempotencyKey: "bbf:v1:monorepo:run-now:923e4567-e89b-42d3-a456-426614174044" as never,
+    });
+    if (!started.ok) throw new Error("expected the first repository run to start");
+    const originalGet = harness.threads.get.bind(harness.threads);
+    let markGetEntered!: () => void;
+    const getEntered = new Promise<void>((resolve) => { markGetEntered = resolve; });
+    harness.threads.get = async (input) => {
+      if (input.threadId === "thread-1") {
+        markGetEntered();
+        return new Promise<never>(() => {});
+      }
+      return originalGet(input);
+    };
+    let otherTickStarted = false;
+    const ctx: DispatchContext = {
+      ...harness.ctx,
+      repositoryLookup: (repositoryKey) => {
+        if (repositoryKey === "other") otherTickStarted = true;
+        return harness.ctx.repositoryLookup(repositoryKey);
+      },
+    };
+    const scheduler = createScheduler(ctx, () => ["monorepo", "other"]);
+    const sweep = scheduler.tick();
+    try {
+      await getEntered;
+      for (let attempt = 0; attempt < 20 && !otherTickStarted; attempt += 1) {
+        await Promise.resolve();
+      }
+      expect(otherTickStarted).toBe(true);
+    } finally {
+      vi.advanceTimersByTime(RECONCILE_EXTERNAL_TIMEOUT_MS);
+      await sweep;
+    }
   });
 
   it("night-stops after a blocked run and honors the minimum start gap", async () => {

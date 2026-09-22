@@ -102,19 +102,17 @@ export function createScheduler(
   return {
     async tick() {
       const keys = repositoryKeys();
-      const results: SchedulerTickResult[] = [];
-      for (const repositoryKey of keys) {
+      return Promise.all(keys.map(async (repositoryKey): Promise<SchedulerTickResult> => {
         try {
-          results.push(await schedulerTick(context, repositoryKey, keys));
+          return await schedulerTick(context, repositoryKey, keys);
         } catch (error) {
-          results.push({
+          return {
             repositoryKey,
             action: "skipped",
             reason: `tick failed: ${errorMessage(error)}`,
-          });
+          };
         }
-      }
-      return results;
+      }));
     },
   };
 }
