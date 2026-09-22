@@ -854,6 +854,7 @@ export interface OperationalTransaction {
   getReconciliation(runId: string): ReconciliationMetadata | null;
   getStopIntent(runId: string): StopIntent | null;
   getSettlementMutationIntent(runId: string, attemptId: string): SettlementMutationIntent | null;
+  listSettlementMutationIntents(runId: string): SettlementMutationIntent[];
   assertGlobalCapacity(limit: number, excludingRunId?: string, nowMs?: number): void;
   assertRepositoryCapacity(repositoryKey: RepositoryKey, limit: number, excludingRunId?: string, nowMs?: number): void;
   updateRunTaskId(runId: string, taskId: string): void;
@@ -931,6 +932,7 @@ export interface OperationalStateStore extends OperationalStateReader {
   getReconciliation(runId: string): ReconciliationMetadata | null;
   getStopIntent(runId: string): StopIntent | null;
   getSettlementMutationIntent(runId: string, attemptId: string): SettlementMutationIntent | null;
+  listSettlementMutationIntents(runId: string): SettlementMutationIntent[];
   findRunIdByIdempotencyKey(idempotencyKey: IdempotencyKey): string | null;
   listActiveRuns(repositoryKey: RepositoryKey): OperationalRunSummary[];
   getDispatcherState(repositoryKey: RepositoryKey): DispatcherState;
@@ -1291,6 +1293,10 @@ class OperationalSqliteStore implements OperationalStateStore {
     return readSettlementMutationIntent(this.db, runId, attemptId);
   }
 
+  listSettlementMutationIntents(runId: string): SettlementMutationIntent[] {
+    return readSettlementMutationIntents(this.db, runId);
+  }
+
   async listRuns(input: OperationalRunListInput): Promise<OperationalRunListProjection> {
     const parsed = operationalRunListInputSchema.parse(input);
     const cursor = parsed.cursor === undefined ? null : decodeCursor(parsed.cursor);
@@ -1375,6 +1381,7 @@ class OperationalSqliteStore implements OperationalStateStore {
       getReconciliation: (runId) => readReconciliation(this.db, runId),
       getStopIntent: (runId) => readStopIntent(this.db, runId),
       getSettlementMutationIntent: (runId, attemptId) => readSettlementMutationIntent(this.db, runId, attemptId),
+      listSettlementMutationIntents: (runId) => readSettlementMutationIntents(this.db, runId),
       assertGlobalCapacity: (limit, excludingRunId, nowMs) => assertGlobalCapacity(this.db, limit, excludingRunId, nowMs),
       assertRepositoryCapacity: (repositoryKey, limit, excludingRunId, nowMs) => assertRepositoryCapacity(this.db, repositoryKey, limit, excludingRunId, nowMs),
       updateRunTaskId: (runId, taskId) => updateRunTaskId(this.db, runId, taskId),
@@ -2992,6 +2999,26 @@ function readSettlementMutationIntent(
     marker: z.string().max(128).parse(row.marker),
     issuedAt: isoTimestampSchema.parse(row.issued_at),
   };
+}
+
+function readSettlementMutationIntents(db: SqliteDatabase, runId: string): SettlementMutationIntent[] {
+  const rows = db
+    .prepare<unknown[], SettlementMutationIntentRow>(
+      `SELECT run_id, attempt_id, repository_key, task_id, card_status_at_issue, marker, issued_at
+         FROM settlement_mutation_intents
+        WHERE run_id = ?
+        ORDER BY attempt_id ASC`,
+    )
+    .all(z.string().trim().min(1).parse(runId));
+  return rows.map((row) => ({
+    runId: z.string().trim().min(1).parse(row.run_id),
+    attemptId: z.string().trim().min(1).parse(row.attempt_id),
+    repositoryKey: repositoryKeySchema.parse(row.repository_key),
+    taskId: tasksTaskIdSchema.parse(row.task_id),
+    cardStatusAtIssue: z.literal("in_review").parse(row.card_status_at_issue),
+    marker: z.string().max(128).parse(row.marker),
+    issuedAt: isoTimestampSchema.parse(row.issued_at),
+  }));
 }
 
 function readRunStatus(db: SqliteDatabase, runId: string): OperationalRunStatus | null {

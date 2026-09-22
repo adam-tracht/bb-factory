@@ -417,6 +417,279 @@ describe("dispatch engine", () => {
     expect(projection.queue.find((entry) => entry.id === "MONOREPO-1")).toMatchObject({ status: { kind: "done" }, eligible: false });
   });
 
+  it("preserves a Tasks description edit made before settlement mutation", async () => {
+    const harness = makeHarness();
+    makeTasksReady(harness);
+    let taskReads = 0;
+    const taskHolder: { task?: TasksTask } = {};
+    const tasks = makeTasksClient({
+      taskStatus: "todo",
+      onGetTask: () => {
+        taskReads += 1;
+        if (taskReads === 2 && taskHolder.task) taskHolder.task.description = "Factory run card\n\nQuestion: what changed?";
+      },
+    });
+    taskHolder.task = tasks.clientTask;
+    harness.store.createTasksApproval({
+      approvalId: "approval-task-description-race",
+      repositoryKey: "monorepo",
+      taskId: "task-1",
+      operationClass: "execute",
+      contentRevision: deriveTasksContentRevision(tasks.clientTask),
+      provenance: { source: "test" },
+    });
+    const before = await harness.ctx.protocolReader.loadSnapshot(harness.entry.configuration);
+    const ctx: DispatchContext = {
+      ...harness.ctx,
+      tasksIntegration: "enabled",
+      tasksClient: tasks.client,
+      protocolReader: {
+        loadSnapshot: (configuration) => harness.ctx.protocolReader.loadSnapshot(configuration),
+        loadRevision: async () => ({ ...before.revision, gitCommit: "def5678" }),
+      },
+      healthReader: {
+        ...harness.ctx.healthReader,
+        getTasksAvailability: async () => ({ enabled: true, status: "available" as const, message: "Tasks is available." }),
+      },
+    };
+    const engine = createDispatchEngine(ctx, () => ["monorepo"]);
+    const result = await engine.requestRun({ ...MANUAL_REQUEST, idempotencyKey: "bbf:v1:monorepo:run-now:923e4567-e89b-42d3-a456-426614174100" as never });
+    if (!result.ok) throw new Error(`expected success: ${result.error.message}`);
+    tasks.clientTask.status = "in_review";
+    harness.threads.threads.get("thread-1")!.status = "idle";
+
+    await engine.reconcile("monorepo");
+
+    expect(tasks.calls.updateTask).toContainEqual(expect.objectContaining({
+      taskId: "task-1",
+      status: "done",
+      description: `Factory run card\n\nQuestion: what changed?\n\n${factorySettlementMarker((await harness.store.getRun({ repositoryKey: "monorepo", runId: result.result.runId! })).run!.attempts[0]!.attemptId)}`,
+    }));
+  });
+
+  it("excludes Factory settlement markers from approval content revisions", () => {
+    const task = {
+      title: "Sample task",
+      description: "Factory run card",
+      dueDate: null,
+      labelIds: [] as string[],
+      parentTaskId: null,
+    };
+    const originalRevision = deriveTasksContentRevision(task);
+    expect(deriveTasksContentRevision({
+      ...task,
+      description: `${task.description}\n\n  ${factorySettlementMarker("attempt-revision")}  `,
+    })).toBe(originalRevision);
+    expect(deriveTasksContentRevision({
+      ...task,
+      description: `${task.description} with a human edit`,
+    })).not.toBe(originalRevision);
+  });
+
+  it("accepts a settlement marker from an earlier attempt of the same run", async () => {
+    const harness = makeHarness();
+    makeTasksReady(harness);
+    const tasks = makeTasksClient();
+    harness.store.createTasksApproval({
+      approvalId: "approval-task-attempt-rollover",
+      repositoryKey: "monorepo",
+      taskId: "task-1",
+      operationClass: "execute",
+      contentRevision: deriveTasksContentRevision(tasks.clientTask),
+      provenance: { source: "test" },
+    });
+    const before = await harness.ctx.protocolReader.loadSnapshot(harness.entry.configuration);
+    const ctx: DispatchContext = {
+      ...harness.ctx,
+      tasksIntegration: "enabled",
+      tasksClient: tasks.client,
+      protocolReader: {
+        loadSnapshot: (configuration) => harness.ctx.protocolReader.loadSnapshot(configuration),
+        loadRevision: async () => ({ ...before.revision, gitCommit: "def5678" }),
+      },
+      healthReader: {
+        ...harness.ctx.healthReader,
+        getTasksAvailability: async () => ({ enabled: true, status: "available" as const, message: "Tasks is available." }),
+      },
+    };
+    const engine = createDispatchEngine(ctx, () => ["monorepo"]);
+    const started = await engine.requestRun({ ...MANUAL_REQUEST, idempotencyKey: "bbf:v1:monorepo:run-now:923e4567-e89b-42d3-a456-426614174101" as never });
+    if (!started.ok) throw new Error(`expected success: ${started.error.message}`);
+    const runId = started.result.runId!;
+    const first = (await harness.store.getRun({ repositoryKey: "monorepo", runId })).run!;
+    const firstAttempt = first.attempts[0]!;
+    const firstMarker = factorySettlementMarker(firstAttempt.attemptId);
+    harness.store.recordSettlementMutationIntent({
+      runId,
+      attemptId: firstAttempt.attemptId,
+      repositoryKey: "monorepo",
+      taskId: "task-1",
+      marker: firstMarker,
+      issuedAt: "2026-09-10T02:00:01.000Z",
+    });
+    tasks.clientTask.status = "in_review";
+    tasks.clientTask.description = `Factory run card\n\n${firstMarker}`;
+    const finishedAt = harness.clock.value.toISOString();
+    harness.store.updateDispatchAttempt({ ...firstAttempt, status: "failed-safe", finishedAt });
+    harness.store.updateRunDispatch({
+      repositoryKey: "monorepo",
+      runId,
+      status: "failed-safe",
+      startedAt: first.summary.startedAt,
+      finishedAt,
+      providerId: first.summary.providerId!,
+      workerThreadId: first.summary.workerThreadId!,
+      projectId: first.summary.projectId!,
+      environmentId: first.summary.environmentId,
+      repositoryRevision: first.summary.repositoryRevision,
+      taskId: first.summary.taskId,
+    });
+    const lease = harness.store.getLeaseForRun(runId)!;
+    harness.store.updateOwnershipLease({ ...lease, status: "released" });
+    harness.threads.threads.get("thread-1")!.status = "error";
+
+    const retried = await engine.requestRetry({ repositoryKey: "monorepo", attemptId: firstAttempt.attemptId });
+    expect(retried.ok).toBe(true);
+    tasks.clientTask.status = "done";
+    harness.threads.threads.get("thread-1")!.status = "idle";
+    await engine.reconcile("monorepo");
+
+    expect((await harness.store.getRun({ repositoryKey: "monorepo", runId })).run?.summary.status).toBe("completed");
+    expect(harness.store.listSettlementMutationIntents(runId)).toEqual([expect.objectContaining({ runId, attemptId: firstAttempt.attemptId, marker: firstMarker })]);
+    expect(tasks.calls.updateTask).toHaveLength(0);
+  });
+
+  it("does not attribute a settlement marker from a different run", async () => {
+    const harness = makeHarness();
+    makeTasksReady(harness);
+    const tasks = makeTasksClient();
+    harness.store.createTasksApproval({
+      approvalId: "approval-task-different-run-marker",
+      repositoryKey: "monorepo",
+      taskId: "task-1",
+      operationClass: "execute",
+      contentRevision: deriveTasksContentRevision(tasks.clientTask),
+      provenance: { source: "test" },
+    });
+    const before = await harness.ctx.protocolReader.loadSnapshot(harness.entry.configuration);
+    const ctx: DispatchContext = {
+      ...harness.ctx,
+      tasksIntegration: "enabled",
+      tasksClient: tasks.client,
+      protocolReader: {
+        loadSnapshot: (configuration) => harness.ctx.protocolReader.loadSnapshot(configuration),
+        loadRevision: async () => ({ ...before.revision, gitCommit: "def5678" }),
+      },
+      healthReader: {
+        ...harness.ctx.healthReader,
+        getTasksAvailability: async () => ({ enabled: true, status: "available" as const, message: "Tasks is available." }),
+      },
+    };
+    const engine = createDispatchEngine(ctx, () => ["monorepo"]);
+    const firstStart = await engine.requestRun({ ...MANUAL_REQUEST, idempotencyKey: "bbf:v1:monorepo:run-now:923e4567-e89b-42d3-a456-426614174102" as never });
+    if (!firstStart.ok) throw new Error(`expected success: ${firstStart.error.message}`);
+    const firstRunId = firstStart.result.runId!;
+    const first = (await harness.store.getRun({ repositoryKey: "monorepo", runId: firstRunId })).run!;
+    const firstAttempt = first.attempts[0]!;
+    const firstMarker = factorySettlementMarker(firstAttempt.attemptId);
+    harness.store.recordSettlementMutationIntent({
+      runId: firstRunId,
+      attemptId: firstAttempt.attemptId,
+      repositoryKey: "monorepo",
+      taskId: "task-1",
+      marker: firstMarker,
+      issuedAt: "2026-09-10T02:00:01.000Z",
+    });
+    tasks.clientTask.description = `Factory run card\n\n${firstMarker}`;
+    tasks.clientTask.status = "in_review";
+    const finishedAt = harness.clock.value.toISOString();
+    harness.store.updateDispatchAttempt({ ...firstAttempt, status: "completed", finishedAt });
+    harness.store.updateRunDispatch({
+      repositoryKey: "monorepo",
+      runId: firstRunId,
+      status: "completed",
+      startedAt: first.summary.startedAt,
+      finishedAt,
+      providerId: first.summary.providerId!,
+      workerThreadId: first.summary.workerThreadId!,
+      projectId: first.summary.projectId!,
+      environmentId: first.summary.environmentId,
+      repositoryRevision: first.summary.repositoryRevision,
+      taskId: first.summary.taskId,
+    });
+    const firstLease = harness.store.getLeaseForRun(firstRunId)!;
+    harness.store.updateOwnershipLease({ ...firstLease, status: "released" });
+
+    const secondStart = await engine.requestRun({ ...MANUAL_REQUEST, idempotencyKey: "bbf:v1:monorepo:run-now:923e4567-e89b-42d3-a456-426614174103" as never });
+    if (!secondStart.ok) throw new Error(`expected success: ${secondStart.error.message}`);
+    const secondRunId = secondStart.result.runId!;
+    tasks.clientTask.status = "done";
+    tasks.client.listTaskThreads = async () => [{
+      threadId: "thread-2",
+      presetName: "factory",
+      title: tasks.clientTask.title,
+      liveStatus: "idle",
+    }];
+    harness.threads.threads.get("thread-2")!.status = "idle";
+    await engine.reconcile("monorepo");
+
+    expect((await harness.store.getRun({ repositoryKey: "monorepo", runId: secondRunId })).run?.summary.status).toBe("reconciliation-required");
+    expect(harness.store.listSettlementMutationIntents(secondRunId)).toHaveLength(0);
+  });
+
+  it("matches markers surrounded by whitespace but rejects strict prefixes", async () => {
+    const runCase = async (descriptionForMarker: (marker: string) => string, idempotencySuffix: string) => {
+      const harness = makeHarness();
+      makeTasksReady(harness);
+      const tasks = makeTasksClient();
+      harness.store.createTasksApproval({
+        approvalId: `approval-task-marker-${idempotencySuffix}`,
+        repositoryKey: "monorepo",
+        taskId: "task-1",
+        operationClass: "execute",
+        contentRevision: deriveTasksContentRevision(tasks.clientTask),
+        provenance: { source: "test" },
+      });
+      const before = await harness.ctx.protocolReader.loadSnapshot(harness.entry.configuration);
+      const ctx: DispatchContext = {
+        ...harness.ctx,
+        tasksIntegration: "enabled",
+        tasksClient: tasks.client,
+        protocolReader: {
+          loadSnapshot: (configuration) => harness.ctx.protocolReader.loadSnapshot(configuration),
+          loadRevision: async () => ({ ...before.revision, gitCommit: "def5678" }),
+        },
+        healthReader: {
+          ...harness.ctx.healthReader,
+          getTasksAvailability: async () => ({ enabled: true, status: "available" as const, message: "Tasks is available." }),
+        },
+      };
+      const engine = createDispatchEngine(ctx, () => ["monorepo"]);
+      const result = await engine.requestRun({ ...MANUAL_REQUEST, idempotencyKey: `bbf:v1:monorepo:run-now:923e4567-e89b-42d3-a456-426614174${idempotencySuffix}` as never });
+      if (!result.ok) throw new Error(`expected success: ${result.error.message}`);
+      const runId = result.result.runId!;
+      const detail = (await harness.store.getRun({ repositoryKey: "monorepo", runId })).run!;
+      const attemptId = detail.attempts[0]!.attemptId;
+      const marker = factorySettlementMarker(attemptId);
+      harness.store.recordSettlementMutationIntent({
+        runId,
+        attemptId,
+        repositoryKey: "monorepo",
+        taskId: "task-1",
+        marker,
+        issuedAt: "2026-09-10T02:00:01.000Z",
+      });
+      tasks.clientTask.status = "done";
+      tasks.clientTask.description = descriptionForMarker(marker);
+      harness.threads.threads.get("thread-1")!.status = "idle";
+      await engine.reconcile("monorepo");
+      return (await harness.store.getRun({ repositoryKey: "monorepo", runId })).run!.summary.status;
+    };
+
+    await expect(runCase((marker) => `Factory run card\n\t  ${marker}  \t`, "104")).resolves.toBe("completed");
+    await expect(runCase((marker) => `Factory run card\n${marker}X`, "105")).resolves.toBe("reconciliation-required");
+  });
+
   it("settles when a late Tasks card mutation already left the card done", async () => {
     vi.useFakeTimers();
     const harness = makeHarness();

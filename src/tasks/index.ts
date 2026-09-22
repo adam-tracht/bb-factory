@@ -7,6 +7,34 @@ const TASKS_PAGE_LIMIT = 500;
 const TASKS_STALE_RESTARTS = 1;
 const FACTORY_SETTLEMENT_MARKER_PREFIX = "factory-settled:";
 const FACTORY_SETTLEMENT_MARKER_MAX_LENGTH = 128;
+const FACTORY_SETTLEMENT_MARKER_PATTERN = /(?<!\S)factory-settled:\S+/gu;
+
+function normalizeSettlementMarkerText(value: string): string {
+  return value.replace(/\s+/gu, " ").trim();
+}
+
+/** Parse settlement marker tokens after Tasks-side whitespace normalization. */
+export function parseFactorySettlementMarkers(description: string | null | undefined): string[] {
+  const normalized = normalizeSettlementMarkerText(description ?? "");
+  return [...normalized.matchAll(FACTORY_SETTLEMENT_MARKER_PATTERN)].map((match) => match[0]);
+}
+
+/** Remove only standalone Factory settlement marker lines from a description. */
+export function stripFactorySettlementMarkers(description: string | null | undefined): string | null {
+  if (description === null || description === undefined) return null;
+  const lines = description.split(/\r?\n/gu);
+  let removedMarker = false;
+  const keptLines = lines.filter((line) => {
+    const normalizedLine = normalizeSettlementMarkerText(line);
+    const markers = parseFactorySettlementMarkers(line);
+    const isMarkerLine = markers.length === 1 && markers[0] === normalizedLine;
+    if (isMarkerLine) removedMarker = true;
+    return !isMarkerLine;
+  });
+  if (!removedMarker) return description;
+  const stripped = keptLines.join("\n");
+  return stripped.endsWith("\n") ? stripped.slice(0, -1) : stripped;
+}
 
 /** Stable, bounded attribution text written with Factory's settlement mutation. */
 export function factorySettlementMarker(attemptId: string): string {
@@ -162,7 +190,7 @@ export function deriveTasksContentRevision(
 ): string {
   const content: TasksApprovalContent = tasksApprovalContentSchema.parse({
     title: task.title,
-    description: task.description ?? null,
+    description: stripFactorySettlementMarkers(task.description),
     dueDate: task.dueDate,
     labelIds: [...(task.labelIds ?? [])].sort(),
     parentTaskId: task.parentTaskId,

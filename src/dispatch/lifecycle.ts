@@ -14,7 +14,7 @@ import { lastNonEmptyLine, parseCurrentState, parseRunRecord } from "../protocol
 import { PROTOCOL_PATHS } from "../protocol/paths.js";
 import type { ImmutableRunRecord } from "../protocol/types.js";
 import type { OperationalTransaction } from "../storage/index.js";
-import { factorySettlementMarker } from "../tasks/index.js";
+import { factorySettlementMarker, parseFactorySettlementMarkers, type TasksTask } from "../tasks/index.js";
 import {
   boundedDiagnostic,
   PENDING_RUN_GRACE_MS,
@@ -38,7 +38,7 @@ const LOOKUP_DAY_MS = 24 * 60 * 60 * 1000;
 export const RECONCILE_EXTERNAL_TIMEOUT_MS = 60_000;
 
 function hasFactorySettlementMarker(description: string | null | undefined, marker: string): boolean {
-  return (description ?? "").split(/\r?\n/gu).some((line) => line.trim() === marker);
+  return parseFactorySettlementMarkers(description).includes(marker);
 }
 
 function appendFactorySettlementMarker(description: string | null | undefined, marker: string): string {
@@ -1165,19 +1165,17 @@ async function reconcileTasksTerminalRun(
   const terminalAttempt = [...detail.attempts].reverse().find((attempt) =>
     attempt.runId === run.runId && ACTIVE_ATTEMPT_STATUSES.includes(attempt.status as typeof ACTIVE_ATTEMPT_STATUSES[number]),
   );
-  const expectedSettlementMarker = terminalAttempt === undefined
+  const mutationMarker = terminalAttempt === undefined
     ? null
     : factorySettlementMarker(terminalAttempt.attemptId);
-  const settlementIntent = terminalAttempt === undefined
-    ? null
-    : ctx.store.getSettlementMutationIntent(run.runId, terminalAttempt.attemptId);
+  const settlementIntents = ctx.store.listSettlementMutationIntents(run.runId);
   const cardDoneByFactory = taskStatus === "done"
     && liveStatus !== "failed"
-    && settlementIntent?.taskId === run.taskId
-    && settlementIntent?.cardStatusAtIssue === "in_review"
-    && settlementIntent?.marker === expectedSettlementMarker
-    && expectedSettlementMarker !== null
-    && hasFactorySettlementMarker(taskDescription, expectedSettlementMarker);
+    && settlementIntents.some((intent) =>
+      intent.runId === run.runId
+      && intent.taskId === run.taskId
+      && intent.cardStatusAtIssue === "in_review"
+      && hasFactorySettlementMarker(taskDescription, intent.marker));
   if (taskStatus === "done" && liveStatus !== "failed" && !cardDoneByFactory) {
     markRunForReconciliation(ctx, detail, "Tasks card is done without a Factory settlement mutation intent");
     return false;
@@ -1215,11 +1213,10 @@ async function reconcileTasksTerminalRun(
     return false;
   }
   if (status === "completed" && !cardDoneByFactory) {
-    if (terminalAttempt === undefined) {
+    if (terminalAttempt === undefined || mutationMarker === null) {
       markRunForReconciliation(ctx, detail, "Tasks settlement has no active dispatch attempt for mutation attribution");
       return false;
     }
-    const mutationMarker = factorySettlementMarker(terminalAttempt.attemptId);
     ctx.store.recordSettlementMutationIntent({
       runId: run.runId,
       attemptId: terminalAttempt.attemptId,
@@ -1228,15 +1225,31 @@ async function reconcileTasksTerminalRun(
       marker: mutationMarker,
       issuedAt: ctx.now().toISOString(),
     });
+    let settlementTask: TasksTask | null;
+    try {
+      settlementTask = await withReconcileTimeout(
+        ctx.tasksClient.getTask(run.taskId),
+        `Tasks card pre-settlement read for ${run.runId}`,
+      );
+    } catch (error) {
+      if (isReconcileTimeout(error)) throw error;
+      markRunForReconciliation(ctx, detail, `Tasks card pre-settlement read failed: ${errorMessage(error)}`);
+      return false;
+    }
+    if (!settlementTask) {
+      markRunForReconciliation(ctx, detail, "Tasks card pre-settlement read could not find the attached task");
+      return false;
+    }
     let cardDone = false;
     let mutationTimedOut = false;
     let mutationFailureReason: string | null = null;
     try {
+      // Residual lost-update window: Tasks updateTask has no expected-revision parameter, so this read cannot be paired atomically with the mutation.
       const result = await withReconcileTimeout(
         ctx.tasksClient.updateTask({
           taskId: run.taskId,
           status: "done",
-          description: appendFactorySettlementMarker(taskDescription, mutationMarker),
+          description: appendFactorySettlementMarker(settlementTask.description, mutationMarker),
         }),
         `Tasks card settlement for ${run.runId}`,
       );
