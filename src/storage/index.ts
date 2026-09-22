@@ -478,6 +478,8 @@ export const OPERATIONAL_STORAGE_MIGRATIONS = [
   )`,
   `CREATE INDEX settlement_mutation_intent_task_lookup
     ON settlement_mutation_intents(repository_key, task_id, run_id, attempt_id)`,
+  `ALTER TABLE settlement_mutation_intents
+     ADD COLUMN marker TEXT NOT NULL DEFAULT '' CHECK (length(marker) <= 128)`,
 ] as const;
 
 const tasksOperationClassSchema = z.string().trim().min(1).max(128);
@@ -618,6 +620,7 @@ export interface SettlementMutationIntent {
   readonly repositoryKey: RepositoryKey;
   readonly taskId: string;
   readonly cardStatusAtIssue: "in_review";
+  readonly marker: string;
   readonly issuedAt: string;
 }
 
@@ -626,6 +629,7 @@ export interface CreateSettlementMutationIntentInput {
   readonly attemptId: string;
   readonly repositoryKey: RepositoryKey;
   readonly taskId: string;
+  readonly marker: string;
   readonly issuedAt: string;
 }
 
@@ -1012,6 +1016,7 @@ interface SettlementMutationIntentRow {
   repository_key: string;
   task_id: string;
   card_status_at_issue: string;
+  marker: string;
   issued_at: string;
 }
 
@@ -2617,6 +2622,7 @@ function recordSettlementMutationIntent(
   const attemptId = z.string().trim().min(1).parse(input.attemptId);
   const repositoryKey = repositoryKeySchema.parse(input.repositoryKey);
   const taskId = tasksTaskIdSchema.parse(input.taskId);
+  const marker = z.string().trim().min(1).max(128).parse(input.marker);
   const issuedAt = isoTimestampSchema.parse(input.issuedAt);
   assertRunRepository(db, runId, repositoryKey);
   const attempt = db
@@ -2629,14 +2635,29 @@ function recordSettlementMutationIntent(
   }
   db.prepare(
     `INSERT INTO settlement_mutation_intents (
-       run_id, attempt_id, repository_key, task_id, card_status_at_issue, issued_at
-     ) VALUES (?, ?, ?, ?, 'in_review', ?)
+       run_id, attempt_id, repository_key, task_id, card_status_at_issue, marker, issued_at
+     ) VALUES (?, ?, ?, ?, 'in_review', ?, ?)
      ON CONFLICT (run_id, attempt_id) DO NOTHING`,
-  ).run(runId, attemptId, repositoryKey, taskId, issuedAt);
+  ).run(runId, attemptId, repositoryKey, taskId, marker, issuedAt);
   const recorded = readSettlementMutationIntent(db, runId, attemptId);
   if (recorded === null) throw new Error(`could not persist settlement mutation intent for run '${runId}'`);
   if (recorded.taskId !== taskId || recorded.repositoryKey !== repositoryKey) {
     throw new Error(`settlement mutation intent for run '${runId}' does not match the current Tasks card`);
+  }
+  if (recorded.marker === "") {
+    db.prepare(
+      `UPDATE settlement_mutation_intents
+          SET marker = ?, issued_at = ?
+        WHERE run_id = ? AND attempt_id = ? AND marker = ''`,
+    ).run(marker, issuedAt, runId, attemptId);
+    const upgraded = readSettlementMutationIntent(db, runId, attemptId);
+    if (upgraded === null || upgraded.marker !== marker) {
+      throw new Error(`could not upgrade settlement mutation intent for run '${runId}'`);
+    }
+    return upgraded;
+  }
+  if (recorded.marker !== marker) {
+    throw new Error(`settlement mutation intent for run '${runId}' does not match the current attribution marker`);
   }
   return recorded;
 }
@@ -2953,7 +2974,7 @@ function readSettlementMutationIntent(
 ): SettlementMutationIntent | null {
   const row = db
     .prepare<unknown[], SettlementMutationIntentRow>(
-      `SELECT run_id, attempt_id, repository_key, task_id, card_status_at_issue, issued_at
+      `SELECT run_id, attempt_id, repository_key, task_id, card_status_at_issue, marker, issued_at
          FROM settlement_mutation_intents
         WHERE run_id = ? AND attempt_id = ?`,
     )
@@ -2968,6 +2989,7 @@ function readSettlementMutationIntent(
     repositoryKey: repositoryKeySchema.parse(row.repository_key),
     taskId: tasksTaskIdSchema.parse(row.task_id),
     cardStatusAtIssue: z.literal("in_review").parse(row.card_status_at_issue),
+    marker: z.string().max(128).parse(row.marker),
     issuedAt: isoTimestampSchema.parse(row.issued_at),
   };
 }

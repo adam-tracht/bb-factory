@@ -5,6 +5,18 @@ import { z } from "zod";
 const TASKS_PLUGIN_ID = "tasks";
 const TASKS_PAGE_LIMIT = 500;
 const TASKS_STALE_RESTARTS = 1;
+const FACTORY_SETTLEMENT_MARKER_PREFIX = "factory-settled:";
+const FACTORY_SETTLEMENT_MARKER_MAX_LENGTH = 128;
+
+/** Stable, bounded attribution text written with Factory's settlement mutation. */
+export function factorySettlementMarker(attemptId: string): string {
+  const parsedAttemptId = z.string().trim().min(1).parse(attemptId);
+  const marker = `${FACTORY_SETTLEMENT_MARKER_PREFIX}${parsedAttemptId}`;
+  if (marker.length > FACTORY_SETTLEMENT_MARKER_MAX_LENGTH) {
+    throw new Error("settlement mutation marker exceeds the Tasks description limit");
+  }
+  return marker;
+}
 
 export const tasksIntegrationModeSchema = z.enum(["disabled", "enabled"]);
 export type TasksIntegrationMode = z.infer<typeof tasksIntegrationModeSchema>;

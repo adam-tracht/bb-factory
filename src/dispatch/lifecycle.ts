@@ -14,6 +14,7 @@ import { lastNonEmptyLine, parseCurrentState, parseRunRecord } from "../protocol
 import { PROTOCOL_PATHS } from "../protocol/paths.js";
 import type { ImmutableRunRecord } from "../protocol/types.js";
 import type { OperationalTransaction } from "../storage/index.js";
+import { factorySettlementMarker } from "../tasks/index.js";
 import {
   boundedDiagnostic,
   PENDING_RUN_GRACE_MS,
@@ -35,6 +36,16 @@ type ForemanState = "success" | "blocked" | "failed-safe" | "no-op";
 const ACTIVE_ATTEMPT_STATUSES = ["pending", "started", "cancel-requested", "reconciliation-required"] as const;
 const LOOKUP_DAY_MS = 24 * 60 * 60 * 1000;
 export const RECONCILE_EXTERNAL_TIMEOUT_MS = 60_000;
+
+function hasFactorySettlementMarker(description: string | null | undefined, marker: string): boolean {
+  return (description ?? "").split(/\r?\n/gu).some((line) => line.trim() === marker);
+}
+
+function appendFactorySettlementMarker(description: string | null | undefined, marker: string): string {
+  if (hasFactorySettlementMarker(description, marker)) return description ?? "";
+  const current = description ?? "";
+  return current.length === 0 ? marker : `${current}\n\n${marker}`;
+}
 
 class ReconcileTimeoutError extends Error {
   constructor(readonly operation: string) {
@@ -1127,6 +1138,7 @@ async function reconcileTasksTerminalRun(
     return false;
   }
   let taskStatus: string;
+  let taskDescription: string | null | undefined;
   let liveStatus: "starting" | "working" | "idle" | "completed" | "failed";
   try {
     const [task, threads] = await Promise.all([
@@ -1139,6 +1151,7 @@ async function reconcileTasksTerminalRun(
       return false;
     }
     taskStatus = task.status;
+    taskDescription = task.description;
     liveStatus = attached.liveStatus;
   } catch (error) {
     if (isReconcileTimeout(error)) throw error;
@@ -1152,13 +1165,19 @@ async function reconcileTasksTerminalRun(
   const terminalAttempt = [...detail.attempts].reverse().find((attempt) =>
     attempt.runId === run.runId && ACTIVE_ATTEMPT_STATUSES.includes(attempt.status as typeof ACTIVE_ATTEMPT_STATUSES[number]),
   );
+  const expectedSettlementMarker = terminalAttempt === undefined
+    ? null
+    : factorySettlementMarker(terminalAttempt.attemptId);
   const settlementIntent = terminalAttempt === undefined
     ? null
     : ctx.store.getSettlementMutationIntent(run.runId, terminalAttempt.attemptId);
   const cardDoneByFactory = taskStatus === "done"
     && liveStatus !== "failed"
     && settlementIntent?.taskId === run.taskId
-    && settlementIntent?.cardStatusAtIssue === "in_review";
+    && settlementIntent?.cardStatusAtIssue === "in_review"
+    && settlementIntent?.marker === expectedSettlementMarker
+    && expectedSettlementMarker !== null
+    && hasFactorySettlementMarker(taskDescription, expectedSettlementMarker);
   if (taskStatus === "done" && liveStatus !== "failed" && !cardDoneByFactory) {
     markRunForReconciliation(ctx, detail, "Tasks card is done without a Factory settlement mutation intent");
     return false;
@@ -1168,21 +1187,6 @@ async function reconcileTasksTerminalRun(
     return false;
   }
   const status = liveStatus === "failed" ? "failed-safe" : "completed";
-  if (status === "completed" && !cardDoneByFactory) {
-    if (terminalAttempt === undefined) {
-      markRunForReconciliation(ctx, detail, "Tasks settlement has no active dispatch attempt for mutation attribution");
-      return false;
-    }
-    // Record the attribution while the read above still proves the card was
-    // in_review, before any later repository read can delay the mutation.
-    ctx.store.recordSettlementMutationIntent({
-      runId: run.runId,
-      attemptId: terminalAttempt.attemptId,
-      repositoryKey: run.repositoryKey,
-      taskId: run.taskId,
-      issuedAt: ctx.now().toISOString(),
-    });
-  }
   if (!recordTasksLiveStatus(ctx, detail, liveStatus)) {
     const current = (await ctx.store.getRun({ repositoryKey: run.repositoryKey, runId: run.runId })).run;
     if (current) {
@@ -1211,15 +1215,32 @@ async function reconcileTasksTerminalRun(
     return false;
   }
   if (status === "completed" && !cardDoneByFactory) {
+    if (terminalAttempt === undefined) {
+      markRunForReconciliation(ctx, detail, "Tasks settlement has no active dispatch attempt for mutation attribution");
+      return false;
+    }
+    const mutationMarker = factorySettlementMarker(terminalAttempt.attemptId);
+    ctx.store.recordSettlementMutationIntent({
+      runId: run.runId,
+      attemptId: terminalAttempt.attemptId,
+      repositoryKey: run.repositoryKey,
+      taskId: run.taskId,
+      marker: mutationMarker,
+      issuedAt: ctx.now().toISOString(),
+    });
     let cardDone = false;
     let mutationTimedOut = false;
     let mutationFailureReason: string | null = null;
     try {
       const result = await withReconcileTimeout(
-        ctx.tasksClient.updateTask({ taskId: run.taskId, status: "done" }),
+        ctx.tasksClient.updateTask({
+          taskId: run.taskId,
+          status: "done",
+          description: appendFactorySettlementMarker(taskDescription, mutationMarker),
+        }),
         `Tasks card settlement for ${run.runId}`,
       );
-      if (result.ok && result.task.status === "done") {
+      if (result.ok && result.task.status === "done" && hasFactorySettlementMarker(result.task.description, mutationMarker)) {
         cardDone = true;
       } else {
         mutationFailureReason = result.ok ? "unexpected card status" : result.error.message;
@@ -1234,7 +1255,8 @@ async function reconcileTasksTerminalRun(
           ctx.tasksClient.getTask(run.taskId),
           `Tasks card post-settlement read for ${run.runId}`,
         );
-        cardDone = currentTask?.status === "done";
+        cardDone = currentTask?.status === "done"
+          && hasFactorySettlementMarker(currentTask.description, mutationMarker);
       } catch (error) {
         if (isReconcileTimeout(error)) throw error;
         markRunForReconciliation(ctx, detail, `Tasks card done projection failed: ${errorMessage(error)}`);
