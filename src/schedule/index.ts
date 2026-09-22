@@ -71,9 +71,6 @@ export async function schedulerTick(
   const nowS = dispatcherNowSeconds(ctx.now);
   if (nowS - state.lastStartAt < settings.minimumStartGapSeconds) return skip("inside the minimum start gap");
 
-  const lease = ctx.store.getCurrentOwnership(repositoryKey);
-  if (lease && lease.status !== "released") return skip(`an active run '${lease.runId}' holds ownership`);
-
   const nowMs = now.getTime();
   if (ctx.tasksIntegration === "enabled") {
     const activeForRepository = ctx.store.listActiveRuns(repositoryKey)

@@ -1370,6 +1370,8 @@ const operationalRunSummaryFields = {
   queueItemIds: z.array(nonEmptyString),
   repositoryRevision: repositoryRevisionSchema,
   canonicalRecords: z.array(canonicalFileRecordLinkSchema),
+  /** Set when the worker is observed terminal, before settlement completes. */
+  workerTerminalObservedAt: isoTimestamp.nullable().optional(),
   taskId: nonEmptyString.nullable().optional(),
 };
 

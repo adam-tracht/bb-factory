@@ -115,7 +115,7 @@ export function hasRecordedWorker(workerThreadId: string | null): workerThreadId
 
 /** The only run states that consume a dispatch slot after their start grace. */
 export function dispatchRunOccupiesSlot(
-  run: Pick<OperationalRunSummary, "status" | "requestedAt" | "workerThreadId">,
+  run: Pick<OperationalRunSummary, "status" | "requestedAt" | "workerThreadId" | "workerTerminalObservedAt">,
   nowMs: number,
 ): boolean {
   if (run.status === "pending") {
@@ -123,6 +123,7 @@ export function dispatchRunOccupiesSlot(
     return !Number.isFinite(requestedAtMs) || nowMs - requestedAtMs <= PENDING_RUN_GRACE_MS;
   }
   return ["started", "cancel-requested", "reconciliation-required"].includes(run.status)
+    && run.workerTerminalObservedAt == null
     && hasRecordedWorker(run.workerThreadId);
 }
 
@@ -186,6 +187,7 @@ export function runDispatchUpdate(
     environmentId?: string | null;
     repositoryRevision?: OperationalRunSummary["repositoryRevision"];
     canonicalRecords?: readonly CanonicalFileRecordLink[];
+    workerTerminalObservedAt?: string | null;
   },
 ): RunDispatchUpdate {
   return {
@@ -199,6 +201,9 @@ export function runDispatchUpdate(
     projectId: update.projectId ?? run.projectId ?? "unknown",
     environmentId: update.environmentId === undefined ? run.environmentId : update.environmentId,
     repositoryRevision: update.repositoryRevision ?? run.repositoryRevision,
+    workerTerminalObservedAt: update.workerTerminalObservedAt === undefined
+      ? (run.workerTerminalObservedAt ?? null)
+      : update.workerTerminalObservedAt,
     ...(update.canonicalRecords === undefined ? {} : { canonicalRecords: update.canonicalRecords }),
   };
 }

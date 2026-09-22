@@ -465,6 +465,7 @@ export const OPERATIONAL_STORAGE_MIGRATIONS = [
   `ALTER TABLE operational_runs ADD COLUMN task_id TEXT`,
   `ALTER TABLE dispatch_attempts ADD COLUMN task_id TEXT`,
   `ALTER TABLE dispatch_attempts ADD COLUMN tasks_live_status TEXT CHECK (tasks_live_status IS NULL OR tasks_live_status IN ('starting', 'working', 'idle', 'completed', 'failed'))`,
+  `ALTER TABLE operational_runs ADD COLUMN worker_terminal_observed_at TEXT`,
 ] as const;
 
 const tasksOperationClassSchema = z.string().trim().min(1).max(128);
@@ -611,6 +612,7 @@ export interface RunDispatchUpdate {
   readonly environmentId: string | null;
   readonly repositoryRevision: RepositoryRevision;
   readonly canonicalRecords?: readonly CanonicalFileRecordLink[];
+  readonly workerTerminalObservedAt?: string | null;
   readonly taskId?: string | null;
 }
 
@@ -895,6 +897,7 @@ interface RunRow {
   queue_item_ids_json: string;
   repository_revision_json: string;
   canonical_records_json: string;
+  worker_terminal_observed_at: string | null;
   task_id: string | null;
 }
 
@@ -1197,7 +1200,8 @@ class OperationalSqliteStore implements OperationalStateStore {
       .prepare<unknown[], RunRow>(
         `SELECT run_id, repository_key, requested_at, status, started_at, finished_at,
                 provider_id, worker_thread_id, project_id, environment_id,
-                queue_item_ids_json, repository_revision_json, canonical_records_json, task_id
+                queue_item_ids_json, repository_revision_json, canonical_records_json,
+                worker_terminal_observed_at, task_id
            FROM operational_runs
           WHERE repository_key = ?
             AND (? IS NULL OR requested_at < ? OR (requested_at = ? AND run_id < ?))
@@ -1221,7 +1225,8 @@ class OperationalSqliteStore implements OperationalStateStore {
                 requested_at, base_revision_json, queue_item_ids_json,
                 authorization_provenance_json, status, started_at, finished_at,
                 provider_id, worker_thread_id, project_id, environment_id,
-                repository_revision_json, canonical_records_json, task_id
+                repository_revision_json, canonical_records_json,
+                worker_terminal_observed_at, task_id
            FROM operational_runs
           WHERE repository_key = ? AND run_id = ?`,
       )
@@ -1353,7 +1358,8 @@ class OperationalSqliteStore implements OperationalStateStore {
       .prepare<unknown[], RunRow>(
         `SELECT run_id, repository_key, requested_at, status, started_at, finished_at,
                 provider_id, worker_thread_id, project_id, environment_id,
-                queue_item_ids_json, repository_revision_json, canonical_records_json, task_id
+                queue_item_ids_json, repository_revision_json, canonical_records_json,
+                worker_terminal_observed_at, task_id
            FROM operational_runs
           WHERE repository_key = ? AND status IN ('pending', 'started', 'cancel-requested', 'reconciliation-required')
           ORDER BY requested_at ASC, run_id ASC`,
@@ -2219,6 +2225,7 @@ function assertGlobalCapacity(db: SqliteDatabase, limit: number, excludingRunId?
             run.status IN ('started', 'cancel-requested', 'reconciliation-required')
             AND lease.worker_thread_id IS NOT NULL
             AND lease.worker_thread_id NOT IN ('spawn-ambiguous', 'unknown-thread', 'never-dispatched')
+            AND run.worker_terminal_observed_at IS NULL
           )
         )
           AND (? IS NULL OR run.run_id <> ?)`,
@@ -2244,6 +2251,7 @@ function assertRepositoryCapacity(db: SqliteDatabase, repositoryKey: RepositoryK
               run.status IN ('started', 'cancel-requested', 'reconciliation-required')
               AND lease.worker_thread_id IS NOT NULL
               AND lease.worker_thread_id NOT IN ('spawn-ambiguous', 'unknown-thread', 'never-dispatched')
+              AND run.worker_terminal_observed_at IS NULL
             )
           )
           AND (? IS NULL OR run.run_id <> ?)`,
@@ -2271,7 +2279,8 @@ function updateRunDispatch(db: SqliteDatabase, input: RunDispatchUpdate): void {
     .prepare<unknown[], RunRow>(
       `SELECT run_id, repository_key, requested_at, status, started_at, finished_at,
               provider_id, worker_thread_id, project_id, environment_id,
-              queue_item_ids_json, repository_revision_json, canonical_records_json, task_id
+              queue_item_ids_json, repository_revision_json, canonical_records_json,
+              worker_terminal_observed_at, task_id
          FROM operational_runs
         WHERE repository_key = ? AND run_id = ?`,
     )
@@ -2298,12 +2307,16 @@ function updateRunDispatch(db: SqliteDatabase, input: RunDispatchUpdate): void {
     taskId: input.taskId === undefined ? currentSummary.taskId : input.taskId,
     repositoryRevision,
     canonicalRecords,
+    workerTerminalObservedAt: input.workerTerminalObservedAt === undefined
+      ? (currentSummary.workerTerminalObservedAt ?? null)
+      : input.workerTerminalObservedAt,
   });
   db.prepare(
     `UPDATE operational_runs
         SET status = ?, started_at = ?, finished_at = ?, provider_id = ?,
             worker_thread_id = ?, project_id = ?, environment_id = ?,
-            repository_revision_json = ?, canonical_records_json = ?, task_id = ?
+            repository_revision_json = ?, canonical_records_json = ?,
+            worker_terminal_observed_at = ?, task_id = ?
       WHERE repository_key = ? AND run_id = ?`,
   ).run(
     summary.status,
@@ -2315,6 +2328,7 @@ function updateRunDispatch(db: SqliteDatabase, input: RunDispatchUpdate): void {
     summary.environmentId,
     stableJson(summary.repositoryRevision),
     stableJson(summary.canonicalRecords),
+    summary.workerTerminalObservedAt ?? null,
     summary.taskId ?? null,
     repositoryKey,
     input.runId,
@@ -2738,7 +2752,8 @@ function readRunSummary(db: SqliteDatabase, runId: string): OperationalRunSummar
     .prepare<unknown[], RunRow>(
       `SELECT run_id, repository_key, requested_at, status, started_at, finished_at,
               provider_id, worker_thread_id, project_id, environment_id,
-              queue_item_ids_json, repository_revision_json, canonical_records_json, task_id
+              queue_item_ids_json, repository_revision_json, canonical_records_json,
+              worker_terminal_observed_at, task_id
          FROM operational_runs
         WHERE run_id = ?`,
     )
@@ -2833,6 +2848,7 @@ function runSummaryFromRow(row: RunRow): OperationalRunSummary {
     queueItemIds: parseJson(row.queue_item_ids_json),
     repositoryRevision: parseJson(row.repository_revision_json),
     canonicalRecords: parseJson(row.canonical_records_json),
+    workerTerminalObservedAt: row.worker_terminal_observed_at,
     ...(row.task_id === null ? {} : { taskId: row.task_id }),
   });
 }

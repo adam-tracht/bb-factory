@@ -228,7 +228,7 @@ export async function stopRun(ctx: DispatchContext, input: StopRunInput): Promis
       if (!released) {
         return actionError(
           "conflict",
-          `Run '${run.runId}' has an unresolved worker lease that can be released only after the durable quarantine timeout while repository dispatch is paused.`,
+          `Run '${run.runId}' still has an unresolved worker lease. Background reconciliation will release it when no worker is possible or its quarantine deadline expires.`,
         );
       }
       return actionSuccess({

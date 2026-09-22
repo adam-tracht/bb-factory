@@ -7,7 +7,7 @@ import { selectProvider } from "../src/dispatch/preflight.js";
 import { ensureTasksRunCard } from "../src/dispatch/tasks.js";
 import { projectTasks } from "../src/tasks/migration.js";
 import { schedulerTick, cronMatches } from "../src/schedule/index.js";
-import { QUARANTINE_ABANDONMENT_GRACE_MS, RECONCILIATION_GRACE_MS } from "../src/dispatch/types.js";
+import { dispatchRunOccupiesSlot, QUARANTINE_ABANDONMENT_GRACE_MS, RECONCILIATION_GRACE_MS } from "../src/dispatch/types.js";
 import type { DispatchContext } from "../src/dispatch/types.js";
 import { deriveTasksContentRevision, type TasksClient, type TasksTask, type TasksTaskThread } from "../src/tasks/index.js";
 import {
@@ -618,6 +618,32 @@ describe("dispatch engine", () => {
     expect([first, second].find((result) => !result.ok)).toMatchObject({ error: { category: "conflict" } });
     expect(threads.spawnCalls).toHaveLength(1);
     expect(store.listActiveRuns("monorepo").length + store.listActiveRuns("other").length).toBe(1);
+  });
+
+  it("frees capacity after a terminal worker is observed while settlement is pending", async () => {
+    const { engine, store, threads, clock } = makeMultiRepositoryHarness({ settings: { concurrencyLimit: 1 } });
+    const first = await engine.requestRun({
+      ...MANUAL_REQUEST,
+      idempotencyKey: "bbf:v1:monorepo:run-now:823e4567-e89b-42d3-a456-426614174003" as never,
+    });
+    if (!first.ok) throw new Error("expected first dispatch to succeed");
+    const runId = first.result.runId!;
+    threads.threads.get("thread-1")!.status = "idle";
+
+    await engine.reconcile("monorepo");
+
+    const pendingSettlement = (await store.getRun({ repositoryKey: "monorepo", runId })).run!;
+    expect(pendingSettlement.summary.status).toBe("reconciliation-required");
+    expect(pendingSettlement.summary.workerTerminalObservedAt).not.toBeNull();
+    expect(dispatchRunOccupiesSlot(pendingSettlement.summary, clock.value.getTime())).toBe(false);
+
+    const second = await engine.requestRun({
+      repositoryKey: "other",
+      trigger: "manual",
+      idempotencyKey: "bbf:v1:other:run-now:823e4567-e89b-42d3-a456-426614174004" as never,
+    });
+    expect(second).toMatchObject({ ok: true, result: { status: "accepted" } });
+    expect(threads.spawnCalls).toHaveLength(2);
   });
 
   it("runs an explicit provider override with caller-explicit execution inputs", async () => {
@@ -2348,7 +2374,7 @@ describe("scheduler", () => {
     clock.value = new Date(2026, 8, 10, 4, 0);
     const held = await schedulerTick(ctx, "monorepo", ["monorepo"]);
     expect(held.action).toBe("skipped");
-    expect(held.reason).toContain("ownership");
+    expect(held.reason).toContain("concurrency");
   });
 
   it("allows another repository to dispatch while one repository is stuck", async () => {

@@ -237,6 +237,7 @@ export async function retryAttempt(ctx: DispatchContext, input: RetryAttemptInpu
         status: "started",
         finishedAt: null,
         workerThreadId: threadId,
+        workerTerminalObservedAt: null,
       }));
       transaction.createDispatchAttempt(pendingAttempt);
       transaction.updateOwnershipLease({
@@ -275,6 +276,7 @@ export async function retryAttempt(ctx: DispatchContext, input: RetryAttemptInpu
         status: "reconciliation-required",
         finishedAt: detectedAtIso,
         workerThreadId: threadId,
+        workerTerminalObservedAt: null,
       }));
       transaction.updateDispatchAttempt({ ...currentAttempt, status: "reconciliation-required", finishedAt: detectedAtIso });
       transaction.updateOwnershipLease({ ...currentLease, status: "reconciliation-required" });
@@ -294,7 +296,12 @@ export async function retryAttempt(ctx: DispatchContext, input: RetryAttemptInpu
     transaction.updateDispatchAttempt({ ...currentAttempt, status: "started", startedAt });
     const currentRun = transaction.getRunSummary(run.runId);
     if (!currentRun) return false;
-    transaction.updateRunDispatch(runDispatchUpdate(currentRun, { status: "started", finishedAt: null, workerThreadId: threadId }));
+    transaction.updateRunDispatch(runDispatchUpdate(currentRun, {
+      status: "started",
+      finishedAt: null,
+      workerThreadId: threadId,
+      workerTerminalObservedAt: null,
+    }));
     return true;
   });
   if (!applied) {

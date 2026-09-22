@@ -41,6 +41,9 @@ while either is true:
 Anything else frees the slot. A dead worker never holds ownership; its lease
 lives only long enough for settlement to run.
 
+A terminal-worker observation is durable settlement metadata and frees capacity
+immediately while settlement continues.
+
 ## States and their single exits
 
 - `held`, no worker yet (spawn in flight). Exits: spawn resolves with a thread
