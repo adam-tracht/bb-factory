@@ -6,6 +6,7 @@ import { reconcileRepository } from "../dispatch/lifecycle.js";
 import { startRun } from "../dispatch/start.js";
 import {
   dispatcherNowSeconds,
+  dispatchRunOccupiesSlot,
   nightKeyAt,
   nightState,
   type DispatchContext,
@@ -73,11 +74,16 @@ export async function schedulerTick(
   const lease = ctx.store.getCurrentOwnership(repositoryKey);
   if (lease && lease.status !== "released") return skip(`an active run '${lease.runId}' holds ownership`);
 
+  const nowMs = now.getTime();
   if (ctx.tasksIntegration === "enabled") {
-    const activeForRepository = ctx.store.listActiveRuns(repositoryKey).length;
+    const activeForRepository = ctx.store.listActiveRuns(repositoryKey)
+      .filter((run) => dispatchRunOccupiesSlot(run, nowMs)).length;
     if (activeForRepository >= settings.concurrencyLimit) return skip("the concurrency limit is reached");
   } else {
-    const activeAcross = allRepositoryKeys.reduce((count, key) => count + ctx.store.listActiveRuns(key).length, 0);
+    const activeAcross = allRepositoryKeys.reduce(
+      (count, key) => count + ctx.store.listActiveRuns(key).filter((run) => dispatchRunOccupiesSlot(run, nowMs)).length,
+      0,
+    );
     if (activeAcross >= settings.concurrencyLimit) return skip("the concurrency limit is reached");
   }
 

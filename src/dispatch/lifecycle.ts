@@ -24,7 +24,8 @@ import {
   nightKeyAt,
   nightState,
   runDispatchUpdate,
-  sameJson,
+  sameCanonicalRecords,
+  TERMINAL_RUN_STATUSES,
   withWorkerOperation,
   type DispatchContext,
 } from "./types.js";
@@ -32,7 +33,6 @@ import {
 type ThreadStatusValue = "active" | "error" | "idle" | "pending" | "starting" | "stopping";
 type ForemanState = "success" | "blocked" | "failed-safe" | "no-op";
 const ACTIVE_ATTEMPT_STATUSES = ["pending", "started", "cancel-requested", "reconciliation-required"] as const;
-const TERMINAL_RUN_STATUSES = ["completed", "blocked", "failed-safe", "no-op"] as const;
 const LOOKUP_DAY_MS = 24 * 60 * 60 * 1000;
 
 function outcomeToStatus(state: ForemanState): "completed" | "blocked" | "failed-safe" | "no-op" {
@@ -306,7 +306,7 @@ function sameRunGeneration(actual: OperationalRunSummary | null, expected: Opera
     && (actual.taskId ?? null) === (expected.taskId ?? null)
     && sameStringArray(actual.queueItemIds, expected.queueItemIds)
     && sameRevision(actual.repositoryRevision, expected.repositoryRevision)
-    && sameJson(actual.canonicalRecords, expected.canonicalRecords);
+    && sameCanonicalRecords(actual.canonicalRecords, expected.canonicalRecords);
 }
 
 function sameAttemptGeneration(
@@ -1313,11 +1313,32 @@ async function reconcileQuarantinedLease(
   detail: OperationalRunDetail,
 ): Promise<void> {
   const threadId = lease.workerThreadId;
-  if (!threadId || threadId === "spawn-ambiguous" || threadId === "unknown-thread") return;
+  if (threadId === null || threadId === "never-dispatched") {
+    releaseTerminalLease(ctx, lease, detail, false);
+    return;
+  }
+
+  const metadata = ctx.store.getReconciliation(lease.runId);
+  if (threadId === "spawn-ambiguous" || threadId === "unknown-thread") {
+    if (metadata === null) {
+      recordQuarantineDeadline(ctx, lease, "terminal worker identity is unresolved");
+      return;
+    }
+    if (quarantineDeadlinePassed(ctx, metadata.deadlineAt)) {
+      releaseTerminalLease(ctx, lease, detail, true);
+    }
+    return;
+  }
+
   let threadStatus: ThreadStatusValue;
   try {
     threadStatus = (await ctx.sdk.threads.get({ threadId })).status as ThreadStatusValue;
   } catch {
+    if (metadata === null) {
+      recordQuarantineDeadline(ctx, lease, `worker '${threadId}' could not be read`);
+    } else if (quarantineDeadlinePassed(ctx, metadata.deadlineAt)) {
+      releaseTerminalLease(ctx, lease, detail, true);
+    }
     return;
   }
   if (!isTerminalThreadStatus(threadStatus)) {
@@ -1333,50 +1354,96 @@ async function reconcileQuarantinedLease(
     } catch {
       // The lease remains quarantined until a later observation confirms exit.
     }
+    if (metadata !== null && quarantineDeadlinePassed(ctx, metadata.deadlineAt)) {
+      releaseTerminalLease(ctx, lease, detail, true);
+    }
     return;
   }
+  releaseTerminalLease(ctx, lease, detail, false);
+}
+
+function quarantineDeadlinePassed(ctx: DispatchContext, deadlineAt: string): boolean {
+  const deadline = Date.parse(deadlineAt);
+  return Number.isFinite(deadline) && ctx.now().getTime() >= deadline + QUARANTINE_ABANDONMENT_GRACE_MS;
+}
+
+function recordQuarantineDeadline(
+  ctx: DispatchContext,
+  lease: NonNullable<ReturnType<DispatchContext["store"]["getCurrentOwnership"]>>,
+  reason: string,
+): void {
+  const detectedAt = ctx.now();
   ctx.store.withTransaction((transaction) => {
-    const expectedRun = detail.summary;
     const currentLease = transaction.getLeaseForRun(lease.runId);
     if (currentLease === null || !sameLeaseGeneration(currentLease, lease) || currentLease.status !== "reconciliation-required") return;
-    const currentRun = transaction.getRunSummary(expectedRun.runId);
-    if (!sameRunGeneration(currentRun, expectedRun)
-      || currentLease.repositoryKey !== lease.repositoryKey
-      || currentLease.workerThreadId !== threadId
-      || !currentRun
-      || !TERMINAL_RUN_STATUSES.includes(currentRun.status as typeof TERMINAL_RUN_STATUSES[number])) return;
-    const expectedAttempt = [...detail.attempts].reverse().find((attempt) => attempt.runId === expectedRun.runId);
-    if (expectedAttempt !== undefined) {
-      const currentAttempt = transaction.getDispatchAttempt(expectedAttempt.attemptId);
-      if (currentAttempt === null
-        || currentAttempt.attemptId !== expectedAttempt.attemptId
-        || currentAttempt.runId !== expectedAttempt.runId
-        || currentAttempt.repositoryKey !== expectedAttempt.repositoryKey
-        || currentAttempt.providerId !== expectedAttempt.providerId
-        || currentAttempt.model !== expectedAttempt.model
-        || currentAttempt.reasoningLevel !== expectedAttempt.reasoningLevel
-        || currentAttempt.workerThreadId !== expectedAttempt.workerThreadId
-        || currentAttempt.status !== expectedAttempt.status
-        || currentAttempt.startedAt !== expectedAttempt.startedAt
-        || currentAttempt.finishedAt !== expectedAttempt.finishedAt) return;
-    }
-    transaction.updateOwnershipLease({ ...currentLease, workerThreadId: threadId, status: "released" });
+    if (transaction.getReconciliation(lease.runId) !== null) return;
+    transaction.recordReconciliation({
+      runId: lease.runId,
+      firstDetectedAt: detectedAt.toISOString(),
+      deadlineAt: new Date(detectedAt.getTime() + RECONCILIATION_GRACE_MS).toISOString(),
+      reasonCode: boundedDiagnostic(reason, 128),
+      rawObservation: null,
+    });
+  });
+}
+
+function releaseTerminalLease(
+  ctx: DispatchContext,
+  lease: NonNullable<ReturnType<DispatchContext["store"]["getCurrentOwnership"]>>,
+  detail: OperationalRunDetail,
+  afterDeadline: boolean,
+): boolean {
+  const metadata = afterDeadline ? ctx.store.getReconciliation(lease.runId) : null;
+  if (afterDeadline && (metadata === null || !quarantineDeadlinePassed(ctx, metadata.deadlineAt))) return false;
+  return ctx.store.withTransaction((transaction) => {
+    const currentLease = transaction.getLeaseForRun(lease.runId);
+    const currentRun = transaction.getRunSummary(detail.summary.runId);
+    const expectedAttempt = [...detail.attempts].reverse().find((attempt) => attempt.runId === detail.summary.runId);
+    const currentAttempt = expectedAttempt === undefined
+      ? null
+      : transaction.getDispatchAttempt(expectedAttempt.attemptId);
+    if (currentLease === null
+      || !sameLeaseGeneration(currentLease, lease)
+      || currentLease.status !== "reconciliation-required"
+      || !sameRunGeneration(currentRun, detail.summary)
+      || currentRun === null
+      || !TERMINAL_RUN_STATUSES.includes(currentRun.status as typeof TERMINAL_RUN_STATUSES[number])
+      || currentLease.workerThreadId !== lease.workerThreadId
+      || (expectedAttempt !== undefined && !sameAttemptGeneration(currentAttempt, expectedAttempt))) return false;
+    transaction.updateOwnershipLease({ ...currentLease, status: "released" });
+    return true;
   });
 }
 
 /**
- * Explicit operator-only abandonment for a lease whose spawn never yielded a
- * trusted thread id. The durable reconciliation deadline, a second durable
- * wait, and repository pause are all required. A current.md marker is never
- * used as ownership proof.
+ * Explicit operator repair for a lease whose worker identity remains
+ * unresolved. The durable reconciliation deadline, a second durable wait, and
+ * repository pause are all required. A current.md marker is never used as
+ * ownership proof.
  */
 export function releaseQuarantinedOwnership(ctx: DispatchContext, repositoryKey: RepositoryKey): boolean {
-  const entry = ctx.repositoryLookup(repositoryKey);
-  if (!entry?.dispatchPaused) return false;
   const lease = ctx.store.getCurrentOwnership(repositoryKey);
   if (!lease || lease.status !== "reconciliation-required") return false;
+  const noWorker = lease.workerThreadId === null || lease.workerThreadId === "never-dispatched";
+  if (noWorker) {
+    return ctx.store.withTransaction((transaction) => {
+      const currentLease = transaction.getLeaseForRun(lease.runId);
+      const currentRun = transaction.getRunSummary(lease.runId);
+      if (!sameLeaseGeneration(currentLease, lease)
+        || currentLease?.status !== "reconciliation-required"
+        || currentRun === null
+        || currentRun.repositoryKey !== repositoryKey
+        || !TERMINAL_RUN_STATUSES.includes(currentRun.status as typeof TERMINAL_RUN_STATUSES[number])
+        || (currentLease.workerThreadId !== null && currentLease.workerThreadId !== "never-dispatched")) return false;
+      transaction.updateOwnershipLease({ ...currentLease, status: "released" });
+      return true;
+    });
+  }
+
+  const entry = ctx.repositoryLookup(repositoryKey);
+  if (!entry?.dispatchPaused) return false;
   const metadata = ctx.store.getReconciliation(lease.runId);
-  if (!metadata || metadata.resolution !== "failed-safe" || metadata.resolvedAt === null) return false;
+  if (!metadata || metadata.resolvedAt === null || !TERMINAL_RUN_STATUSES.includes(metadata.resolution as typeof TERMINAL_RUN_STATUSES[number])) return false;
   const deadline = Date.parse(metadata.deadlineAt);
   if (!Number.isFinite(deadline) || ctx.now().getTime() < deadline + QUARANTINE_ABANDONMENT_GRACE_MS) return false;
   if (lease.workerThreadId !== null
@@ -1390,8 +1457,8 @@ export function releaseQuarantinedOwnership(ctx: DispatchContext, repositoryKey:
     if (!sameLeaseGeneration(currentLease, lease)
       || currentRun === null
       || currentRun.repositoryKey !== repositoryKey
-      || currentRun.status !== "failed-safe"
-      || currentMetadata?.resolution !== "failed-safe"
+      || !TERMINAL_RUN_STATUSES.includes(currentRun.status as typeof TERMINAL_RUN_STATUSES[number])
+      || currentMetadata?.resolution !== currentRun.status
       || currentMetadata.resolvedAt !== metadata.resolvedAt
       || currentMetadata.deadlineAt !== metadata.deadlineAt
       || currentMetadata.reasonCode !== metadata.reasonCode
@@ -1399,6 +1466,37 @@ export function releaseQuarantinedOwnership(ctx: DispatchContext, repositoryKey:
       || currentLease.status !== "reconciliation-required") return false;
     transaction.updateOwnershipLease({ ...currentLease, status: "released" });
     return true;
+  });
+}
+
+function settleExpiredPendingRun(ctx: DispatchContext, detail: OperationalRunDetail): void {
+  const run = detail.summary;
+  const attempt = [...detail.attempts].reverse().find((candidate) =>
+    candidate.runId === run.runId && candidate.status === "pending",
+  );
+  const lease = detail.lease ?? ctx.store.getLeaseForRun(run.runId);
+  if (!attempt || !lease) {
+    markRunForReconciliation(ctx, detail, "was never dispatched within the start grace period");
+    return;
+  }
+  finalizeRun(ctx, detail, {
+    ...finalizationInput(
+      run,
+      run.repositoryRevision,
+      [...run.canonicalRecords],
+      "never-dispatched",
+      ctx.now().toISOString(),
+      "failed-safe",
+      "dead-start: dispatch start grace expired",
+      undefined,
+      true,
+      attempt.attemptId,
+      true,
+    ),
+    expectedAttemptStatus: "pending",
+    expectedLeaseId: lease.leaseId,
+    expectedLeaseStatus: lease.status,
+    leaseWorkerThreadId: null,
   });
 }
 
@@ -1411,7 +1509,7 @@ export async function reconcileRepository(ctx: DispatchContext, repositoryKey: R
     if (currentStatus === "pending") {
       const ageMs = ctx.now().getTime() - Date.parse(detail.summary.requestedAt);
       if (ageMs > PENDING_RUN_GRACE_MS) {
-        markRunForReconciliation(ctx, detail, "was never dispatched within the start grace period");
+        settleExpiredPendingRun(ctx, detail);
       }
       continue;
     }

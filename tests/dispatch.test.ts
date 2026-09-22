@@ -589,6 +589,21 @@ describe("dispatch engine", () => {
     expect(store.getDispatcherState("monorepo").lastStartProvider).toBe("codex");
   });
 
+  it("starts eligible work without rejecting the canonical spawn generation", async () => {
+    const harness = makeHarness();
+    makeTasksReady(harness);
+    const result = await harness.engine.requestRun({
+      ...MANUAL_REQUEST,
+      idempotencyKey: "bbf:v1:monorepo:run-now:923e4567-e89b-42d3-a456-426614174042" as never,
+    });
+    expect(result).toMatchObject({ ok: true, result: { status: "accepted" } });
+    if (!result.ok) throw new Error("expected success");
+    const detail = (await harness.store.getRun({ repositoryKey: "monorepo", runId: result.result.runId! })).run!;
+    expect(detail.summary.status).toBe("started");
+    expect(detail.summary.queueItemIds).toEqual(["T1"]);
+    expect(harness.threads.threads.get("thread-1")?.status).toBe("active");
+  });
+
   it("atomically enforces global capacity for concurrent manual starts", async () => {
     const { engine, store, threads } = makeMultiRepositoryHarness({ settings: { concurrencyLimit: 1 } });
     const [first, second] = await Promise.all([
@@ -1654,6 +1669,7 @@ describe("dispatch engine", () => {
 
   it("ignores delayed spawn success after the pending generation is terminalized", async () => {
     const harness = makeHarness();
+    makeTasksReady(harness);
     const originalSpawn = harness.threads.spawn.bind(harness.threads);
     let releaseSpawn!: () => void;
     const spawnGate = new Promise<void>((resolve) => { releaseSpawn = resolve; });
@@ -1666,6 +1682,11 @@ describe("dispatch engine", () => {
     const pending = harness.engine.requestRun({ ...MANUAL_REQUEST, idempotencyKey: "bbf:v1:monorepo:run-now:923e4567-e89b-42d3-a456-426614174023" as never });
     await yieldToDispatch();
     const runId = harness.store.listActiveRuns("monorepo")[0]!.runId;
+    const duplicate = await harness.engine.requestRun({
+      ...MANUAL_REQUEST,
+      idempotencyKey: "bbf:v1:monorepo:run-now:923e4567-e89b-42d3-a456-426614174041" as never,
+    });
+    expect(duplicate).toMatchObject({ ok: false, error: { category: "conflict" } });
     const stopped = await harness.engine.requestStop("monorepo");
     expect(stopped).toMatchObject({ ok: true, result: { status: "accepted" } });
     releaseSpawn();
@@ -1678,6 +1699,38 @@ describe("dispatch engine", () => {
     expect(harness.threads.stopped).toEqual(["thread-1"]);
     expect(harness.threads.threads.get("thread-1")?.status).toBe("idle");
     expect(harness.store.getLeaseForRun(runId)?.status).toBe("reconciliation-required");
+    expect(harness.store.getLeaseForRun(runId)?.workerThreadId).toBe("thread-1");
+    await harness.engine.reconcile("monorepo");
+    expect(harness.store.getLeaseForRun(runId)?.status).toBe("released");
+  });
+
+  it("releases a terminal no-op lease with no possible worker", async () => {
+    const harness = makeHarness();
+    const started = await harness.engine.requestRun({
+      ...MANUAL_REQUEST,
+      idempotencyKey: "bbf:v1:monorepo:run-now:923e4567-e89b-42d3-a456-426614174040" as never,
+    });
+    if (!started.ok) throw new Error("expected success");
+    const runId = started.result.runId!;
+    const detail = (await harness.store.getRun({ repositoryKey: "monorepo", runId })).run!;
+    const attempt = detail.attempts[0]!;
+    const lease = detail.lease!;
+    const finishedAt = harness.clock.value.toISOString();
+    harness.store.updateDispatchAttempt({ ...attempt, status: "no-op", workerThreadId: null, finishedAt });
+    harness.store.updateRunDispatch({
+      repositoryKey: "monorepo",
+      runId,
+      status: "no-op",
+      startedAt: detail.summary.startedAt,
+      finishedAt,
+      providerId: detail.summary.providerId!,
+      workerThreadId: "never-dispatched",
+      projectId: detail.summary.projectId!,
+      environmentId: detail.summary.environmentId,
+      repositoryRevision: detail.summary.repositoryRevision,
+    });
+    harness.store.updateOwnershipLease({ ...lease, workerThreadId: null, status: "reconciliation-required" });
+
     await harness.engine.reconcile("monorepo");
     expect(harness.store.getLeaseForRun(runId)?.status).toBe("released");
   });
@@ -1766,6 +1819,10 @@ describe("dispatch engine", () => {
     );
     await harness.engine.reconcile("monorepo");
     expect(harness.store.getLeaseForRun(runId)?.status).toBe("reconciliation-required");
+
+    harness.clock.value = new Date(harness.clock.value.getTime() + QUARANTINE_ABANDONMENT_GRACE_MS + 1);
+    await harness.engine.reconcile("monorepo");
+    expect(harness.store.getLeaseForRun(runId)?.status).toBe("released");
   });
 
   it("releases an unknown-worker quarantine only through the paused, durable operator path", async () => {
@@ -2190,6 +2247,53 @@ describe("dispatch engine", () => {
     await engine.reconcile("monorepo");
     expect((await store.getRun({ repositoryKey: "monorepo", runId: "run-orphan" })).run?.summary.status).toBe("failed-safe");
     expect(store.listActiveRuns("monorepo")).toHaveLength(0);
+  });
+
+  it("settles and releases a pending claim after its start grace expires", async () => {
+    const { store, engine, clock } = makeHarness();
+    const revision = { gitCommit: "abc1234", protocolDigest: "a".repeat(64), fileDigests: {} };
+    const requestedAt = clock.value.toISOString();
+    store.createRunIntent({
+      intent: {
+        runId: "run-expired-pending",
+        repositoryKey: "monorepo",
+        trigger: "schedule",
+        idempotencyKey: "bbf:v1:monorepo:run-now:333e4567-e89b-42d3-a456-426614174042",
+        requestedAt,
+        baseRevision: revision,
+        queueItemIds: [],
+        authorizationProvenance: [],
+      },
+      canonicalRecords: [],
+    });
+    store.createDispatchAttempt({
+      attemptId: "attempt-expired-pending",
+      runId: "run-expired-pending",
+      repositoryKey: "monorepo",
+      providerId: "codex",
+      model: "codex-model",
+      reasoningLevel: "high",
+      workerThreadId: null,
+      status: "pending",
+      startedAt: null,
+      finishedAt: null,
+    });
+    store.createOwnershipLease({
+      leaseId: "lease-expired-pending",
+      repositoryKey: "monorepo",
+      runId: "run-expired-pending",
+      queueItemIds: [],
+      workerThreadId: null,
+      authorizationProvenance: [],
+      acquiredAt: requestedAt,
+      expiresAt: new Date(clock.value.getTime() + 60 * 60 * 1000).toISOString(),
+      status: "held",
+    });
+
+    clock.value = new Date(clock.value.getTime() + 11 * 60 * 1000);
+    await engine.reconcile("monorepo");
+    expect((await store.getRun({ repositoryKey: "monorepo", runId: "run-expired-pending" })).run?.summary.status).toBe("failed-safe");
+    expect(store.getCurrentOwnership("monorepo")).toBeNull();
   });
 });
 

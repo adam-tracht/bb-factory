@@ -31,6 +31,7 @@ import { createLiveHealthReader, validateConfiguredEnvironment } from "./live-he
 import { createReadOnlyActionExecutor } from "./read-action-composition.js";
 import { TasksClient, tasksIntegrationModeSchema, type TasksIntegrationMode, type TasksRpcCall } from "../tasks/index.js";
 import type { TasksLedgerReader } from "../tasks/migration.js";
+import { dispatchRunOccupiesSlot } from "../dispatch/types.js";
 
 type BbSdk = BbPluginApi["sdk"];
 
@@ -154,19 +155,16 @@ function createMergeReader(
   };
 }
 
-function activeRun(status: string): boolean {
-  return status === "pending" || status === "started" || status === "cancel-requested" || status === "reconciliation-required";
-}
-
 async function countActiveRuns(
   operationalState: OperationalStateReader,
   repositoryKey: RepositoryKey,
 ): Promise<number> {
   let cursor: string | undefined;
   let count = 0;
+  const nowMs = Date.now();
   do {
     const page = await operationalState.listRuns({ repositoryKey, cursor, limit: 100 });
-    count += page.runs.filter((run) => activeRun(run.status)).length;
+    count += page.runs.filter((run) => dispatchRunOccupiesSlot(run, nowMs)).length;
     cursor = page.nextCursor ?? undefined;
   } while (cursor);
   return count;

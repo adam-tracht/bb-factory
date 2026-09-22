@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { FactoryActionResult, OperationalRunSummary, RepositoryKey, RepositoryRevision } from "../contracts.js";
 import { actionError, actionSuccess, errorMessage, sameRevision, staleRevisionError } from "../actions/results.js";
 import { GlobalConcurrencyLimitError, type OperationalTransaction } from "../storage/index.js";
-import { boundedDiagnostic, MAX_RUN_ATTEMPTS, RECONCILIATION_GRACE_MS, runDispatchUpdate, sameJson, withWorkerOperation, type DispatchContext } from "./types.js";
+import { boundedDiagnostic, MAX_RUN_ATTEMPTS, RECONCILIATION_GRACE_MS, runDispatchUpdate, sameCanonicalRecords, sameJson, withWorkerOperation, type DispatchContext } from "./types.js";
 
 export interface RetryAttemptInput {
   readonly repositoryKey: RepositoryKey;
@@ -53,7 +53,7 @@ function ownsPendingRetryGeneration(
     && (run.taskId ?? null) === (generation.runTaskId ?? null)
     && sameJson(run.queueItemIds, generation.runQueueItemIds)
     && sameRevision(run.repositoryRevision, generation.runRepositoryRevision)
-    && sameJson(run.canonicalRecords, generation.runCanonicalRecords)
+    && sameCanonicalRecords(run.canonicalRecords, generation.runCanonicalRecords)
     && attempt?.attemptId === generation.attemptId
     && attempt.runId === generation.runId
     && attempt.repositoryKey === generation.repositoryKey
@@ -220,7 +220,7 @@ export async function retryAttempt(ctx: DispatchContext, input: RetryAttemptInpu
         || currentRun.environmentId !== run.environmentId
         || !sameJson(currentRun.queueItemIds, run.queueItemIds)
         || !sameRevision(currentRun.repositoryRevision, run.repositoryRevision)
-        || !sameJson(currentRun.canonicalRecords, run.canonicalRecords)
+        || !sameCanonicalRecords(currentRun.canonicalRecords, run.canonicalRecords)
         || currentRun.status !== "failed-safe") {
         throw new Error(`run '${run.runId}' changed before retry`);
       }
@@ -228,9 +228,9 @@ export async function retryAttempt(ctx: DispatchContext, input: RetryAttemptInpu
         throw new Error(`run '${run.runId}' already has an active retry attempt`);
       }
       if (ctx.tasksIntegration === "enabled") {
-        transaction.assertRepositoryCapacity(run.repositoryKey, ctx.settings.concurrencyLimit, run.runId);
+        transaction.assertRepositoryCapacity(run.repositoryKey, ctx.settings.concurrencyLimit, run.runId, ctx.now().getTime());
       } else {
-        transaction.assertGlobalCapacity(ctx.settings.concurrencyLimit, run.runId);
+        transaction.assertGlobalCapacity(ctx.settings.concurrencyLimit, run.runId, ctx.now().getTime());
       }
       transaction.resetReconciliation(run.runId);
       transaction.updateRunDispatch(runDispatchUpdate(currentRun, {

@@ -3,7 +3,7 @@ import type { FactoryActionResult, RepositoryKey } from "../contracts.js";
 import { actionError, actionSuccess, errorMessage, sameRevision } from "../actions/results.js";
 import type { DispatchAttempt, OperationalRunSummary, OwnershipLease } from "../contracts.js";
 import { finalizeCancelledRun, releaseQuarantinedOwnership } from "./lifecycle.js";
-import { runDispatchUpdate, sameJson, withWorkerOperation, type DispatchContext } from "./types.js";
+import { runDispatchUpdate, sameCanonicalRecords, sameJson, TERMINAL_RUN_STATUSES, withWorkerOperation, type DispatchContext } from "./types.js";
 import type { StopIntent } from "../storage/index.js";
 
 export interface StopRunInput {
@@ -43,7 +43,7 @@ function ownsQuarantinedWorker(
       && currentRun.environmentId === run.environmentId
       && sameJson(currentRun.queueItemIds, run.queueItemIds)
       && sameRevision(currentRun.repositoryRevision, run.repositoryRevision)
-      && sameJson(currentRun.canonicalRecords, run.canonicalRecords)
+      && sameCanonicalRecords(currentRun.canonicalRecords, run.canonicalRecords)
       && ["completed", "blocked", "failed-safe", "no-op"].includes(currentRun.status)
       && currentAttempt !== null
       && currentAttempt.attemptId === attempt.attemptId
@@ -120,7 +120,7 @@ function transitionToCancelRequested(
       || currentRun.environmentId !== run.environmentId
       || !sameJson(currentRun.queueItemIds, run.queueItemIds)
       || !sameRevision(currentRun.repositoryRevision, run.repositoryRevision)
-      || !sameJson(currentRun.canonicalRecords, run.canonicalRecords)) return null;
+      || !sameCanonicalRecords(currentRun.canonicalRecords, run.canonicalRecords)) return null;
     transaction.updateRunDispatch(runDispatchUpdate(currentRun, {
       status: "cancel-requested",
       finishedAt: null,
@@ -164,7 +164,7 @@ function settleStopIntent(ctx: DispatchContext, generation: StopGeneration): boo
       && currentRun.environmentId === generation.run.environmentId
       && sameJson(currentRun.queueItemIds, generation.run.queueItemIds)
       && sameRevision(currentRun.repositoryRevision, generation.run.repositoryRevision)
-      && sameJson(currentRun.canonicalRecords, generation.run.canonicalRecords)
+      && sameCanonicalRecords(currentRun.canonicalRecords, generation.run.canonicalRecords)
       && currentRun.status === "cancel-requested"
       && currentAttempt?.attemptId === generation.attempt.attemptId
       && currentAttempt.runId === generation.attempt.runId
@@ -218,7 +218,7 @@ export async function stopRun(ctx: DispatchContext, input: StopRunInput): Promis
   }
   const run = detail.summary;
 
-  if (run.status === "failed-safe" && lease.status === "reconciliation-required") {
+  if (TERMINAL_RUN_STATUSES.includes(run.status as typeof TERMINAL_RUN_STATUSES[number]) && lease.status === "reconciliation-required") {
     const workerThreadId = lease.workerThreadId;
     if (workerThreadId === null
       || workerThreadId === "spawn-ambiguous"
@@ -228,12 +228,12 @@ export async function stopRun(ctx: DispatchContext, input: StopRunInput): Promis
       if (!released) {
         return actionError(
           "conflict",
-          `Run '${run.runId}' is failed-safe but its unknown worker lease can be released only after the durable quarantine timeout while repository dispatch is paused.`,
+          `Run '${run.runId}' has an unresolved worker lease that can be released only after the durable quarantine timeout while repository dispatch is paused.`,
         );
       }
       return actionSuccess({
         status: "accepted",
-        message: `Released the quarantined repository lease for failed-safe run '${run.runId}'.`,
+        message: `Released the quarantined repository lease for terminal run '${run.runId}'.`,
         revision: run.repositoryRevision,
         runId: run.runId,
         leaseId: lease.leaseId,

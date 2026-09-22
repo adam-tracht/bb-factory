@@ -800,8 +800,8 @@ export interface OperationalTransaction {
   getCurrentOwnership(repositoryKey: RepositoryKey): OwnershipLease | null;
   getReconciliation(runId: string): ReconciliationMetadata | null;
   getStopIntent(runId: string): StopIntent | null;
-  assertGlobalCapacity(limit: number, excludingRunId?: string): void;
-  assertRepositoryCapacity(repositoryKey: RepositoryKey, limit: number, excludingRunId?: string): void;
+  assertGlobalCapacity(limit: number, excludingRunId?: string, nowMs?: number): void;
+  assertRepositoryCapacity(repositoryKey: RepositoryKey, limit: number, excludingRunId?: string, nowMs?: number): void;
   updateRunTaskId(runId: string, taskId: string): void;
   createRunIntent(input: CreateRunIntentInput): CreateRunIntentResult;
   updateRunDispatch(input: RunDispatchUpdate): void;
@@ -1271,8 +1271,8 @@ class OperationalSqliteStore implements OperationalStateStore {
       getCurrentOwnership: (repositoryKey) => readCurrentOwnership(this.db, repositoryKey),
       getReconciliation: (runId) => readReconciliation(this.db, runId),
       getStopIntent: (runId) => readStopIntent(this.db, runId),
-      assertGlobalCapacity: (limit, excludingRunId) => assertGlobalCapacity(this.db, limit, excludingRunId),
-      assertRepositoryCapacity: (repositoryKey, limit, excludingRunId) => assertRepositoryCapacity(this.db, repositoryKey, limit, excludingRunId),
+      assertGlobalCapacity: (limit, excludingRunId, nowMs) => assertGlobalCapacity(this.db, limit, excludingRunId, nowMs),
+      assertRepositoryCapacity: (repositoryKey, limit, excludingRunId, nowMs) => assertRepositoryCapacity(this.db, repositoryKey, limit, excludingRunId, nowMs),
       updateRunTaskId: (runId, taskId) => updateRunTaskId(this.db, runId, taskId),
       createRunIntent: (input) => insertRunIntent(this.db, input),
       updateRunDispatch: (input) => updateRunDispatch(this.db, input),
@@ -2204,31 +2204,51 @@ function insertRunIntent(db: SqliteDatabase, input: CreateRunIntentInput): Creat
   return { created: true, runId: intent.runId };
 }
 
-function assertGlobalCapacity(db: SqliteDatabase, limit: number, excludingRunId?: string): void {
+function assertGlobalCapacity(db: SqliteDatabase, limit: number, excludingRunId?: string, nowMs = Date.now()): void {
   const parsedLimit = z.number().int().positive().parse(limit);
+  const pendingCutoff = new Date(nowMs - 10 * 60 * 1000).toISOString();
   const active = db
     .prepare<unknown[], { count: number }>(
       `SELECT COUNT(*) AS count
-         FROM operational_runs
-        WHERE status IN ('pending', 'started', 'cancel-requested', 'reconciliation-required')
-          AND (? IS NULL OR run_id <> ?)`,
+         FROM operational_runs AS run
+         LEFT JOIN ownership_leases AS lease
+           ON lease.run_id = run.run_id AND lease.status <> 'released'
+        WHERE (
+          (run.status = 'pending' AND run.requested_at >= ?)
+          OR (
+            run.status IN ('started', 'cancel-requested', 'reconciliation-required')
+            AND lease.worker_thread_id IS NOT NULL
+            AND lease.worker_thread_id NOT IN ('spawn-ambiguous', 'unknown-thread', 'never-dispatched')
+          )
+        )
+          AND (? IS NULL OR run.run_id <> ?)`,
     )
-    .get(excludingRunId ?? null, excludingRunId ?? null);
+    .get(pendingCutoff, excludingRunId ?? null, excludingRunId ?? null);
   if ((active?.count ?? 0) >= parsedLimit) throw new GlobalConcurrencyLimitError(parsedLimit);
 }
 
-function assertRepositoryCapacity(db: SqliteDatabase, repositoryKey: RepositoryKey, limit: number, excludingRunId?: string): void {
+function assertRepositoryCapacity(db: SqliteDatabase, repositoryKey: RepositoryKey, limit: number, excludingRunId?: string, nowMs = Date.now()): void {
   const parsedRepositoryKey = repositoryKeySchema.parse(repositoryKey);
   const parsedLimit = z.number().int().positive().parse(limit);
+  const pendingCutoff = new Date(nowMs - 10 * 60 * 1000).toISOString();
   const active = db
     .prepare<unknown[], { count: number }>(
       `SELECT COUNT(*) AS count
-        FROM operational_runs
-        WHERE repository_key = ?
-          AND status IN ('pending', 'started', 'cancel-requested', 'reconciliation-required')
-          AND (? IS NULL OR run_id <> ?)`,
+         FROM operational_runs AS run
+         LEFT JOIN ownership_leases AS lease
+           ON lease.run_id = run.run_id AND lease.status <> 'released'
+        WHERE run.repository_key = ?
+          AND (
+            (run.status = 'pending' AND run.requested_at >= ?)
+            OR (
+              run.status IN ('started', 'cancel-requested', 'reconciliation-required')
+              AND lease.worker_thread_id IS NOT NULL
+              AND lease.worker_thread_id NOT IN ('spawn-ambiguous', 'unknown-thread', 'never-dispatched')
+            )
+          )
+          AND (? IS NULL OR run.run_id <> ?)`,
     )
-    .get(parsedRepositoryKey, excludingRunId ?? null, excludingRunId ?? null);
+    .get(parsedRepositoryKey, pendingCutoff, excludingRunId ?? null, excludingRunId ?? null);
   if ((active?.count ?? 0) >= parsedLimit) throw new GlobalConcurrencyLimitError(parsedLimit);
 }
 

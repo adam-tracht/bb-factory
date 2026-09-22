@@ -12,6 +12,7 @@ import type {
   RepositoryKey,
   RepositoryRegistryEntry,
 } from "../contracts.js";
+import { sameRevision } from "../actions/results.js";
 import type { FactoryHealthReader, ProtocolReader } from "../ports.js";
 import type { TasksClient, TasksIntegrationMode } from "../tasks/index.js";
 
@@ -104,6 +105,27 @@ export const QUARANTINE_ABANDONMENT_GRACE_MS = 10 * 60 * 1000;
 /** Retry budget per run: the initial attempt plus this many retries. */
 export const MAX_RUN_ATTEMPTS = 3;
 
+export const TERMINAL_RUN_STATUSES = ["completed", "blocked", "failed-safe", "no-op"] as const;
+
+const UNRESOLVED_WORKER_IDS = new Set(["spawn-ambiguous", "unknown-thread", "never-dispatched"]);
+
+export function hasRecordedWorker(workerThreadId: string | null): workerThreadId is string {
+  return workerThreadId !== null && !UNRESOLVED_WORKER_IDS.has(workerThreadId);
+}
+
+/** The only run states that consume a dispatch slot after their start grace. */
+export function dispatchRunOccupiesSlot(
+  run: Pick<OperationalRunSummary, "status" | "requestedAt" | "workerThreadId">,
+  nowMs: number,
+): boolean {
+  if (run.status === "pending") {
+    const requestedAtMs = Date.parse(run.requestedAt);
+    return !Number.isFinite(requestedAtMs) || nowMs - requestedAtMs <= PENDING_RUN_GRACE_MS;
+  }
+  return ["started", "cancel-requested", "reconciliation-required"].includes(run.status)
+    && hasRecordedWorker(run.workerThreadId);
+}
+
 /** Keep provider and host diagnostics inside the storage field limits. */
 export function boundedDiagnostic(value: string, maxLength: number): string {
   const normalized = value.replace(/\s+/gu, " ").trim();
@@ -113,6 +135,21 @@ export function boundedDiagnostic(value: string, maxLength: number): string {
 /** Compare persisted JSON-shaped values without duplicating field walkers. */
 export function sameJson(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+/** Compare canonical record links across a stableJson round trip. */
+export function sameCanonicalRecords(
+  left: readonly CanonicalFileRecordLink[],
+  right: readonly CanonicalFileRecordLink[],
+): boolean {
+  return left.length === right.length && left.every((record, index) => {
+    const candidate = right[index];
+    return candidate !== undefined
+      && record.relativePath === candidate.relativePath
+      && record.recordType === candidate.recordType
+      && record.recordId === candidate.recordId
+      && sameRevision(record.repositoryRevision, candidate.repositoryRevision);
+  });
 }
 
 export function dispatcherNowSeconds(now: () => Date): number {

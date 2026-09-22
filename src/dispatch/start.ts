@@ -16,7 +16,7 @@ import { GlobalConcurrencyLimitError, IdempotencyConflictError, type Operational
 import { OwnershipHeldError } from "./ownership.js";
 import { hostPreflight, selectExplicitProvider, selectProvider, type ProviderSelection } from "./preflight.js";
 import { findTasksQueueCard, tasksWorkerPrompt, type TasksRunCard } from "./tasks.js";
-import { boundedDiagnostic, dispatcherNowSeconds, nightKeyAt, nightState, RECONCILIATION_GRACE_MS, runDispatchUpdate, sameJson, spawnEnvironment, withWorkerOperation, type DispatchContext } from "./types.js";
+import { boundedDiagnostic, dispatcherNowSeconds, nightKeyAt, nightState, RECONCILIATION_GRACE_MS, runDispatchUpdate, sameCanonicalRecords, sameJson, spawnEnvironment, TERMINAL_RUN_STATUSES, withWorkerOperation, type DispatchContext } from "./types.js";
 
 export interface StartRunInput {
   readonly repositoryKey: RepositoryKey;
@@ -59,22 +59,6 @@ function noSpawn(
   return { result, runId: null, leaseId: null };
 }
 
-function sameCanonicalRecords(
-  left: readonly CanonicalFileRecordLink[],
-  right: readonly CanonicalFileRecordLink[],
-  tasksMode: boolean,
-): boolean {
-  if (!tasksMode) return sameJson(left, right);
-  return left.length === right.length && left.every((record, index) => {
-    const candidate = right[index];
-    return candidate !== undefined
-      && record.relativePath === candidate.relativePath
-      && record.recordType === candidate.recordType
-      && record.recordId === candidate.recordId
-      && sameRevision(record.repositoryRevision, candidate.repositoryRevision);
-  });
-}
-
 function ownsPendingSpawnGeneration(
   transaction: OperationalTransaction,
   generation: {
@@ -112,7 +96,7 @@ function ownsPendingSpawnGeneration(
     && run.projectId === generation.projectId
     && run.environmentId === generation.environmentId
     && sameRevision(run.repositoryRevision, generation.repositoryRevision)
-    && sameCanonicalRecords(run.canonicalRecords, generation.canonicalRecords, generation.taskId !== null)
+    && sameCanonicalRecords(run.canonicalRecords, generation.canonicalRecords)
     && sameJson(run.queueItemIds, generation.queueItemIds)
     && attempt?.attemptId === generation.attemptId
     && attempt.runId === generation.runId
@@ -165,7 +149,7 @@ async function quarantineLateSpawn(
       const status = currentRun?.status ?? null;
       const attempt = transaction.getDispatchAttempt(input.attemptId);
       const lease = transaction.getLeaseForRun(input.runId);
-      const terminalStatus = status === "no-op" || status === "failed-safe";
+      const terminalStatus = status !== null && TERMINAL_RUN_STATUSES.includes(status as typeof TERMINAL_RUN_STATUSES[number]);
       const cancellableStatus = status === "cancel-requested";
       const reconcilingStatus = status === "reconciliation-required";
       const expectedAttemptStatus = terminalStatus
@@ -190,7 +174,7 @@ async function quarantineLateSpawn(
         || currentRun.requestedAt !== input.requestedAt
         || currentRun.startedAt !== null
         || !sameRevision(currentRun.repositoryRevision, input.repositoryRevision)
-        || !sameCanonicalRecords(currentRun.canonicalRecords, input.canonicalRecords, input.taskId !== undefined && input.taskId !== null)
+        || !sameCanonicalRecords(currentRun.canonicalRecords, input.canonicalRecords)
         || !sameJson(currentRun.queueItemIds, input.queueItemIds)
         || !attempt
         || attempt.runId !== input.runId
@@ -215,6 +199,8 @@ async function quarantineLateSpawn(
         workerThreadId: input.threadId,
       }));
       transaction.updateDispatchAttempt({ ...attempt, workerThreadId: input.threadId });
+      // Record the thread before stopping it so reconciliation can prove this
+      // is the late spawn that the stale-generation handler already stopped.
       transaction.updateOwnershipLease({ ...lease, workerThreadId: input.threadId });
       return true;
     });
@@ -228,7 +214,7 @@ async function quarantineLateSpawn(
     const currentRun = transaction.getRunSummary(input.runId);
     const currentAttempt = transaction.getDispatchAttempt(input.attemptId);
     const currentLease = transaction.getLeaseForRun(input.runId);
-    const terminalStatus = currentRun?.status === "no-op" || currentRun?.status === "failed-safe";
+    const terminalStatus = currentRun?.status !== undefined && TERMINAL_RUN_STATUSES.includes(currentRun.status as typeof TERMINAL_RUN_STATUSES[number]);
     const expectedAttemptStatus = terminalStatus
       ? currentRun?.status
       : currentRun?.status === "cancel-requested"
@@ -252,7 +238,7 @@ async function quarantineLateSpawn(
       && (currentRun.projectId === input.projectId || currentRun.projectId === "unknown")
       && (currentRun.environmentId === input.environmentId || currentRun.environmentId === null)
       && sameRevision(currentRun.repositoryRevision, input.repositoryRevision)
-      && sameCanonicalRecords(currentRun.canonicalRecords, input.canonicalRecords, input.taskId !== undefined && input.taskId !== null)
+      && sameCanonicalRecords(currentRun.canonicalRecords, input.canonicalRecords)
       && sameJson(currentRun.queueItemIds, input.queueItemIds)
       && currentAttempt !== null
       && currentAttempt.attemptId === input.attemptId
@@ -494,9 +480,9 @@ export async function startRun(ctx: DispatchContext, input: StartRunInput): Prom
         return false;
       }
       if (ctx.tasksIntegration === "enabled") {
-        transaction.assertRepositoryCapacity(input.repositoryKey, ctx.settings.concurrencyLimit, runId);
+        transaction.assertRepositoryCapacity(input.repositoryKey, ctx.settings.concurrencyLimit, runId, ctx.now().getTime());
       } else {
-        transaction.assertGlobalCapacity(ctx.settings.concurrencyLimit, runId);
+        transaction.assertGlobalCapacity(ctx.settings.concurrencyLimit, runId, ctx.now().getTime());
       }
       transaction.createOwnershipLease({
         leaseId,

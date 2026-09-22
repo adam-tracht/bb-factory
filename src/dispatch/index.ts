@@ -19,6 +19,11 @@ export function createDispatchEngine(
 ): DispatchEngine {
   return {
     async requestRun(input) {
+      try {
+        await reconcileRepository(context, input.repositoryKey);
+      } catch (error) {
+        context.log?.(`pre-dispatch reconciliation for '${input.repositoryKey}' failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
       return (await startRun(context, input)).result;
     },
     async requestStop(repositoryKey) {
