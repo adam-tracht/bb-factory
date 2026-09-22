@@ -467,6 +467,17 @@ export const OPERATIONAL_STORAGE_MIGRATIONS = [
   `ALTER TABLE dispatch_attempts ADD COLUMN tasks_live_status TEXT CHECK (tasks_live_status IS NULL OR tasks_live_status IN ('starting', 'working', 'idle', 'completed', 'failed'))`,
   `ALTER TABLE operational_runs ADD COLUMN worker_terminal_observed_at TEXT`,
   `ALTER TABLE operational_runs ADD COLUMN worker_observed_at TEXT`,
+  `CREATE TABLE settlement_mutation_intents (
+    run_id TEXT NOT NULL REFERENCES operational_runs(run_id),
+    attempt_id TEXT NOT NULL REFERENCES dispatch_attempts(attempt_id),
+    repository_key TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    card_status_at_issue TEXT NOT NULL CHECK (card_status_at_issue = 'in_review'),
+    issued_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, attempt_id)
+  )`,
+  `CREATE INDEX settlement_mutation_intent_task_lookup
+    ON settlement_mutation_intents(repository_key, task_id, run_id, attempt_id)`,
 ] as const;
 
 const tasksOperationClassSchema = z.string().trim().min(1).max(128);
@@ -599,6 +610,33 @@ export interface StopIntent {
   readonly repositoryKey: RepositoryKey;
   readonly workerThreadId: string;
   readonly createdAt: string;
+}
+
+export interface SettlementMutationIntent {
+  readonly runId: string;
+  readonly attemptId: string;
+  readonly repositoryKey: RepositoryKey;
+  readonly taskId: string;
+  readonly cardStatusAtIssue: "in_review";
+  readonly issuedAt: string;
+}
+
+export interface CreateSettlementMutationIntentInput {
+  readonly runId: string;
+  readonly attemptId: string;
+  readonly repositoryKey: RepositoryKey;
+  readonly taskId: string;
+  readonly issuedAt: string;
+}
+
+export interface RunReconciliationUpdate {
+  readonly repositoryKey: RepositoryKey;
+  readonly runId: string;
+  readonly finishedAt: string;
+  readonly providerId: string;
+  readonly workerThreadId: string;
+  readonly projectId: string;
+  readonly environmentId: string | null;
 }
 
 export interface RunDispatchUpdate {
@@ -811,17 +849,22 @@ export interface OperationalTransaction {
   getCurrentOwnership(repositoryKey: RepositoryKey): OwnershipLease | null;
   getReconciliation(runId: string): ReconciliationMetadata | null;
   getStopIntent(runId: string): StopIntent | null;
+  getSettlementMutationIntent(runId: string, attemptId: string): SettlementMutationIntent | null;
   assertGlobalCapacity(limit: number, excludingRunId?: string, nowMs?: number): void;
   assertRepositoryCapacity(repositoryKey: RepositoryKey, limit: number, excludingRunId?: string, nowMs?: number): void;
   updateRunTaskId(runId: string, taskId: string): void;
   createRunIntent(input: CreateRunIntentInput): CreateRunIntentResult;
   updateRunDispatch(input: RunDispatchUpdate): void;
+  updateRunReconciliation(input: RunReconciliationUpdate): void;
   updateRunWorkerObservation(input: RunWorkerObservationUpdate): boolean;
   createDispatchAttempt(attempt: DispatchAttempt): void;
   updateDispatchAttempt(attempt: DispatchAttempt): void;
+  updateDispatchAttemptPreservingStopIntent(attempt: DispatchAttempt): void;
   createOwnershipLease(lease: OwnershipLease): void;
   updateOwnershipLease(lease: OwnershipLease): void;
+  updateOwnershipLeasePreservingStopIntent(lease: OwnershipLease): void;
   createStopIntent(input: StopIntent): void;
+  recordSettlementMutationIntent(input: CreateSettlementMutationIntentInput): SettlementMutationIntent;
   deleteStopIntent(token: string): void;
   resetReconciliation(runId: string): void;
   recordReconciliation(input: ReconciliationObservation): ReconciliationMetadata;
@@ -852,12 +895,16 @@ export interface OperationalStateStore extends OperationalStateReader {
   withTransaction<T>(callback: (transaction: OperationalTransaction) => T): T;
   createRunIntent(input: CreateRunIntentInput): CreateRunIntentResult;
   updateRunDispatch(input: RunDispatchUpdate): void;
+  updateRunReconciliation(input: RunReconciliationUpdate): void;
   updateRunWorkerObservation(input: RunWorkerObservationUpdate): boolean;
   createDispatchAttempt(attempt: DispatchAttempt): void;
   updateDispatchAttempt(attempt: DispatchAttempt): void;
+  updateDispatchAttemptPreservingStopIntent(attempt: DispatchAttempt): void;
   createOwnershipLease(lease: OwnershipLease): void;
   updateOwnershipLease(lease: OwnershipLease): void;
+  updateOwnershipLeasePreservingStopIntent(lease: OwnershipLease): void;
   createStopIntent(input: StopIntent): void;
+  recordSettlementMutationIntent(input: CreateSettlementMutationIntentInput): SettlementMutationIntent;
   deleteStopIntent(token: string): void;
   resetReconciliation(runId: string): void;
   recordReconciliation(input: ReconciliationObservation): ReconciliationMetadata;
@@ -879,6 +926,7 @@ export interface OperationalStateStore extends OperationalStateReader {
   getLeaseForRun(runId: string): OwnershipLease | null;
   getReconciliation(runId: string): ReconciliationMetadata | null;
   getStopIntent(runId: string): StopIntent | null;
+  getSettlementMutationIntent(runId: string, attemptId: string): SettlementMutationIntent | null;
   findRunIdByIdempotencyKey(idempotencyKey: IdempotencyKey): string | null;
   listActiveRuns(repositoryKey: RepositoryKey): OperationalRunSummary[];
   getDispatcherState(repositoryKey: RepositoryKey): DispatcherState;
@@ -956,6 +1004,15 @@ interface StopIntentRow {
   repository_key: string;
   worker_thread_id: string;
   created_at: string;
+}
+
+interface SettlementMutationIntentRow {
+  run_id: string;
+  attempt_id: string;
+  repository_key: string;
+  task_id: string;
+  card_status_at_issue: string;
+  issued_at: string;
 }
 
 interface ReconciliationRow {
@@ -1098,6 +1155,10 @@ class OperationalSqliteStore implements OperationalStateStore {
     this.withTransaction((transaction) => transaction.updateRunDispatch(input));
   }
 
+  updateRunReconciliation(input: RunReconciliationUpdate): void {
+    this.withTransaction((transaction) => transaction.updateRunReconciliation(input));
+  }
+
   updateRunWorkerObservation(input: RunWorkerObservationUpdate): boolean {
     return this.withTransaction((transaction) => transaction.updateRunWorkerObservation(input));
   }
@@ -1110,6 +1171,10 @@ class OperationalSqliteStore implements OperationalStateStore {
     this.withTransaction((transaction) => transaction.updateDispatchAttempt(attempt));
   }
 
+  updateDispatchAttemptPreservingStopIntent(attempt: DispatchAttempt): void {
+    this.withTransaction((transaction) => transaction.updateDispatchAttemptPreservingStopIntent(attempt));
+  }
+
   createOwnershipLease(lease: OwnershipLease): void {
     this.withTransaction((transaction) => transaction.createOwnershipLease(lease));
   }
@@ -1118,8 +1183,16 @@ class OperationalSqliteStore implements OperationalStateStore {
     this.withTransaction((transaction) => transaction.updateOwnershipLease(lease));
   }
 
+  updateOwnershipLeasePreservingStopIntent(lease: OwnershipLease): void {
+    this.withTransaction((transaction) => transaction.updateOwnershipLeasePreservingStopIntent(lease));
+  }
+
   createStopIntent(input: StopIntent): void {
     this.withTransaction((transaction) => transaction.createStopIntent(input));
+  }
+
+  recordSettlementMutationIntent(input: CreateSettlementMutationIntentInput): SettlementMutationIntent {
+    return this.withTransaction((transaction) => transaction.recordSettlementMutationIntent(input));
   }
 
   deleteStopIntent(token: string): void {
@@ -1209,6 +1282,10 @@ class OperationalSqliteStore implements OperationalStateStore {
     return readStopIntent(this.db, runId);
   }
 
+  getSettlementMutationIntent(runId: string, attemptId: string): SettlementMutationIntent | null {
+    return readSettlementMutationIntent(this.db, runId, attemptId);
+  }
+
   async listRuns(input: OperationalRunListInput): Promise<OperationalRunListProjection> {
     const parsed = operationalRunListInputSchema.parse(input);
     const cursor = parsed.cursor === undefined ? null : decodeCursor(parsed.cursor);
@@ -1292,17 +1369,22 @@ class OperationalSqliteStore implements OperationalStateStore {
       getCurrentOwnership: (repositoryKey) => readCurrentOwnership(this.db, repositoryKey),
       getReconciliation: (runId) => readReconciliation(this.db, runId),
       getStopIntent: (runId) => readStopIntent(this.db, runId),
+      getSettlementMutationIntent: (runId, attemptId) => readSettlementMutationIntent(this.db, runId, attemptId),
       assertGlobalCapacity: (limit, excludingRunId, nowMs) => assertGlobalCapacity(this.db, limit, excludingRunId, nowMs),
       assertRepositoryCapacity: (repositoryKey, limit, excludingRunId, nowMs) => assertRepositoryCapacity(this.db, repositoryKey, limit, excludingRunId, nowMs),
       updateRunTaskId: (runId, taskId) => updateRunTaskId(this.db, runId, taskId),
       createRunIntent: (input) => insertRunIntent(this.db, input),
       updateRunDispatch: (input) => updateRunDispatch(this.db, input),
+      updateRunReconciliation: (input) => updateRunReconciliation(this.db, input),
       updateRunWorkerObservation: (input) => updateRunWorkerObservation(this.db, input),
       createDispatchAttempt: (attempt) => insertDispatchAttempt(this.db, attempt),
       updateDispatchAttempt: (attempt) => updateDispatchAttempt(this.db, attempt),
+      updateDispatchAttemptPreservingStopIntent: (attempt) => updateDispatchAttemptPreservingStopIntent(this.db, attempt),
       createOwnershipLease: (lease) => insertOwnershipLease(this.db, lease),
       updateOwnershipLease: (lease) => updateOwnershipLease(this.db, lease),
+      updateOwnershipLeasePreservingStopIntent: (lease) => updateOwnershipLeasePreservingStopIntent(this.db, lease),
       createStopIntent: (input) => insertStopIntent(this.db, input),
+      recordSettlementMutationIntent: (input) => recordSettlementMutationIntent(this.db, input),
       deleteStopIntent: (token) => deleteStopIntent(this.db, token),
       resetReconciliation: (runId) => resetReconciliation(this.db, runId),
       recordReconciliation: (input) => recordReconciliation(this.db, input),
@@ -2356,6 +2438,27 @@ function updateRunDispatch(db: SqliteDatabase, input: RunDispatchUpdate): void {
   );
 }
 
+function updateRunReconciliation(db: SqliteDatabase, input: RunReconciliationUpdate): void {
+  const repositoryKey = repositoryKeySchema.parse(input.repositoryKey);
+  const runId = z.string().trim().min(1).parse(input.runId);
+  const finishedAt = isoTimestampSchema.parse(input.finishedAt);
+  const providerId = z.string().trim().min(1).parse(input.providerId);
+  const workerThreadId = z.string().trim().min(1).parse(input.workerThreadId);
+  const projectId = z.string().trim().min(1).parse(input.projectId);
+  const environmentId = input.environmentId === null
+    ? null
+    : z.string().trim().min(1).parse(input.environmentId);
+  const result = db.prepare(
+    `UPDATE operational_runs
+        SET status = 'reconciliation-required', finished_at = ?, provider_id = ?, worker_thread_id = ?,
+            project_id = ?, environment_id = ?
+      WHERE repository_key = ? AND run_id = ?`,
+  ).run(finishedAt, providerId, workerThreadId, projectId, environmentId, repositoryKey, runId);
+  if (result.changes !== 1) {
+    throw new Error(`cannot update missing operational run: ${repositoryKey}/${runId}`);
+  }
+}
+
 function updateRunWorkerObservation(db: SqliteDatabase, input: RunWorkerObservationUpdate): boolean {
   const repositoryKey = repositoryKeySchema.parse(input.repositoryKey);
   const runId = z.string().trim().min(1).parse(input.runId);
@@ -2413,9 +2516,17 @@ function insertDispatchAttempt(db: SqliteDatabase, attempt: DispatchAttempt): vo
 }
 
 function updateDispatchAttempt(db: SqliteDatabase, attempt: DispatchAttempt): void {
+  updateDispatchAttemptRecord(db, attempt, true);
+}
+
+function updateDispatchAttemptPreservingStopIntent(db: SqliteDatabase, attempt: DispatchAttempt): void {
+  updateDispatchAttemptRecord(db, attempt, false);
+}
+
+function updateDispatchAttemptRecord(db: SqliteDatabase, attempt: DispatchAttempt, clearStopIntent: boolean): void {
   const parsed = dispatchAttemptSchema.parse(attempt);
   assertRunRepository(db, parsed.runId, parsed.repositoryKey);
-  deleteStopIntentForRun(db, parsed.runId);
+  if (clearStopIntent) deleteStopIntentForRun(db, parsed.runId);
   const result = db.prepare(
     `UPDATE dispatch_attempts
         SET run_id = ?, repository_key = ?, provider_id = ?, model = ?,
@@ -2464,9 +2575,17 @@ function insertOwnershipLease(db: SqliteDatabase, lease: OwnershipLease): void {
 }
 
 function updateOwnershipLease(db: SqliteDatabase, lease: OwnershipLease): void {
+  updateOwnershipLeaseRecord(db, lease, true);
+}
+
+function updateOwnershipLeasePreservingStopIntent(db: SqliteDatabase, lease: OwnershipLease): void {
+  updateOwnershipLeaseRecord(db, lease, false);
+}
+
+function updateOwnershipLeaseRecord(db: SqliteDatabase, lease: OwnershipLease, clearStopIntent: boolean): void {
   const parsed = ownershipLeaseSchema.parse(lease);
   assertRunRepository(db, parsed.runId, parsed.repositoryKey);
-  deleteStopIntentForRun(db, parsed.runId);
+  if (clearStopIntent) deleteStopIntentForRun(db, parsed.runId);
   const result = db.prepare(
     `UPDATE ownership_leases
         SET repository_key = ?, run_id = ?, queue_item_ids_json = ?,
@@ -2488,6 +2607,38 @@ function updateOwnershipLease(db: SqliteDatabase, lease: OwnershipLease): void {
   if (result.changes !== 1) {
     throw new Error(`cannot update missing ownership lease: ${parsed.leaseId}`);
   }
+}
+
+function recordSettlementMutationIntent(
+  db: SqliteDatabase,
+  input: CreateSettlementMutationIntentInput,
+): SettlementMutationIntent {
+  const runId = z.string().trim().min(1).parse(input.runId);
+  const attemptId = z.string().trim().min(1).parse(input.attemptId);
+  const repositoryKey = repositoryKeySchema.parse(input.repositoryKey);
+  const taskId = tasksTaskIdSchema.parse(input.taskId);
+  const issuedAt = isoTimestampSchema.parse(input.issuedAt);
+  assertRunRepository(db, runId, repositoryKey);
+  const attempt = db
+    .prepare<unknown[], { run_id: string; repository_key: string }>(
+      `SELECT run_id, repository_key FROM dispatch_attempts WHERE attempt_id = ?`,
+    )
+    .get(attemptId);
+  if (attempt === undefined || attempt.run_id !== runId || attempt.repository_key !== repositoryKey) {
+    throw new Error(`cannot reference dispatch attempt '${attemptId}' for run '${runId}'`);
+  }
+  db.prepare(
+    `INSERT INTO settlement_mutation_intents (
+       run_id, attempt_id, repository_key, task_id, card_status_at_issue, issued_at
+     ) VALUES (?, ?, ?, ?, 'in_review', ?)
+     ON CONFLICT (run_id, attempt_id) DO NOTHING`,
+  ).run(runId, attemptId, repositoryKey, taskId, issuedAt);
+  const recorded = readSettlementMutationIntent(db, runId, attemptId);
+  if (recorded === null) throw new Error(`could not persist settlement mutation intent for run '${runId}'`);
+  if (recorded.taskId !== taskId || recorded.repositoryKey !== repositoryKey) {
+    throw new Error(`settlement mutation intent for run '${runId}' does not match the current Tasks card`);
+  }
+  return recorded;
 }
 
 function insertStopIntent(db: SqliteDatabase, input: StopIntent): void {
@@ -2792,6 +2943,32 @@ function readStopIntent(db: SqliteDatabase, runId: string): StopIntent | null {
     repositoryKey: repositoryKeySchema.parse(row.repository_key),
     workerThreadId: z.string().trim().min(1).parse(row.worker_thread_id),
     createdAt: isoTimestampSchema.parse(row.created_at),
+  };
+}
+
+function readSettlementMutationIntent(
+  db: SqliteDatabase,
+  runId: string,
+  attemptId: string,
+): SettlementMutationIntent | null {
+  const row = db
+    .prepare<unknown[], SettlementMutationIntentRow>(
+      `SELECT run_id, attempt_id, repository_key, task_id, card_status_at_issue, issued_at
+         FROM settlement_mutation_intents
+        WHERE run_id = ? AND attempt_id = ?`,
+    )
+    .get(
+      z.string().trim().min(1).parse(runId),
+      z.string().trim().min(1).parse(attemptId),
+    );
+  if (row === undefined) return null;
+  return {
+    runId: z.string().trim().min(1).parse(row.run_id),
+    attemptId: z.string().trim().min(1).parse(row.attempt_id),
+    repositoryKey: repositoryKeySchema.parse(row.repository_key),
+    taskId: tasksTaskIdSchema.parse(row.task_id),
+    cardStatusAtIssue: z.literal("in_review").parse(row.card_status_at_issue),
+    issuedAt: isoTimestampSchema.parse(row.issued_at),
   };
 }
 

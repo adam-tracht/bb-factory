@@ -461,9 +461,55 @@ describe("dispatch engine", () => {
     expect(updateStarted).toBe(true);
     vi.advanceTimersByTime(RECONCILE_EXTERNAL_TIMEOUT_MS);
     await pass;
-    const detail = (await harness.store.getRun({ repositoryKey: "monorepo", runId: result.result.runId! })).run!;
+    const runId = result.result.runId!;
+    const detail = (await harness.store.getRun({ repositoryKey: "monorepo", runId })).run!;
     expect(detail.summary.status).toBe("completed");
     expect(tasks.clientTask.status).toBe("done");
+    expect(harness.store.getSettlementMutationIntent(runId, detail.attempts[0]!.attemptId)).toMatchObject({
+      runId,
+      taskId: "task-1",
+      cardStatusAtIssue: "in_review",
+    });
+  });
+
+  it("does not attribute an externally completed Tasks card to Factory settlement", async () => {
+    const harness = makeHarness();
+    makeTasksReady(harness);
+    const tasks = makeTasksClient({ taskStatus: "todo" });
+    harness.store.createTasksApproval({
+      approvalId: "approval-task-external-done",
+      repositoryKey: "monorepo",
+      taskId: "task-1",
+      operationClass: "execute",
+      contentRevision: deriveTasksContentRevision(tasks.clientTask),
+      provenance: { source: "test" },
+    });
+    const before = await harness.ctx.protocolReader.loadSnapshot(harness.entry.configuration);
+    const ctx: DispatchContext = {
+      ...harness.ctx,
+      tasksIntegration: "enabled",
+      tasksClient: tasks.client,
+      protocolReader: {
+        loadSnapshot: (configuration) => harness.ctx.protocolReader.loadSnapshot(configuration),
+        loadRevision: async () => ({ ...before.revision, gitCommit: "def5678" }),
+      },
+      healthReader: {
+        ...harness.ctx.healthReader,
+        getTasksAvailability: async () => ({ enabled: true, status: "available" as const, message: "Tasks is available." }),
+      },
+    };
+    const engine = createDispatchEngine(ctx, () => ["monorepo"]);
+    const result = await engine.requestRun({ ...MANUAL_REQUEST, idempotencyKey: "bbf:v1:monorepo:run-now:923e4567-e89b-42d3-a456-426614174044" as never });
+    if (!result.ok) throw new Error(`expected success: ${result.error.message}`);
+    tasks.clientTask.status = "done";
+    harness.threads.threads.get("thread-1")!.status = "idle";
+
+    const runId = result.result.runId!;
+    await engine.reconcile("monorepo");
+    const detail = (await harness.store.getRun({ repositoryKey: "monorepo", runId })).run!;
+    expect(detail.summary.status).toBe("reconciliation-required");
+    expect(tasks.calls.updateTask).toHaveLength(0);
+    expect(harness.store.getSettlementMutationIntent(runId, detail.attempts[0]!.attemptId)).toBeNull();
   });
 
   it("does not settle a completed Tasks card when the repository revision is unchanged", async () => {
@@ -2186,6 +2232,48 @@ describe("dispatch engine", () => {
     expect((await store.getRun({ repositoryKey: "monorepo", runId })).run?.summary.workerTerminalObservedAt).toBeNull();
     releaseStop();
     expect(await stopping).toMatchObject({ ok: true, result: { status: "accepted", action: "stop" } });
+  });
+
+  it("preserves a pending stop intent when reconciliation marks a worker-read timeout", async () => {
+    vi.useFakeTimers();
+    const { engine, threads, store } = makeHarness();
+    const started = await engine.requestRun({
+      ...MANUAL_REQUEST,
+      idempotencyKey: "bbf:v1:monorepo:run-now:923e4567-e89b-42d3-a456-426614174045" as never,
+    });
+    if (!started.ok) throw new Error("expected success");
+    const runId = started.result.runId!;
+    const originalStop = threads.stop.bind(threads);
+    let releaseStop!: () => void;
+    let markStopEntered!: () => void;
+    const stopGate = new Promise<void>((resolve) => { releaseStop = resolve; });
+    const stopEntered = new Promise<void>((resolve) => { markStopEntered = resolve; });
+    threads.stop = async (input) => {
+      markStopEntered();
+      await stopGate;
+      await originalStop(input);
+    };
+    const stopping = engine.requestStop("monorepo");
+    await stopEntered;
+    const pendingIntent = store.getStopIntent(runId);
+    expect(pendingIntent).not.toBeNull();
+
+    let markReadEntered!: () => void;
+    const readEntered = new Promise<void>((resolve) => { markReadEntered = resolve; });
+    threads.get = async () => {
+      markReadEntered();
+      return new Promise<never>(() => {});
+    };
+    const reconciling = engine.reconcile("monorepo");
+    await readEntered;
+    vi.advanceTimersByTime(RECONCILE_EXTERNAL_TIMEOUT_MS);
+    await reconciling;
+
+    expect(store.getStopIntent(runId)?.token).toBe(pendingIntent?.token);
+    expect((await store.getRun({ repositoryKey: "monorepo", runId })).run?.summary.status).toBe("reconciliation-required");
+    releaseStop();
+    expect(await stopping).toMatchObject({ ok: true, result: { status: "accepted", action: "stop" } });
+    expect(store.getStopIntent(runId)).toBeNull();
   });
 
   it("does not let a post-await stop result overwrite a newer cancellation generation", async () => {

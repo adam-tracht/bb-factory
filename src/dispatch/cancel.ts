@@ -157,7 +157,7 @@ function settleStopIntent(ctx: DispatchContext, generation: StopGeneration): boo
       && currentRun.repositoryKey === generation.run.repositoryKey
       && currentRun.requestedAt === generation.run.requestedAt
       && currentRun.startedAt === generation.run.startedAt
-      && currentRun.finishedAt === null
+      && (currentRun.finishedAt === null || currentRun.status === "reconciliation-required")
       && currentRun.providerId === generation.run.providerId
       && currentRun.workerThreadId === generation.workerThreadId
       && currentRun.projectId === generation.run.projectId
@@ -165,7 +165,7 @@ function settleStopIntent(ctx: DispatchContext, generation: StopGeneration): boo
       && sameJson(currentRun.queueItemIds, generation.run.queueItemIds)
       && sameRevision(currentRun.repositoryRevision, generation.run.repositoryRevision)
       && sameCanonicalRecords(currentRun.canonicalRecords, generation.run.canonicalRecords)
-      && currentRun.status === "cancel-requested"
+      && (currentRun.status === "cancel-requested" || currentRun.status === "reconciliation-required")
       && currentAttempt?.attemptId === generation.attempt.attemptId
       && currentAttempt.runId === generation.attempt.runId
       && currentAttempt.repositoryKey === generation.attempt.repositoryKey
@@ -173,9 +173,9 @@ function settleStopIntent(ctx: DispatchContext, generation: StopGeneration): boo
       && currentAttempt.model === generation.attempt.model
       && currentAttempt.reasoningLevel === generation.attempt.reasoningLevel
       && currentAttempt.workerThreadId === generation.workerThreadId
-      && currentAttempt.status === "cancel-requested"
+      && (currentAttempt.status === "cancel-requested" || currentAttempt.status === "reconciliation-required")
       && currentAttempt.startedAt === generation.attempt.startedAt
-      && currentAttempt.finishedAt === null
+      && (currentAttempt.finishedAt === null || currentAttempt.status === "reconciliation-required")
       && currentLease?.leaseId === generation.lease.leaseId
       && currentLease.repositoryKey === generation.lease.repositoryKey
       && currentLease.runId === generation.lease.runId
@@ -184,7 +184,7 @@ function settleStopIntent(ctx: DispatchContext, generation: StopGeneration): boo
       && currentLease.workerThreadId === generation.workerThreadId
       && currentLease.acquiredAt === generation.lease.acquiredAt
       && currentLease.expiresAt === generation.lease.expiresAt
-      && currentLease.status === "release-requested";
+      && (currentLease.status === "release-requested" || currentLease.status === "reconciliation-required");
     if (!stillOwns) return false;
     transaction.deleteStopIntent(generation.intent.token);
     return true;

@@ -642,17 +642,20 @@ function markRunForReconciliation(
       reasonCode: boundedReason,
       rawObservation: boundedObservation,
     });
-    transaction.updateRunDispatch(runDispatchUpdate(currentRun, {
-      status: "reconciliation-required",
+    transaction.updateRunReconciliation({
+      repositoryKey: currentRun.repositoryKey,
+      runId: currentRun.runId,
       finishedAt: currentRun.finishedAt ?? detectedAtIso,
+      providerId: currentRun.providerId ?? "unknown",
+      workerThreadId: currentRun.workerThreadId ?? "unknown-thread",
       projectId: currentRun.projectId ?? entry?.projectId ?? "unknown",
       environmentId: currentRun.environmentId ?? entry?.environmentId ?? null,
-    }));
+    });
     if (currentAttempt && ["started", "cancel-requested", "pending"].includes(currentAttempt.status)) {
-      transaction.updateDispatchAttempt({ ...currentAttempt, status: "reconciliation-required", finishedAt: currentAttempt.finishedAt ?? detectedAtIso });
+      transaction.updateDispatchAttemptPreservingStopIntent({ ...currentAttempt, status: "reconciliation-required", finishedAt: currentAttempt.finishedAt ?? detectedAtIso });
     }
     if (currentLease && currentLease.status !== "released") {
-      transaction.updateOwnershipLease({ ...currentLease, status: "reconciliation-required" });
+      transaction.updateOwnershipLeasePreservingStopIntent({ ...currentLease, status: "reconciliation-required" });
     }
   });
 }
@@ -1146,10 +1149,39 @@ async function reconcileTasksTerminalRun(
     markRunForReconciliation(ctx, detail, `attached Tasks thread is still ${liveStatus}`);
     return false;
   }
-  const cardAlreadyDone = taskStatus === "done" && liveStatus !== "failed";
-  if (taskStatus !== "in_review" && !cardAlreadyDone) {
+  const terminalAttempt = [...detail.attempts].reverse().find((attempt) =>
+    attempt.runId === run.runId && ACTIVE_ATTEMPT_STATUSES.includes(attempt.status as typeof ACTIVE_ATTEMPT_STATUSES[number]),
+  );
+  const settlementIntent = terminalAttempt === undefined
+    ? null
+    : ctx.store.getSettlementMutationIntent(run.runId, terminalAttempt.attemptId);
+  const cardDoneByFactory = taskStatus === "done"
+    && liveStatus !== "failed"
+    && settlementIntent?.taskId === run.taskId
+    && settlementIntent?.cardStatusAtIssue === "in_review";
+  if (taskStatus === "done" && liveStatus !== "failed" && !cardDoneByFactory) {
+    markRunForReconciliation(ctx, detail, "Tasks card is done without a Factory settlement mutation intent");
+    return false;
+  }
+  if (taskStatus !== "in_review" && !cardDoneByFactory) {
     markRunForReconciliation(ctx, detail, `Tasks card is '${taskStatus}', expected in_review for worker settlement`);
     return false;
+  }
+  const status = liveStatus === "failed" ? "failed-safe" : "completed";
+  if (status === "completed" && !cardDoneByFactory) {
+    if (terminalAttempt === undefined) {
+      markRunForReconciliation(ctx, detail, "Tasks settlement has no active dispatch attempt for mutation attribution");
+      return false;
+    }
+    // Record the attribution while the read above still proves the card was
+    // in_review, before any later repository read can delay the mutation.
+    ctx.store.recordSettlementMutationIntent({
+      runId: run.runId,
+      attemptId: terminalAttempt.attemptId,
+      repositoryKey: run.repositoryKey,
+      taskId: run.taskId,
+      issuedAt: ctx.now().toISOString(),
+    });
   }
   if (!recordTasksLiveStatus(ctx, detail, liveStatus)) {
     const current = (await ctx.store.getRun({ repositoryKey: run.repositoryKey, runId: run.runId })).run;
@@ -1178,11 +1210,7 @@ async function reconcileTasksTerminalRun(
     markRunForReconciliation(ctx, detail, "Tasks thread is terminal but the repository revision did not change");
     return false;
   }
-  const status = liveStatus === "failed" ? "failed-safe" : "completed";
-  const terminalAttempt = [...detail.attempts].reverse().find((attempt) =>
-    attempt.runId === run.runId && ACTIVE_ATTEMPT_STATUSES.includes(attempt.status as typeof ACTIVE_ATTEMPT_STATUSES[number]),
-  );
-  if (status === "completed" && !cardAlreadyDone) {
+  if (status === "completed" && !cardDoneByFactory) {
     let cardDone = false;
     let mutationTimedOut = false;
     let mutationFailureReason: string | null = null;

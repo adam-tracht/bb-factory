@@ -357,6 +357,7 @@ describe("operational SQLite storage", () => {
       "question_answer_submissions",
       "repository_write_actions",
       "run_reconciliation_metadata",
+      "settlement_mutation_intents",
       "stop_intents",
       "tasks_approval_records",
       "tasks_blocker_records",
