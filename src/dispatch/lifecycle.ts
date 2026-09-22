@@ -314,12 +314,12 @@ function recordWorkerObservation(
   detail: OperationalRunDetail,
   workerThreadId: string,
   kind: "terminal" | "live",
+  observedAt: string,
 ): boolean {
   const expectedAttempt = [...detail.attempts].reverse().find((attempt) =>
     attempt.runId === detail.summary.runId && ACTIVE_ATTEMPT_STATUSES.includes(attempt.status as typeof ACTIVE_ATTEMPT_STATUSES[number]),
   );
   if (!expectedAttempt) return false;
-  const observedAt = kind === "terminal" ? ctx.now().toISOString() : null;
   return ctx.store.withTransaction((transaction) => {
     const currentRun = transaction.getRunSummary(detail.summary.runId);
     const currentAttempt = transaction.getActiveAttempt(detail.summary.runId);
@@ -332,18 +332,22 @@ function recordWorkerObservation(
         && currentRun?.status !== "reconciliation-required")
       || currentRun?.workerThreadId !== workerThreadId
       || (currentLease !== null && currentLease.workerThreadId !== workerThreadId)) return false;
-    if (kind === "terminal") {
-      if (currentRun.workerTerminalObservedAt !== null && currentRun.workerTerminalObservedAt !== undefined) return true;
-    } else if (currentRun.workerTerminalObservedAt == null) {
-      return true;
+    const currentObservedAt = currentRun.workerObservedAt;
+    const currentObservationIsTerminal = currentRun.workerTerminalObservedAt !== null
+      && currentRun.workerTerminalObservedAt !== undefined
+      && currentRun.workerTerminalObservedAt === currentObservedAt;
+    if (currentObservedAt !== null
+      && currentObservedAt !== undefined
+      && Date.parse(observedAt) <= Date.parse(currentObservedAt)) {
+      return kind === "terminal" && currentObservationIsTerminal;
     }
-    transaction.updateRunDispatch(runDispatchUpdate(currentRun, {
-      status: currentRun.status,
-      finishedAt: currentRun.finishedAt,
-      workerThreadId,
-      workerTerminalObservedAt: observedAt,
-    }));
-    return true;
+    const applied = transaction.updateRunWorkerObservation({
+      repositoryKey: currentRun.repositoryKey,
+      runId: currentRun.runId,
+      workerObservedAt: observedAt,
+      workerTerminalObservedAt: kind === "terminal" ? observedAt : null,
+    });
+    return applied;
   });
 }
 
@@ -951,8 +955,9 @@ async function reconcileTerminalRun(
   detail: OperationalRunDetail,
   threadId: string,
   threadStatus: ThreadStatusValue,
+  observedAt: string,
 ): Promise<boolean> {
-  if (!recordWorkerObservation(ctx, detail, threadId, "terminal")) {
+  if (!recordWorkerObservation(ctx, detail, threadId, "terminal", observedAt)) {
     ctx.log?.(`run ${detail.summary.runId}: ignored terminal worker observation for a stale generation`);
     return false;
   }
@@ -1169,8 +1174,10 @@ async function reconcileStartedRun(ctx: DispatchContext, detail: OperationalRunD
   }
 
   let threadStatus: ThreadStatusValue;
+  let observedAt: string;
   try {
     const thread = await ctx.sdk.threads.get({ threadId });
+    observedAt = ctx.now().toISOString();
     threadStatus = thread.status as ThreadStatusValue;
   } catch (error) {
     if (run.status === "cancel-requested" && lease !== null && Date.parse(lease.expiresAt) <= ctx.now().getTime()) {
@@ -1182,7 +1189,7 @@ async function reconcileStartedRun(ctx: DispatchContext, detail: OperationalRunD
   }
 
   if (!isTerminalThreadStatus(threadStatus)) {
-    recordWorkerObservation(ctx, detail, threadId, "live");
+    recordWorkerObservation(ctx, detail, threadId, "live", observedAt);
   }
 
   if (run.status === "cancel-requested") {
@@ -1221,7 +1228,7 @@ async function reconcileStartedRun(ctx: DispatchContext, detail: OperationalRunD
     return;
   }
 
-  await reconcileTerminalRun(ctx, detail, threadId, threadStatus);
+  await reconcileTerminalRun(ctx, detail, threadId, threadStatus, observedAt);
 }
 
 function transitionRuntimeExpiryToCancelRequested(
@@ -1277,8 +1284,10 @@ async function reconcileReconciliationRun(ctx: DispatchContext, detail: Operatio
     return;
   }
   let threadStatus: ThreadStatusValue;
+  let observedAt: string;
   try {
     const thread = await ctx.sdk.threads.get({ threadId });
+    observedAt = ctx.now().toISOString();
     threadStatus = thread.status as ThreadStatusValue;
   } catch (error) {
     const reason = `could not read worker thread '${threadId}': ${errorMessage(error)}`;
@@ -1290,7 +1299,7 @@ async function reconcileReconciliationRun(ctx: DispatchContext, detail: Operatio
     return;
   }
   if (!isTerminalThreadStatus(threadStatus)) {
-    recordWorkerObservation(ctx, detail, threadId, "live");
+    recordWorkerObservation(ctx, detail, threadId, "live", observedAt);
   }
   if (!isTerminalThreadStatus(threadStatus)) {
     if (!deadlinePassed) return;
@@ -1318,7 +1327,7 @@ async function reconcileReconciliationRun(ctx: DispatchContext, detail: Operatio
     ctx.log?.(`run ${run.runId}: reconciliation deadline expired after terminal re-observation; finalized failed-safe`);
     return;
   }
-  await reconcileTerminalRun(ctx, detail, threadId, threadStatus);
+  await reconcileTerminalRun(ctx, detail, threadId, threadStatus, observedAt);
 }
 
 function finalizeAtReconciliationDeadline(

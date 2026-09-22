@@ -277,6 +277,44 @@ describe("operational SQLite storage", () => {
     expect((await reloadedStore.getRun({ repositoryKey: intent.repositoryKey, runId: intent.runId })).run?.summary.canonicalRecords).toEqual([]);
   });
 
+  it("keeps the newest worker observation when an older write lands second", async () => {
+    const store = newStore();
+    const intent = makeIntent("run-observation-order", "bbf:v1:monorepo:run-now:123e4567-e89b-12d3-a456-426614174010");
+    store.createRunIntent({ intent });
+    store.updateRunDispatch({
+      repositoryKey: intent.repositoryKey,
+      runId: intent.runId,
+      status: "started",
+      startedAt: "2026-09-10T00:01:00Z",
+      finishedAt: null,
+      providerId: "codex",
+      workerThreadId: "thread-1",
+      projectId: "project-1",
+      environmentId: "environment-1",
+      repositoryRevision: intent.baseRevision,
+    });
+
+    store.withTransaction((transaction) => {
+      expect(transaction.updateRunWorkerObservation({
+        repositoryKey: intent.repositoryKey,
+        runId: intent.runId,
+        workerObservedAt: "2026-09-10T00:02:00Z",
+        workerTerminalObservedAt: "2026-09-10T00:02:00Z",
+      })).toBe(true);
+      expect(transaction.updateRunWorkerObservation({
+        repositoryKey: intent.repositoryKey,
+        runId: intent.runId,
+        workerObservedAt: "2026-09-10T00:01:00Z",
+        workerTerminalObservedAt: null,
+      })).toBe(false);
+    });
+
+    expect((await store.getRun({ repositoryKey: intent.repositoryKey, runId: intent.runId })).run?.summary).toMatchObject({
+      workerObservedAt: "2026-09-10T00:02:00Z",
+      workerTerminalObservedAt: "2026-09-10T00:02:00Z",
+    });
+  });
+
   it("bounds run reads and returns a stable cursor without copying canonical data", async () => {
     const store = newStore();
     const first = makeIntent("run-a", "bbf:v1:monorepo:run-now:123e4567-e89b-12d3-a456-426614174000", "2026-09-10T00:00:00Z");

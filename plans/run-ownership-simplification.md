@@ -46,6 +46,8 @@ immediately while settlement continues.
 
 Observations are latest-wins within the fenced generation: a later live-worker
 observation clears the terminal marker and restores capacity accounting.
+The observation write is a narrow metadata update, so it cannot consume or
+erase a pending stop intent. Older observations cannot overwrite newer ones.
 
 ## States and their single exits
 
@@ -109,6 +111,8 @@ how the original lease ended up quarantined with no worker recorded.
 - Dispatch with a non-empty eligible set: spawn resolves, generation matches,
   run reaches `started`. This is the regression the whole suite missed; it must
   exist.
+- Controlled worker observations: an older write cannot replace a newer
+  observation, and a live write preserves a pending stop intent.
 - Reproduce the incident: terminal `no-op` run, quarantined lease, null worker
   → reconcile releases the lease.
 - Spawn in flight inside the grace window still blocks a second dispatch.

@@ -237,6 +237,7 @@ export async function retryAttempt(ctx: DispatchContext, input: RetryAttemptInpu
         status: "started",
         finishedAt: null,
         workerThreadId: threadId,
+        workerObservedAt: null,
         workerTerminalObservedAt: null,
       }));
       transaction.createDispatchAttempt(pendingAttempt);
@@ -276,6 +277,7 @@ export async function retryAttempt(ctx: DispatchContext, input: RetryAttemptInpu
         status: "reconciliation-required",
         finishedAt: detectedAtIso,
         workerThreadId: threadId,
+        workerObservedAt: null,
         workerTerminalObservedAt: null,
       }));
       transaction.updateDispatchAttempt({ ...currentAttempt, status: "reconciliation-required", finishedAt: detectedAtIso });
@@ -300,6 +302,7 @@ export async function retryAttempt(ctx: DispatchContext, input: RetryAttemptInpu
       status: "started",
       finishedAt: null,
       workerThreadId: threadId,
+      workerObservedAt: null,
       workerTerminalObservedAt: null,
     }));
     return true;

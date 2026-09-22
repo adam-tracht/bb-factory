@@ -187,6 +187,7 @@ export function runDispatchUpdate(
     environmentId?: string | null;
     repositoryRevision?: OperationalRunSummary["repositoryRevision"];
     canonicalRecords?: readonly CanonicalFileRecordLink[];
+    workerObservedAt?: string | null;
     workerTerminalObservedAt?: string | null;
   },
 ): RunDispatchUpdate {
@@ -201,6 +202,9 @@ export function runDispatchUpdate(
     projectId: update.projectId ?? run.projectId ?? "unknown",
     environmentId: update.environmentId === undefined ? run.environmentId : update.environmentId,
     repositoryRevision: update.repositoryRevision ?? run.repositoryRevision,
+    workerObservedAt: update.workerObservedAt === undefined
+      ? (run.workerObservedAt ?? null)
+      : update.workerObservedAt,
     workerTerminalObservedAt: update.workerTerminalObservedAt === undefined
       ? (run.workerTerminalObservedAt ?? null)
       : update.workerTerminalObservedAt,

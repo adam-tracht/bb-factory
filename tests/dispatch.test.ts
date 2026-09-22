@@ -638,6 +638,7 @@ describe("dispatch engine", () => {
     expect(dispatchRunOccupiesSlot(pendingSettlement.summary, clock.value.getTime())).toBe(false);
 
     threads.threads.get("thread-1")!.status = "active";
+    clock.value = new Date(clock.value.getTime() + 1);
     await engine.reconcile("monorepo");
     const revived = (await store.getRun({ repositoryKey: "monorepo", runId })).run!;
     expect(revived.summary.workerTerminalObservedAt).toBeNull();
@@ -1901,6 +1902,54 @@ describe("dispatch engine", () => {
     detail = await store.getRun({ repositoryKey: "monorepo", runId });
     expect(detail.run?.summary.status).toBe("no-op");
     expect(store.getLeaseForRun(runId)?.status).toBe("released");
+  });
+
+  it("keeps a pending stop intent when a live observation clears the terminal marker", async () => {
+    const { engine, threads, store } = makeHarness();
+    const started = await engine.requestRun({
+      ...MANUAL_REQUEST,
+      idempotencyKey: "bbf:v1:monorepo:run-now:923e4567-e89b-42d3-a456-426614174036" as never,
+    });
+    if (!started.ok) throw new Error("expected success");
+    const runId = started.result.runId!;
+    const current = (await store.getRun({ repositoryKey: "monorepo", runId })).run!;
+    store.updateRunDispatch({
+      repositoryKey: "monorepo",
+      runId,
+      status: "started",
+      startedAt: current.summary.startedAt,
+      finishedAt: null,
+      providerId: current.summary.providerId!,
+      workerThreadId: current.summary.workerThreadId!,
+      projectId: current.summary.projectId!,
+      environmentId: current.summary.environmentId,
+      repositoryRevision: current.summary.repositoryRevision,
+      workerObservedAt: "2026-09-10T00:01:00Z",
+      workerTerminalObservedAt: "2026-09-10T00:01:00Z",
+    });
+
+    const originalStop = threads.stop.bind(threads);
+    let releaseStop!: () => void;
+    let markStopEntered!: () => void;
+    const stopGate = new Promise<void>((resolve) => { releaseStop = resolve; });
+    const stopEntered = new Promise<void>((resolve) => { markStopEntered = resolve; });
+    threads.stop = async (input) => {
+      markStopEntered();
+      await stopGate;
+      await originalStop(input);
+    };
+
+    const stopping = engine.requestStop("monorepo");
+    await stopEntered;
+    const pendingIntent = store.getStopIntent(runId);
+    expect(pendingIntent).not.toBeNull();
+
+    await engine.reconcile("monorepo");
+
+    expect(store.getStopIntent(runId)?.token).toBe(pendingIntent?.token);
+    expect((await store.getRun({ repositoryKey: "monorepo", runId })).run?.summary.workerTerminalObservedAt).toBeNull();
+    releaseStop();
+    expect(await stopping).toMatchObject({ ok: true, result: { status: "accepted", action: "stop" } });
   });
 
   it("does not let a post-await stop result overwrite a newer cancellation generation", async () => {

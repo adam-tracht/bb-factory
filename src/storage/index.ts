@@ -466,6 +466,7 @@ export const OPERATIONAL_STORAGE_MIGRATIONS = [
   `ALTER TABLE dispatch_attempts ADD COLUMN task_id TEXT`,
   `ALTER TABLE dispatch_attempts ADD COLUMN tasks_live_status TEXT CHECK (tasks_live_status IS NULL OR tasks_live_status IN ('starting', 'working', 'idle', 'completed', 'failed'))`,
   `ALTER TABLE operational_runs ADD COLUMN worker_terminal_observed_at TEXT`,
+  `ALTER TABLE operational_runs ADD COLUMN worker_observed_at TEXT`,
 ] as const;
 
 const tasksOperationClassSchema = z.string().trim().min(1).max(128);
@@ -612,8 +613,16 @@ export interface RunDispatchUpdate {
   readonly environmentId: string | null;
   readonly repositoryRevision: RepositoryRevision;
   readonly canonicalRecords?: readonly CanonicalFileRecordLink[];
+  readonly workerObservedAt?: string | null;
   readonly workerTerminalObservedAt?: string | null;
   readonly taskId?: string | null;
+}
+
+export interface RunWorkerObservationUpdate {
+  readonly repositoryKey: RepositoryKey;
+  readonly runId: string;
+  readonly workerObservedAt: string;
+  readonly workerTerminalObservedAt: string | null;
 }
 
 export type ReconciliationResolution = "completed" | "blocked" | "failed-safe" | "no-op";
@@ -807,6 +816,7 @@ export interface OperationalTransaction {
   updateRunTaskId(runId: string, taskId: string): void;
   createRunIntent(input: CreateRunIntentInput): CreateRunIntentResult;
   updateRunDispatch(input: RunDispatchUpdate): void;
+  updateRunWorkerObservation(input: RunWorkerObservationUpdate): boolean;
   createDispatchAttempt(attempt: DispatchAttempt): void;
   updateDispatchAttempt(attempt: DispatchAttempt): void;
   createOwnershipLease(lease: OwnershipLease): void;
@@ -842,6 +852,7 @@ export interface OperationalStateStore extends OperationalStateReader {
   withTransaction<T>(callback: (transaction: OperationalTransaction) => T): T;
   createRunIntent(input: CreateRunIntentInput): CreateRunIntentResult;
   updateRunDispatch(input: RunDispatchUpdate): void;
+  updateRunWorkerObservation(input: RunWorkerObservationUpdate): boolean;
   createDispatchAttempt(attempt: DispatchAttempt): void;
   updateDispatchAttempt(attempt: DispatchAttempt): void;
   createOwnershipLease(lease: OwnershipLease): void;
@@ -897,6 +908,7 @@ interface RunRow {
   queue_item_ids_json: string;
   repository_revision_json: string;
   canonical_records_json: string;
+  worker_observed_at: string | null;
   worker_terminal_observed_at: string | null;
   task_id: string | null;
 }
@@ -1086,6 +1098,10 @@ class OperationalSqliteStore implements OperationalStateStore {
     this.withTransaction((transaction) => transaction.updateRunDispatch(input));
   }
 
+  updateRunWorkerObservation(input: RunWorkerObservationUpdate): boolean {
+    return this.withTransaction((transaction) => transaction.updateRunWorkerObservation(input));
+  }
+
   createDispatchAttempt(attempt: DispatchAttempt): void {
     this.withTransaction((transaction) => transaction.createDispatchAttempt(attempt));
   }
@@ -1201,7 +1217,7 @@ class OperationalSqliteStore implements OperationalStateStore {
         `SELECT run_id, repository_key, requested_at, status, started_at, finished_at,
                 provider_id, worker_thread_id, project_id, environment_id,
                 queue_item_ids_json, repository_revision_json, canonical_records_json,
-                worker_terminal_observed_at, task_id
+                worker_observed_at, worker_terminal_observed_at, task_id
            FROM operational_runs
           WHERE repository_key = ?
             AND (? IS NULL OR requested_at < ? OR (requested_at = ? AND run_id < ?))
@@ -1226,7 +1242,7 @@ class OperationalSqliteStore implements OperationalStateStore {
                 authorization_provenance_json, status, started_at, finished_at,
                 provider_id, worker_thread_id, project_id, environment_id,
                 repository_revision_json, canonical_records_json,
-                worker_terminal_observed_at, task_id
+                worker_observed_at, worker_terminal_observed_at, task_id
            FROM operational_runs
           WHERE repository_key = ? AND run_id = ?`,
       )
@@ -1281,6 +1297,7 @@ class OperationalSqliteStore implements OperationalStateStore {
       updateRunTaskId: (runId, taskId) => updateRunTaskId(this.db, runId, taskId),
       createRunIntent: (input) => insertRunIntent(this.db, input),
       updateRunDispatch: (input) => updateRunDispatch(this.db, input),
+      updateRunWorkerObservation: (input) => updateRunWorkerObservation(this.db, input),
       createDispatchAttempt: (attempt) => insertDispatchAttempt(this.db, attempt),
       updateDispatchAttempt: (attempt) => updateDispatchAttempt(this.db, attempt),
       createOwnershipLease: (lease) => insertOwnershipLease(this.db, lease),
@@ -1359,7 +1376,7 @@ class OperationalSqliteStore implements OperationalStateStore {
         `SELECT run_id, repository_key, requested_at, status, started_at, finished_at,
                 provider_id, worker_thread_id, project_id, environment_id,
                 queue_item_ids_json, repository_revision_json, canonical_records_json,
-                worker_terminal_observed_at, task_id
+                worker_observed_at, worker_terminal_observed_at, task_id
            FROM operational_runs
           WHERE repository_key = ? AND status IN ('pending', 'started', 'cancel-requested', 'reconciliation-required')
           ORDER BY requested_at ASC, run_id ASC`,
@@ -2280,7 +2297,7 @@ function updateRunDispatch(db: SqliteDatabase, input: RunDispatchUpdate): void {
       `SELECT run_id, repository_key, requested_at, status, started_at, finished_at,
               provider_id, worker_thread_id, project_id, environment_id,
               queue_item_ids_json, repository_revision_json, canonical_records_json,
-              worker_terminal_observed_at, task_id
+              worker_observed_at, worker_terminal_observed_at, task_id
          FROM operational_runs
         WHERE repository_key = ? AND run_id = ?`,
     )
@@ -2307,6 +2324,9 @@ function updateRunDispatch(db: SqliteDatabase, input: RunDispatchUpdate): void {
     taskId: input.taskId === undefined ? currentSummary.taskId : input.taskId,
     repositoryRevision,
     canonicalRecords,
+    workerObservedAt: input.workerObservedAt === undefined
+      ? (currentSummary.workerObservedAt ?? null)
+      : input.workerObservedAt,
     workerTerminalObservedAt: input.workerTerminalObservedAt === undefined
       ? (currentSummary.workerTerminalObservedAt ?? null)
       : input.workerTerminalObservedAt,
@@ -2316,7 +2336,7 @@ function updateRunDispatch(db: SqliteDatabase, input: RunDispatchUpdate): void {
         SET status = ?, started_at = ?, finished_at = ?, provider_id = ?,
             worker_thread_id = ?, project_id = ?, environment_id = ?,
             repository_revision_json = ?, canonical_records_json = ?,
-            worker_terminal_observed_at = ?, task_id = ?
+            worker_observed_at = ?, worker_terminal_observed_at = ?, task_id = ?
       WHERE repository_key = ? AND run_id = ?`,
   ).run(
     summary.status,
@@ -2328,11 +2348,34 @@ function updateRunDispatch(db: SqliteDatabase, input: RunDispatchUpdate): void {
     summary.environmentId,
     stableJson(summary.repositoryRevision),
     stableJson(summary.canonicalRecords),
+    summary.workerObservedAt ?? null,
     summary.workerTerminalObservedAt ?? null,
     summary.taskId ?? null,
     repositoryKey,
     input.runId,
   );
+}
+
+function updateRunWorkerObservation(db: SqliteDatabase, input: RunWorkerObservationUpdate): boolean {
+  const repositoryKey = repositoryKeySchema.parse(input.repositoryKey);
+  const runId = z.string().trim().min(1).parse(input.runId);
+  const workerObservedAt = isoTimestampSchema.parse(input.workerObservedAt);
+  const workerTerminalObservedAt = input.workerTerminalObservedAt === null
+    ? null
+    : isoTimestampSchema.parse(input.workerTerminalObservedAt);
+  const result = db.prepare(
+    `UPDATE operational_runs
+        SET worker_observed_at = ?, worker_terminal_observed_at = ?
+      WHERE repository_key = ? AND run_id = ?
+        AND (worker_observed_at IS NULL OR worker_observed_at < ?)`,
+  ).run(
+    workerObservedAt,
+    workerTerminalObservedAt,
+    repositoryKey,
+    runId,
+    workerObservedAt,
+  );
+  return result.changes === 1;
 }
 
 function insertDispatchAttempt(db: SqliteDatabase, attempt: DispatchAttempt): void {
@@ -2753,7 +2796,7 @@ function readRunSummary(db: SqliteDatabase, runId: string): OperationalRunSummar
       `SELECT run_id, repository_key, requested_at, status, started_at, finished_at,
               provider_id, worker_thread_id, project_id, environment_id,
               queue_item_ids_json, repository_revision_json, canonical_records_json,
-              worker_terminal_observed_at, task_id
+              worker_observed_at, worker_terminal_observed_at, task_id
          FROM operational_runs
         WHERE run_id = ?`,
     )
@@ -2848,6 +2891,7 @@ function runSummaryFromRow(row: RunRow): OperationalRunSummary {
     queueItemIds: parseJson(row.queue_item_ids_json),
     repositoryRevision: parseJson(row.repository_revision_json),
     canonicalRecords: parseJson(row.canonical_records_json),
+    workerObservedAt: row.worker_observed_at,
     workerTerminalObservedAt: row.worker_terminal_observed_at,
     ...(row.task_id === null ? {} : { taskId: row.task_id }),
   });
