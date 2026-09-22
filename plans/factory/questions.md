@@ -30,3 +30,16 @@ context: scripts/release.sh:39-45; git rev-list shows factory is only ever "behi
 assumed: Fetched origin and skipped the rebase; factory is the sole working branch and main only receives release commits, so there is nothing to rebase onto.
 recommended: Yes. If a different sync is wanted, say so and the protocol gets a repo.md override.
 answer: No, 2026-09-15 (via chat): main is not a synthetic release branch indefinitely, so permanently skipping the rebase is wrong. Resolution: repo.md now makes the exception conditional - skip the rebase only while origin/main carries nothing but release-artifact commits; the moment any other commit appears, the foreman runs the normal `git rebase origin/main` per the generic protocol, and the existing conflict path (abort, blocking question, blocked state) covers a stray commit on a still-release-shaped tree.
+
+## Q4 2026-09-22 assumption BBF-0049
+question: May the Go-live and cutover phase remain unstarted until a human adds an explicit `approved:` line to BBF-0049?
+context: plans/native-tasks-migration.md Go-live and cutover section and plans/factory/queue.md BBF-0049.
+assumed: Left Go-live and cutover unstarted; BBF-0049 remains without approval for that phase, and no run may perform it.
+recommended: Yes; require explicit human approval before Go-live and cutover.
+answer:
+
+## Q5 2026-09-22 blocking BBF-0049
+question: Can the `factory` branch receive a manual rebase onto `origin/main` before BBF-0049 claim recovery proceeds?
+context: Factory preflight required `git rebase origin/main`; it conflicted while replaying `edea29a` (`release: bump version to 0.1.1`) in README.md and package.json, so the rebase was aborted per foreman.md.
+recommended: Resolve the factory/main history conflict manually, then rerun the factory bookkeeping session.
+answer:

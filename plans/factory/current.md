@@ -1,15 +1,9 @@
 # Current factory run
 
-Run 2026-09-18T01:52Z (thread thr_d2furp39dd) completed BBF-0047
-(agent-drafted queue entries). A `draft-tasks` guarded action spawns an
-advisory thread that appends only `status: draft` entries to
-plans/factory/queue.md and commits them on `factory`; controls ship on the
-Work tab and as the add-repository wizard's final step; drafts surface in
-the collapsed Drafts group and approve through the existing human-only
-control; the foreman may file draft follow-ups and must report them.
-Committed on `factory` and pushed to origin/factory. Validation: 543
-tests, typecheck, lint, build, SDK freshness, and whitespace pass.
+Run 2026-09-22T16:12Z (thread thr_3qmy8wr93c) stopped at preflight when the
+required rebase onto origin/main conflicted in README.md and package.json.
+The rebase was aborted, so BBF-0049, the dashboard, and the requested recovery
+record remain unchanged. Q4 records the Go-live and cutover assumption; Q5
+records the manual-rebase blocker. Nothing was pushed.
 
-No questions filed this run.
-
-state: success
+state: blocked
