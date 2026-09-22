@@ -235,7 +235,7 @@ function DependencyButton(props: { token: string; ctx: ViewContext }) {
   }, token);
 }
 
-/** Textarea plus confirm dialog that writes queue.approved to queue.md. */
+/** Textarea plus confirm dialog that records the approval through Factory. */
 function ApproveComposer(props: {
   entry: QueueEntry;
   ctx: ViewContext;
@@ -253,6 +253,7 @@ function ApproveComposer(props: {
   const canDraft = ProviderModelPicker !== undefined && draftSeed !== null;
   const pickerRouting = pickerRoutingFor(ctx);
   const isDraft = entry.status.kind === "draft";
+  const tasksEnabled = ctx.tasksIntegration === "enabled";
   return h("div", { className: "space-y-1.5" },
     h("div", { className: "space-y-1 text-xs text-muted-foreground" },
       h("p", null, isDraft
@@ -338,9 +339,13 @@ function ApproveComposer(props: {
     h(ConfirmDialog, {
       open: confirming,
       title: `Approve ${entry.id}`,
-      body: isDraft
-        ? `Marks ${entry.id} ready and writes queue.approved: '${trimmed}' to plans/factory/queue.md.`
-        : `Writes queue.approved: '${trimmed}' to plans/factory/queue.md for ${entry.id}.`,
+      body: tasksEnabled
+        ? isDraft
+          ? `Moves Tasks card ${entry.id} to todo and records a revision-bound ledger approval for '${trimmed}'.`
+          : `Records a revision-bound ledger approval for Tasks card ${entry.id}: '${trimmed}'.`
+        : isDraft
+          ? `Marks ${entry.id} ready and writes queue.approved: '${trimmed}' to plans/factory/queue.md.`
+          : `Writes queue.approved: '${trimmed}' to plans/factory/queue.md for ${entry.id}.`,
       confirmLabel: "Approve",
       busy: pending,
       onConfirm: () => {
@@ -351,10 +356,7 @@ function ApproveComposer(props: {
     }));
 }
 
-/**
- * Button plus dialog that spawns the draft-tasks advisory thread. The thread
- * writes `status: draft` entries; only a human sets `status: ready`.
- */
+/** Button plus dialog that spawns the draft-tasks advisory thread. */
 function DraftTasksControl(props: {
   ctx: ViewContext;
   providers: readonly ProviderStatus[];
@@ -371,13 +373,14 @@ function DraftTasksControl(props: {
   const trimmedPlan = planPath.trim();
   const seed = seedPickerValue(props.providers, props.preferredProviderId);
   const canPick = ProviderModelPicker !== undefined && seed !== null;
+  const tasksEnabled = ctx.tasksIntegration === "enabled";
   return h("div", null,
     h(ActionButton, {
       label: "Draft tasks",
       variant: "secondary",
       size: "sm",
       disabled: pending,
-      title: "Start a chat that drafts queue entries",
+      title: tasksEnabled ? "Start a chat that drafts native Tasks cards" : "Start a chat that drafts queue entries",
       onClick: () => {
         // Seed once per open so a canceled dialog never leaks a stale pick.
         setGoal("");
@@ -389,10 +392,12 @@ function DraftTasksControl(props: {
     }),
     h(ConfirmDialog, {
       open,
-      title: "Draft queue tasks",
-      body: h("div", { className: "space-y-3" },
+        title: "Draft queue tasks",
+        body: h("div", { className: "space-y-3" },
         h("p", null,
-          "Starts a chat on this repository's factory checkout that appends status: draft entries to plans/factory/queue.md and commits them. It never marks anything ready."),
+          tasksEnabled
+            ? "Starts a chat on this repository's factory checkout that creates backlog cards in the linked Tasks project. It never moves anything to todo."
+            : "Starts a chat on this repository's factory checkout that appends status: draft entries to plans/factory/queue.md and commits them. It never marks anything ready."),
         h("textarea", {
           value: goal,
           rows: 2,
@@ -499,24 +504,38 @@ function WorkRowDetail(props: {
             "The protocol parser did not recognize this status; the item cannot be dispatched until it is fixed."),
           h("p", { className: "whitespace-pre-wrap font-mono text-xs text-muted-foreground" },
             `Raw status: ${status.raw}`),
-          h("div", { className: "flex items-center gap-1.5 text-xs text-muted-foreground" },
-            "Open",
-            h(FilePath, {
-              path: QUEUE_PATH,
-              target: repositoryFileTarget(ctx.repository, ctx.environmentId, QUEUE_PATH),
-              fileLink: ctx.fileLink,
-            })))
+          entry.factoryMetadataPresent === false
+            ? null
+            : h("div", { className: "flex items-center gap-1.5 text-xs text-muted-foreground" },
+                "Open",
+                h(FilePath, {
+                  path: QUEUE_PATH,
+                  target: repositoryFileTarget(ctx.repository, ctx.environmentId, QUEUE_PATH),
+                  fileLink: ctx.fileLink,
+                })))
       : null,
-    h("div", { className: "text-xs" },
-      h("span", { className: "text-muted-foreground" }, "Plan: "),
-      h("span", { className: "break-words text-muted-foreground" },
-        linkifyPaths(entry.planPath, (token, index) =>
-          h(FilePath, {
-            key: `plan-${index}`,
-            path: token,
-            target: repositoryFileTarget(ctx.repository, ctx.environmentId, token),
-            fileLink: ctx.fileLink,
-          })))),
+    entry.factoryMetadataPresent === false
+      ? h("div", { className: "space-y-2 text-xs" },
+          entry.description
+            ? h("div", null,
+                h(DetailLabel, { text: "Description" }),
+                h("p", { className: "mt-0.5 whitespace-pre-wrap break-words text-muted-foreground" }, entry.description))
+            : null,
+          entry.labels && entry.labels.length > 0
+            ? h("div", null,
+                h(DetailLabel, { text: "Labels" }),
+                h("p", { className: "mt-0.5 break-words text-muted-foreground" }, entry.labels.join(", ")))
+            : null)
+      : h("div", { className: "text-xs" },
+          h("span", { className: "text-muted-foreground" }, "Plan: "),
+          h("span", { className: "break-words text-muted-foreground" },
+            linkifyPaths(entry.planPath, (token, index) =>
+              h(FilePath, {
+                key: `plan-${index}`,
+                path: token,
+                target: repositoryFileTarget(ctx.repository, ctx.environmentId, token),
+                fileLink: ctx.fileLink,
+              })))),
     entry.dependsOn.length > 0
       ? h("div", { className: "flex flex-wrap items-center gap-1.5 text-xs" },
           h("span", { className: "text-muted-foreground" }, "Depends on:"),
@@ -549,13 +568,13 @@ function WorkRowDetail(props: {
               preferredProviderId: props.preferredProviderId,
             })))
         : null,
-    entry.acceptance.length > 0
+    entry.factoryMetadataPresent !== false && entry.acceptance.length > 0
       ? h("div", null, h(DetailLabel, { text: "Acceptance" }), h(ClampedList, { items: entry.acceptance }))
       : null,
-    entry.validate.length > 0
+    entry.factoryMetadataPresent !== false && entry.validate.length > 0
       ? h("div", null, h(DetailLabel, { text: "Validate" }), h(ClampedList, { items: entry.validate }))
       : null,
-    entry.notes
+    entry.factoryMetadataPresent !== false && entry.notes
       ? h("div", null, h(DetailLabel, { text: "Notes" }), h(NotesBlock, { notes: entry.notes }))
       : null);
 }
@@ -762,6 +781,7 @@ export function WorkView(props: {
   const { snapshot, ctx, focusItemId } = props;
   const providers = props.providers ?? [];
   const preferredProviderId = props.preferredProviderId ?? null;
+  const tasksEnabled = ctx.tasksIntegration === "enabled";
   const groups = useMemo(() => bucketWorkEntries(snapshot.queue), [snapshot.queue]);
   const focusedSection = WORK_GROUPS.find((section) => groups[section.key].some((entry) => entry.id === focusItemId))?.key
     ?? WORK_GROUPS[0]!.key;
@@ -773,12 +793,16 @@ export function WorkView(props: {
     snapshot.queue.length === 0
       ? h(EmptyNotice, {
           title: "The queue is empty",
-          detail: "Items appear here when plans/factory/queue.md defines them.",
-          action: h(FilePath, {
-            path: QUEUE_PATH,
-            target: repositoryFileTarget(ctx.repository, ctx.environmentId, QUEUE_PATH),
-            fileLink: ctx.fileLink,
-          }),
+          detail: tasksEnabled
+            ? "Items appear here when cards are created in the linked Tasks project."
+            : "Items appear here when plans/factory/queue.md defines them.",
+          action: tasksEnabled
+            ? null
+            : h(FilePath, {
+                path: QUEUE_PATH,
+                target: repositoryFileTarget(ctx.repository, ctx.environmentId, QUEUE_PATH),
+                fileLink: ctx.fileLink,
+              }),
         })
       : WORK_GROUPS.map((section) =>
           h(WorkGroupSection, {

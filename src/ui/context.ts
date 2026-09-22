@@ -19,6 +19,7 @@ import type {
   UpdateRepositoryInput,
 } from "../contracts.js";
 import type { ActionFeedback, FileLinkRenderer } from "./primitives.js";
+import type { TasksIntegrationMode } from "../tasks/index.js";
 
 export type FactorySection = "overview" | "work" | "questions" | "runs" | "settings";
 
@@ -40,6 +41,7 @@ export interface ViewContext {
   readonly displayName?: string;
   readonly environmentId: string | null;
   readonly projectId: string | null;
+  readonly tasksIntegration?: TasksIntegrationMode;
   readonly dispatchPaused: boolean;
   readonly revision: RepositoryRevision | null;
   readonly fileLink?: FileLinkRenderer;

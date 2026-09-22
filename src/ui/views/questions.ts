@@ -91,6 +91,7 @@ export function RepositoryQuestionCard(props: {
   question: Question;
   gates: string[];
   pending: boolean;
+  ctx: ViewContext;
   providers: readonly ProviderStatus[];
   preferredProviderId: string | null;
   pickerRouting: PickerRouting;
@@ -159,7 +160,9 @@ export function RepositoryQuestionCard(props: {
       h("textarea", {
         className: `${inputClass} min-h-20 w-full`,
         value: draft,
-        placeholder: `Your answer. Recorded to plans/factory/questions.md as ${question.id}'s answer.`,
+        placeholder: props.ctx.tasksIntegration === "enabled"
+          ? `Your answer. Recorded in the factory ledger and Tasks card for ${question.id}.`
+          : `Your answer. Recorded to plans/factory/questions.md as ${question.id}'s answer.`,
         "aria-label": `Answer ${question.id}`,
         disabled: pending,
         onChange: (event: { target: { value: string } }) => setDraft(event.target.value),
@@ -232,7 +235,9 @@ export function RepositoryQuestionCard(props: {
     h(ConfirmDialog, {
       open: confirmAnswer !== null,
       title: `Record ${question.id} answer`,
-      body: `Appends to plans/factory/questions.md on branch factory. ${question.id} gates: ${gates.length > 0 ? gates.join(", ") : "no items"}.`,
+      body: props.ctx.tasksIntegration === "enabled"
+        ? `Resolves the blocker in the factory ledger and updates its Tasks card. ${question.id} gates: ${gates.length > 0 ? gates.join(", ") : "no items"}.`
+        : `Appends to plans/factory/questions.md on branch factory. ${question.id} gates: ${gates.length > 0 ? gates.join(", ") : "no items"}.`,
       confirmLabel: "Record answer",
       busy: pending,
       onConfirm: () => {
@@ -726,6 +731,7 @@ export function QuestionsView(props: {
                         question,
                         gates: questionGates(snapshot, question.id),
                         pending: ctx.pendingTarget === `question:${question.id}`,
+                        ctx,
                         providers: props.providers ?? [],
                         preferredProviderId: props.preferredProviderId ?? null,
                         pickerRouting,

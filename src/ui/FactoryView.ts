@@ -244,6 +244,7 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
   const sdkSettings = useSettings();
   const configuredRepositoryKey = readRepositoryKey(sdkSettings.values);
   const settingsIdentity = readSettingsIdentity(sdkSettings.values);
+  const tasksIntegration = sdkSettings.values?.tasksIntegration === "enabled" ? "enabled" as const : "disabled" as const;
   const rpc = useRpc<FactoryRpcContract>();
   const rpcRef = useRef(rpc);
   rpcRef.current = rpc;
@@ -684,6 +685,7 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
         displayName: selectedEntry?.displayName,
         environmentId: selectedEntry?.environmentId ?? null,
         projectId: selectedEntry?.projectId ?? null,
+        tasksIntegration,
         dispatchPaused: selectedEntry?.dispatchPaused ?? false,
         revision: snapshot?.revision ?? null,
         fileLink: HostFileLink,
@@ -725,6 +727,7 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
       displayName: entry.displayName,
       environmentId: entry.environmentId ?? null,
       projectId: entry.projectId ?? null,
+      tasksIntegration,
       dispatchPaused: entry.dispatchPaused ?? false,
       revision: bundleSnapshot?.revision ?? null,
       fileLink: HostFileLink,
@@ -809,6 +812,7 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
       },
       environmentId: null,
       projectId: null,
+      tasksIntegration,
       dispatchPaused: true,
       revision: null,
       feedback: null,

@@ -3,6 +3,10 @@ import { act, fireEvent, within } from "@testing-library/react";
 import { installTestPluginRuntime, renderSlot, type PluginRpcTestHandlers } from "@get-bb/plugin-sdk/testing/app";
 import { createElement, useEffect, useState } from "react";
 import { beforeAll, describe, expect, it, vi } from "vitest";
+import { projectTasks, renderFactoryQuestionDescription, renderFactoryTaskDescription, type FactoryTaskMetadata } from "../src/tasks/migration.js";
+import { TasksClient, type TasksRpcCall, type TasksTask } from "../src/tasks/index.js";
+import type { TasksBlockerRecord } from "../src/storage/index.js";
+import type { ProtocolSnapshot } from "../src/contracts.js";
 import type { FactoryViewProps } from "../src/ui/FactoryView.js";
 import type { FactoryRpcContract } from "../src/rpc.js";
 import { parseFactoryRoute } from "../src/ui/routes.js";
@@ -219,6 +223,147 @@ function baseRpc(overrides: Record<string, unknown> = {}) {
       },
     })),
   } as unknown as PluginRpcTestHandlers<FactoryRpcContract> & { factory_action: ReturnType<typeof vi.fn> };
+}
+
+const uiTasksProject = {
+  id: "ui-tasks-project",
+  name: "Factory Tasks",
+  prefix: "FAC",
+  color: "#123456",
+  linkedBbProjectId: "project-1",
+} as const;
+
+const uiTaskMetadata: FactoryTaskMetadata = {
+  dashboardId: "T1",
+  priority: 2,
+  dependsOn: [],
+  risk: "low",
+  planPath: "plans/factory/plan.md",
+  acceptance: ["The card-backed work is complete."],
+  validate: ["pnpm test"],
+  notes: "Card-backed notes.",
+  approvedScopes: [],
+  approvedText: null,
+  questionId: null,
+  questionDate: null,
+  questionText: null,
+};
+
+function disabledUiSnapshot(projected: ProtocolSnapshot): ProtocolSnapshot {
+  return {
+    ...projected,
+    queue: projected.queue.map((entry) => {
+      const legacyEntry = { ...entry } as Record<string, unknown>;
+      delete legacyEntry.factoryMetadataPresent;
+      delete legacyEntry.description;
+      delete legacyEntry.labels;
+      return legacyEntry as ProtocolSnapshot["queue"][number];
+    }),
+  };
+}
+
+async function projectUiSnapshot(repositoryKey: string): Promise<ProtocolSnapshot> {
+  const project = { ...uiTasksProject, linkedBbProjectId: `project-${repositoryKey}` };
+  const tasks: TasksTask[] = [
+    {
+      id: `${repositoryKey}-queue-task`,
+      projectId: project.id,
+      key: "FAC-1",
+      title: "Card-backed work",
+      status: "todo",
+      priority: "high",
+      description: renderFactoryTaskDescription(uiTaskMetadata),
+      dueDate: null,
+      labelIds: [],
+      parentTaskId: null,
+      position: 1,
+    },
+    {
+      id: `${repositoryKey}-question-task`,
+      projectId: project.id,
+      key: "FAC-Q",
+      title: "Question card",
+      status: "todo",
+      priority: "high",
+      description: renderFactoryQuestionDescription({
+        questionId: "Q1",
+        date: "2026-09-10",
+        question: "Which provider?",
+        context: "Real blocker context.",
+      }),
+      dueDate: null,
+      labelIds: [],
+      parentTaskId: null,
+      position: 2,
+    },
+  ];
+  const blocker: TasksBlockerRecord = {
+    blockerId: "Q1",
+    repositoryKey: repositoryKey as TasksBlockerRecord["repositoryKey"],
+    taskId: `${repositoryKey}-question-task`,
+    kind: "blocking-question",
+    state: "open",
+    questionText: "Which provider?",
+    answerText: null,
+    provenance: { source: "ui-test", date: "2026-09-10" },
+    createdAt: "2026-09-10T12:00:00.000Z",
+    updatedAt: "2026-09-10T12:00:00.000Z",
+    answeredAt: null,
+    resolvedAt: null,
+  };
+  const client = new TasksClient((async ({ method, input }: Parameters<TasksRpcCall>[0]) => {
+    const args = (input ?? {}) as Record<string, unknown>;
+    if (method === "listTasks") return { tasks: tasks.filter((task) => task.projectId === args.projectId), nextCursor: null };
+    if (method === "listLabels") return { labels: [] };
+    throw new Error(`Unexpected Tasks RPC ${method}`);
+  }) as never);
+  const projection = await projectTasks(client, {
+    listTasksApprovals: () => [],
+    listTasksDependencyEdges: () => [],
+    listTasksBlockers: () => [blocker],
+  }, {
+    repositoryKey: repositoryKey as typeof blocker.repositoryKey,
+    project,
+    now: () => new Date("2026-09-10T12:00:00.000Z"),
+  });
+  return {
+    ...snapshot,
+    repository: repositoryKey === "demo" ? repository : repositoryForSwitch(repositoryKey),
+    queue: [...projection.queue],
+    questions: [...projection.questions],
+  };
+}
+
+function modeEquivalenceRpc(
+  scope: "repository" | "aggregate",
+  snapshots: ReadonlyMap<string, ProtocolSnapshot>,
+) {
+  return {
+    ...baseRpc(),
+    factory_repositories: vi.fn((input: { selectedRepositoryKey?: string | null }) => scope === "repository"
+      ? repositorySelection
+      : repositorySelectionForSwitch(input.selectedRepositoryKey)),
+    factory_snapshot: vi.fn(({ repositoryKey }: { repositoryKey: string }) => snapshots.get(repositoryKey)),
+    factory_settings: vi.fn(({ repositoryKey }: { repositoryKey: string }) => settingsForSwitch(repositoryKey)),
+    factory_health: vi.fn(({ repositoryKey }: { repositoryKey: string }) => healthForSwitch(repositoryKey)),
+    factory_interactions: vi.fn(({ repositoryKey }: { repositoryKey: string }) => ({ repositoryKey, interactions: [] })),
+    factory_runs: vi.fn(({ repositoryKey }: { repositoryKey: string }) => ({
+      runs: [{ ...runSummary, repositoryKey, queueItemIds: ["FAC-1"] }],
+      nextCursor: null,
+    })),
+  } as ReturnType<typeof baseRpc>;
+}
+
+function visibleFactoryText(slot: ReturnType<typeof renderSlot>): string {
+  return (slot.container.textContent ?? "")
+    .replace(/refreshed just now\?|Updated\?/gu, "updated")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+function submittedFactoryAction(rpc: ReturnType<typeof modeEquivalenceRpc>) {
+  const input = rpc.factory_action.mock.calls[0]?.[0] as { repositoryKey: string; action: unknown } | undefined;
+  return input ? { repositoryKey: input.repositoryKey, action: input.action } : null;
 }
 
 beforeAll(() => {
@@ -799,6 +944,131 @@ describe("Factory view shell", () => {
       slot.lifecycle.unmount();
       controlledSettingsState = { values: { repositoryKey: "demo" }, isLoading: false };
     }
+  });
+});
+
+describe("Factory mode-equivalent projection", () => {
+  it.each([
+    ["repository", "work"],
+    ["repository", "questions"],
+    ["repository", "runs"],
+    ["aggregate", "work"],
+    ["aggregate", "questions"],
+    ["aggregate", "runs"],
+  ] as const)("keeps %s %s visible content and interactions equivalent", async (scope, section) => {
+    const { FactoryView } = await import("../src/ui/FactoryView.js");
+    const keys = scope === "repository" ? ["demo"] : ["monorepo", "data"];
+    const projected = new Map<string, ProtocolSnapshot>();
+    for (const key of keys) projected.set(key, await projectUiSnapshot(key));
+    const disabled = new Map([...projected].map(([key, value]) => [key, disabledUiSnapshot(value)]));
+    const subPath = scope === "repository" ? section : `all/${section}`;
+    const settings: Record<string, string | number | boolean> = scope === "repository"
+      ? { repositoryKey: "demo", tasksIntegration: "enabled" }
+      : { repositoryRegistry: JSON.stringify({ repositories: [
+          { configuration: monorepoRepository, projectId: "project-monorepo", environmentId: "environment-monorepo" },
+          { configuration: dataRepository, projectId: "project-data", environmentId: "environment-data" },
+        ], defaultRepositoryKey: "monorepo" }), tasksIntegration: "enabled" };
+    const enabledRpc = modeEquivalenceRpc(scope, projected);
+    controlledSettingsState = { values: settings, isLoading: false };
+    const enabledSlot = renderSlot<FactoryViewProps, FactoryRpcContract>(
+      { component: FactoryView },
+      { subPath, panelPath: "factory" },
+      { rpc: enabledRpc, settings },
+    );
+    let enabledText: string;
+    let enabledResult: { kind: "action"; value: ReturnType<typeof submittedFactoryAction> } | { kind: "navigation"; value: unknown[] };
+    try {
+      if (section === "work") {
+        await enabledSlot.findAllByText("Card-backed work");
+        const workRow = enabledSlot.container.querySelector('[id$="work-FAC-1"]') as HTMLElement | null;
+        if (!workRow) throw new Error("The projected Work row was not rendered.");
+        fireEvent.click(within(workRow).getByRole("button", { name: "Approve" }));
+        fireEvent.change(within(workRow).getByRole("textbox"), { target: { value: "same approval" } });
+        const composerButtons = within(workRow).getAllByRole("button", { name: "Approve" });
+        fireEvent.click(composerButtons[composerButtons.length - 1]!);
+        const dialog = await enabledSlot.findByRole("alertdialog");
+        expect(dialog.textContent).toContain("revision-bound ledger approval");
+        fireEvent.click(within(dialog as HTMLElement).getByRole("button", { name: "Approve" }));
+        await vi.waitFor(() => expect(enabledRpc.factory_action).toHaveBeenCalled());
+        enabledResult = { kind: "action", value: submittedFactoryAction(enabledRpc) };
+      } else if (section === "questions") {
+        await enabledSlot.findAllByText("Real blocker context.");
+        const answers = await enabledSlot.findAllByLabelText("Answer Q1");
+        fireEvent.change(answers[0]!, { target: { value: "Use provider one." } });
+        const recordButtons = await enabledSlot.findAllByRole("button", { name: "Record answer" });
+        fireEvent.click(recordButtons[0]!);
+        const dialog = await enabledSlot.findByRole("alertdialog");
+        expect(dialog.textContent).toContain("factory ledger");
+        fireEvent.click(within(dialog as HTMLElement).getByRole("button", { name: "Record answer" }));
+        await vi.waitFor(() => expect(enabledRpc.factory_action).toHaveBeenCalled());
+        enabledResult = { kind: "action", value: submittedFactoryAction(enabledRpc) };
+      } else {
+        const runLabels = await enabledSlot.findAllByText("FAC-1");
+        const runButton = runLabels[0]?.closest("button");
+        if (!runButton) throw new Error("The projected run row was not rendered.");
+        fireEvent.click(runButton);
+        enabledResult = {
+          kind: "navigation",
+          value: enabledSlot.inspection.navigateCalls.filter((call) => call.method === "toPluginPanel"),
+        };
+      }
+      enabledText = visibleFactoryText(enabledSlot);
+    } finally {
+      enabledSlot.lifecycle.unmount();
+    }
+
+    const disabledRpc = modeEquivalenceRpc(scope, disabled);
+    controlledSettingsState = { values: { ...settings, tasksIntegration: "disabled" }, isLoading: false };
+    const disabledSlot = renderSlot<FactoryViewProps, FactoryRpcContract>(
+      { component: FactoryView },
+      { subPath, panelPath: "factory" },
+      { rpc: disabledRpc, settings: { ...settings, tasksIntegration: "disabled" } },
+    );
+    let disabledText: string;
+    let disabledResult: { kind: "action"; value: ReturnType<typeof submittedFactoryAction> } | { kind: "navigation"; value: unknown[] };
+    try {
+      if (section === "work") {
+        await disabledSlot.findAllByText("Card-backed work");
+        const workRow = disabledSlot.container.querySelector('[id$="work-FAC-1"]') as HTMLElement | null;
+        if (!workRow) throw new Error("The projected Work row was not rendered.");
+        fireEvent.click(within(workRow).getByRole("button", { name: "Approve" }));
+        fireEvent.change(within(workRow).getByRole("textbox"), { target: { value: "same approval" } });
+        const composerButtons = within(workRow).getAllByRole("button", { name: "Approve" });
+        fireEvent.click(composerButtons[composerButtons.length - 1]!);
+        const dialog = await disabledSlot.findByRole("alertdialog");
+        expect(dialog.textContent).toContain("queue.approved");
+        fireEvent.click(within(dialog as HTMLElement).getByRole("button", { name: "Approve" }));
+        await vi.waitFor(() => expect(disabledRpc.factory_action).toHaveBeenCalled());
+        disabledResult = { kind: "action", value: submittedFactoryAction(disabledRpc) };
+      } else if (section === "questions") {
+        await disabledSlot.findAllByText("Real blocker context.");
+        const answers = await disabledSlot.findAllByLabelText("Answer Q1");
+        fireEvent.change(answers[0]!, { target: { value: "Use provider one." } });
+        const recordButtons = await disabledSlot.findAllByRole("button", { name: "Record answer" });
+        fireEvent.click(recordButtons[0]!);
+        const dialog = await disabledSlot.findByRole("alertdialog");
+        expect(dialog.textContent).toContain("questions.md");
+        fireEvent.click(within(dialog as HTMLElement).getByRole("button", { name: "Record answer" }));
+        await vi.waitFor(() => expect(disabledRpc.factory_action).toHaveBeenCalled());
+        disabledResult = { kind: "action", value: submittedFactoryAction(disabledRpc) };
+      } else {
+        const runLabels = await disabledSlot.findAllByText("FAC-1");
+        const runButton = runLabels[0]?.closest("button");
+        if (!runButton) throw new Error("The projected run row was not rendered.");
+        fireEvent.click(runButton);
+        disabledResult = {
+          kind: "navigation",
+          value: disabledSlot.inspection.navigateCalls.filter((call) => call.method === "toPluginPanel"),
+        };
+      }
+      disabledText = visibleFactoryText(disabledSlot);
+    } finally {
+      disabledSlot.lifecycle.unmount();
+      controlledSettingsState = { values: { repositoryKey: "demo" }, isLoading: false };
+    }
+
+    expect(enabledText).toBe(disabledText);
+    expect(enabledResult).toEqual(disabledResult);
   });
 });
 

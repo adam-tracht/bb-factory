@@ -369,6 +369,10 @@ export const queueEntrySchema = z
     blockedBy: z.array(nonEmptyString),
     eligible: z.boolean(),
     eligibilityReasons: z.array(queueEligibilityReasonSchema),
+    /** Enabled Tasks projection fields. Omitted by the frozen markdown path. */
+    factoryMetadataPresent: z.boolean().optional(),
+    description: z.string().nullable().optional(),
+    labels: z.array(nonEmptyString).optional(),
   })
   .strict();
 export type QueueEntry = z.infer<typeof queueEntrySchema>;

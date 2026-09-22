@@ -1038,6 +1038,7 @@ function AggregateQuestionsView(props: {
       question,
       gates: snapshot ? questionGates(snapshot, question.id) : [],
       pending: ctx.pendingTarget === `question:${question.id}`,
+      ctx,
       providers: group.bundle.health.status === "ready" ? group.bundle.health.data.providers : [],
       preferredProviderId: preferredProvider(group.bundle),
       pickerRouting: pickerRoutingFor(ctx),

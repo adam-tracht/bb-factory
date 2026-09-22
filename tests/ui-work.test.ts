@@ -256,6 +256,26 @@ describe("WorkView grouping", () => {
 });
 
 describe("WorkView rows", () => {
+  it("renders native card fields without fabricated markdown details", () => {
+    renderWork([makeEntry({
+      id: "FAC-13",
+      title: "Native card",
+      factoryMetadataPresent: false,
+      description: "Native card description",
+      labels: ["native", "backend"],
+      planPath: "native Tasks card",
+      eligible: true,
+    })], makeCtx({ tasksIntegration: "enabled" }));
+    expandRow("FAC-13");
+    const row = rowOf("FAC-13");
+    expect(within(row).getByText("Description")).toBeTruthy();
+    expect(within(row).getByText("Native card description")).toBeTruthy();
+    expect(within(row).getByText("native, backend")).toBeTruthy();
+    expect(within(row).queryByText(/Plan:/)).toBeNull();
+    expect(within(row).queryByText("Acceptance")).toBeNull();
+    expect(within(row).queryByRole("link")).toBeNull();
+  });
+
   it("renders a quiet Draft badge in the Drafts group with the Approve CTA", () => {
     renderWork([makeEntry({ id: "DRAFT-1", status: { kind: "draft" }, eligibilityReasons: ["not-ready"] })]);
     fireEvent.click(sectionOf("Drafts").querySelector("summary")!);
@@ -586,6 +606,14 @@ describe("WorkView draft tasks", () => {
     expect(within(dialog).getByText(/configured provider defaults are used/)).toBeTruthy();
   });
 
+  it("describes native Tasks drafting when enabled", () => {
+    renderWork([], makeCtx({ tasksIntegration: "enabled" }));
+    fireEvent.click(screen.getByRole("button", { name: "Draft tasks" }));
+    const dialog = screen.getByRole("alertdialog");
+    expect(within(dialog).getByText(/creates backlog cards in the linked Tasks project/)).toBeTruthy();
+    expect(within(dialog).queryByText(/queue\.md/)).toBeNull();
+  });
+
   it("keeps Start chat disabled until a goal is typed", () => {
     renderWork([]);
     fireEvent.click(screen.getByRole("button", { name: "Draft tasks" }));
@@ -738,6 +766,12 @@ describe("WorkView focus and empty state", () => {
     expect(screen.getByText("The queue is empty")).toBeTruthy();
     expect(screen.getByText("Items appear here when plans/factory/queue.md defines them.")).toBeTruthy();
     expect(screen.getByRole("link", { name: "plans/factory/queue.md" })).toBeTruthy();
+  });
+
+  it("points enabled empty Work at the linked Tasks project", () => {
+    renderWork([], makeCtx({ tasksIntegration: "enabled" }));
+    expect(screen.getByText("Items appear here when cards are created in the linked Tasks project.")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "plans/factory/queue.md" })).toBeNull();
   });
 });
 

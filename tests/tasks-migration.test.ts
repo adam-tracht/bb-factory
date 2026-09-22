@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { EMPTY_REPOSITORY_REVISION, tasksActionRequestSchema } from "../src/contracts.js";
 import { createTasksActionExecutor } from "../src/actions/tasks.js";
-import { projectTasks, renderFactoryTaskDescription, type FactoryTaskMetadata } from "../src/tasks/migration.js";
+import { projectTasks, renderFactoryQuestionDescription, renderFactoryTaskDescription, type FactoryTaskMetadata } from "../src/tasks/migration.js";
 import { deriveTasksContentRevision, TasksClient, type TasksRpcCall, type TasksTask } from "../src/tasks/index.js";
 import { digestText, RepositoryProtocolReader, staticMergeReader, type ProtocolFiles } from "../src/protocol/index.js";
 import { CURRENT_MD, DASHBOARD_MD, FOREMAN_MD, makeConfiguration, makeStore, FakeFileSystem, cleanupStorages, QUESTIONS_MD, QUEUE_MD, REPO_MD } from "./fakes.js";
@@ -103,7 +103,12 @@ describe("native Tasks migration projection", () => {
       },
       {
         ...task("task-question-card", "FAC-12", "todo"),
-        description: "<!-- factory-question {\"questionId\":\"Q-card\",\"questionDate\":\"2026-09-21\",\"questionText\":\"Which provider?\"} -->\nQuestion Q-card",
+        description: renderFactoryQuestionDescription({
+          questionId: "Q-card",
+          date: "2026-09-21",
+          question: "Which provider?",
+          context: "The card's context is authoritative.",
+        }),
       },
     ];
     const store = makeStore();
@@ -120,6 +125,7 @@ describe("native Tasks migration projection", () => {
       });
     }
     store.createTasksBlocker({ blockerId: "Q-open", repositoryKey: "monorepo", taskId: "task-blocked", kind: "blocking-question", questionText: "Open?", provenance: { source: "test" } });
+    store.createTasksBlocker({ blockerId: "Q-card", repositoryKey: "monorepo", taskId: "task-question-card", kind: "blocking-question", questionText: "Which provider?", provenance: { source: "test" } });
     const resolved = store.createTasksBlocker({ blockerId: "Q-resolved", repositoryKey: "monorepo", taskId: "task-resolved", kind: "blocking-question", questionText: "Resolved?", provenance: { source: "test" } });
     store.updateTasksBlocker({ blockerId: resolved.blockerId, state: "resolved", answerText: "yes" });
     store.createTasksApproval({
@@ -152,6 +158,29 @@ describe("native Tasks migration projection", () => {
     expect(byKey.get("FAC-10")?.eligibilityReasons).toContain("missing-authorization");
     expect(byKey.has("FAC-11")).toBe(false);
     expect(byKey.has("FAC-12")).toBe(false);
+    expect(projection.questions.find((question) => question.id === "Q-card")?.context).toBe("The card's context is authoritative.");
+  });
+
+  it("keeps native card fields honest when factory metadata is absent", async () => {
+    const labels = [{ id: "label-native", projectId: project.id, name: "native", color: "#123456" }];
+    const native = {
+      ...task("task-native", "FAC-13", "todo"),
+      description: "Native card description",
+      labelIds: ["label-native"],
+    };
+    const projection = await projectTasks(clientFor([native], labels), makeStore(), { repositoryKey: "monorepo", project });
+    expect(projection.queue).toMatchObject([{
+      id: "FAC-13",
+      title: "FAC-13",
+      factoryMetadataPresent: false,
+      description: "Native card description",
+      labels: ["native"],
+      planPath: "native Tasks card",
+      acceptance: [],
+      validate: [],
+      notes: null,
+    }]);
+    expect(projection.queue[0]?.planPath).not.toContain("queue.md");
   });
 
   it("imports queue and questions idempotently by the embedded dashboard id", async () => {

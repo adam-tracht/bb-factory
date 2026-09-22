@@ -22,6 +22,7 @@ import {
 } from "../storage/index.js";
 import { actionError, actionSuccess, errorMessage } from "./results.js";
 import { claimErrorResult, completeIntent, consumedResult, deepEqual, reconcileIntent, recordedIntentResult } from "./intents.js";
+import type { TasksIntegrationMode, TasksProject } from "../tasks/index.js";
 
 type ThreadsApi = BbPluginApi["sdk"]["threads"];
 type SdkPendingInteraction = Awaited<ReturnType<ThreadsApi["interactions"]["get"]>>;
@@ -41,6 +42,8 @@ export interface BbInteractionActionExecutorOptions {
   readonly repositoryLookup: (repositoryKey: RepositoryKey) => RepositoryRegistryEntry | null;
   readonly dispatch: DispatchEngine;
   readonly setDispatchMode: (mode: "enabled" | "paused") => Promise<void>;
+  readonly tasksIntegration?: TasksIntegrationMode;
+  readonly tasksProjectLookup?: (repositoryKey: RepositoryKey) => Promise<TasksProject | null>;
 }
 
 interface LocatedInteraction {
@@ -143,6 +146,7 @@ function recommendationPrompt(
   configuration: RepositoryConfiguration,
   question: Question,
   gates: readonly string[],
+  tasksIntegration: TasksIntegrationMode = "disabled",
 ): string {
   const lines = [
     `The factory operator asked for a recommendation on question ${question.id} in repository "${configuration.repositoryKey}".`,
@@ -154,16 +158,31 @@ function recommendationPrompt(
   ];
   if (question.assumed) lines.push("", `Working assumption: ${question.assumed}`);
   if (gates.length > 0) lines.push("", `Answering this unblocks queue items: ${gates.join(", ")}.`);
-  lines.push(
-    "",
-    `The repository checkout is at ${configuration.checkoutPath} on the "factory" branch. Read plans/factory/questions.md for the full question record and plans/factory/repo.md for repository protocol rules before answering.`,
-    "",
-    "Reply with (1) the recommended answer, (2) the reasoning, and (3) the main risk or tradeoff. Advisory only: do not edit files and do not record the answer in questions.md; the operator records it.",
-  );
+  if (tasksIntegration === "enabled") {
+    lines.push(
+      "",
+      `The repository checkout is at ${configuration.checkoutPath} on the "factory" branch.`,
+      "",
+      `Read the Tasks question card ${question.dashboardId} and its blocker record for the full question context. Do not read or write queue.md or questions.md.`,
+      "",
+      "Reply with (1) the recommended answer, (2) the reasoning, and (3) the main risk or tradeoff. Advisory only: do not edit files or record the answer; the operator records it in the factory ledger and updates the Tasks card.",
+    );
+  } else {
+    lines.push(
+      "",
+      `The repository checkout is at ${configuration.checkoutPath} on the "factory" branch. Read plans/factory/questions.md for the full question record and plans/factory/repo.md for repository protocol rules before answering.`,
+      "",
+      "Reply with (1) the recommended answer, (2) the reasoning, and (3) the main risk or tradeoff. Advisory only: do not edit files and do not record the answer in questions.md; the operator records it.",
+    );
+  }
   return lines.join("\n");
 }
 
-function approvalPrompt(configuration: RepositoryConfiguration, entry: ProtocolSnapshot["queue"][number]): string {
+function approvalPrompt(
+  configuration: RepositoryConfiguration,
+  entry: ProtocolSnapshot["queue"][number],
+  tasksIntegration: TasksIntegrationMode = "disabled",
+): string {
   const list = (items: readonly string[]) => items.length > 0 ? items.map((item) => `- ${item}`).join("\n") : "- none";
   return [
     `The factory operator asked for a draft approval for queue entry ${entry.id} in repository "${configuration.repositoryKey}".`,
@@ -184,9 +203,13 @@ function approvalPrompt(configuration: RepositoryConfiguration, entry: ProtocolS
     "",
     "The approved: line can permit these gated actions only: merges, deploys, migrations, adding or upgrading dependencies, touching secrets, deleting data, customer-facing changes.",
     "",
-    `The operator must write an approved: line on the ${entry.id} queue entry and asked you to draft it. The repository checkout is at ${configuration.checkoutPath} on the "factory" branch. Read plans/factory/queue.md for the full queue record and plans/factory/repo.md for repository protocol rules before drafting.`,
+    tasksIntegration === "enabled"
+      ? `The operator asked you to draft an approval for Tasks card ${entry.id}. The repository checkout is at ${configuration.checkoutPath} on the "factory" branch. Read the linked Tasks card for the full record and repository policy before drafting. Do not read or write queue.md.`
+      : `The operator must write an approved: line on the ${entry.id} queue entry and asked you to draft it. The repository checkout is at ${configuration.checkoutPath} on the "factory" branch. Read plans/factory/queue.md for the full queue record and plans/factory/repo.md for repository protocol rules before drafting.`,
     "",
-    "Reply with (1) the recommended approved: line text, (2) the reasoning, and (3) what stays excluded. Advisory only: do not edit files; the operator records the approval.",
+    tasksIntegration === "enabled"
+      ? "Reply with (1) the recommended approval scope text, (2) the reasoning, and (3) what stays excluded. Advisory only: do not edit files; the operator records the approval in the factory ledger."
+      : "Reply with (1) the recommended approved: line text, (2) the reasoning, and (3) what stays excluded. Advisory only: do not edit files; the operator records the approval.",
   ].join("\n");
 }
 
@@ -194,6 +217,7 @@ function draftTasksPrompt(
   configuration: RepositoryConfiguration,
   goal: string,
   planPath: string | undefined,
+  tasksProject?: TasksProject,
 ): string {
   const lines = [
     `The factory operator asked for drafted queue entries in repository "${configuration.repositoryKey}".`,
@@ -201,12 +225,22 @@ function draftTasksPrompt(
     `Goal: ${goal}`,
   ];
   if (planPath !== undefined) lines.push("", `Plan file: ${planPath} (read it for context).`);
-  lines.push(
-    "",
-    `The repository checkout is at ${configuration.checkoutPath} on the "factory" branch.`,
-    "",
-    "Read plans/factory/repo.md and the entry-format header in plans/factory/queue.md first. Append new queue entries only, each with `status: draft` (never any other status), a priority, depends_on, risk, plan path, `approved: none`, observable acceptance criteria, exact validate commands, and notes where useful. Follow the repository's dashboard-ID convention (plans/README.md) when choosing entry ids. Never edit, reorder, or delete existing entries; the human-only initial `ready` gate is unchanged: you draft, the human approves. Commit the queue.md change on the factory branch (`git add plans/factory/queue.md && git commit`), like the foreman does. Reply with the ids you appended and anything the operator should review.",
-  );
+  if (tasksProject === undefined) {
+    lines.push(
+      "",
+      `The repository checkout is at ${configuration.checkoutPath} on the "factory" branch.`,
+      "",
+      "Read plans/factory/repo.md and the entry-format header in plans/factory/queue.md first. Append new queue entries only, each with `status: draft` (never any other status), a priority, depends_on, risk, plan path, `approved: none`, observable acceptance criteria, exact validate commands, and notes where useful. Follow the repository's dashboard-ID convention (plans/README.md) when choosing entry ids. Never edit, reorder, or delete existing entries; the human-only initial `ready` gate is unchanged: you draft, the human approves. Commit the queue.md change on the factory branch (`git add plans/factory/queue.md && git commit`), like the foreman does. Reply with the ids you appended and anything the operator should review.",
+    );
+  } else {
+    lines.push(
+      "",
+      `The repository checkout is at ${configuration.checkoutPath} on the "factory" branch.`,
+      `The linked native Tasks project is ${tasksProject.name} (${tasksProject.prefix}, id ${tasksProject.id}).`,
+      "",
+      "Use the native Tasks project as the only work record. Create one backlog card per drafted item with `bb tasks create`, using the project prefix above, the requested title and priority, and a description containing the complete factory queue metadata marker plus the observable acceptance criteria, exact validate commands, dependencies, risk, and notes. Never read, write, or commit plans/factory/queue.md, and never create a markdown queue entry. Do not move cards to todo or any other status; the human-only ready gate is unchanged: you draft backlog cards, the human approves. Reply with the card keys you created and anything the operator should review.",
+    );
+  }
   return lines.join("\n");
 }
 
@@ -435,7 +469,9 @@ export function createBbInteractionActionExecutor(options: BbInteractionActionEx
       if (!question) {
         return completeIntent(store, record, actionError(
           "not-found",
-          `Question '${action.questionId}' is not in plans/factory/questions.md.`,
+          options.tasksIntegration === "enabled"
+            ? `Question '${action.questionId}' is not in the Tasks-backed factory projection.`
+            : `Question '${action.questionId}' is not in plans/factory/questions.md.`,
           request.idempotencyKey,
         ));
       }
@@ -445,7 +481,7 @@ export function createBbInteractionActionExecutor(options: BbInteractionActionEx
         spawned = await threads.spawn({
           projectId: entry.projectId,
           environment: spawnEnvironment(entry),
-          prompt: recommendationPrompt(entry.configuration, question, questionGates(snapshot, question.id)),
+          prompt: recommendationPrompt(entry.configuration, question, questionGates(snapshot, question.id), options.tasksIntegration),
           providerId: action.providerId,
           model: action.model,
           reasoningLevel: action.reasoningLevel,
@@ -503,7 +539,9 @@ export function createBbInteractionActionExecutor(options: BbInteractionActionEx
       if (!queueEntry) {
         return completeIntent(store, record, actionError(
           "not-found",
-          `Queue item '${action.queueItemId}' is not in plans/factory/queue.md.`,
+          options.tasksIntegration === "enabled"
+            ? `Queue item '${action.queueItemId}' is not in the Tasks-backed factory projection.`
+            : `Queue item '${action.queueItemId}' is not in plans/factory/queue.md.`,
           request.idempotencyKey,
         ));
       }
@@ -513,7 +551,7 @@ export function createBbInteractionActionExecutor(options: BbInteractionActionEx
         spawned = await threads.spawn({
           projectId: entry.projectId,
           environment: spawnEnvironment(entry),
-          prompt: approvalPrompt(entry.configuration, queueEntry),
+          prompt: approvalPrompt(entry.configuration, queueEntry, options.tasksIntegration),
           providerId: action.providerId,
           model: action.model,
           reasoningLevel: action.reasoningLevel,
@@ -554,12 +592,38 @@ export function createBbInteractionActionExecutor(options: BbInteractionActionEx
     }
     const target: PendingActionIntentTarget = { kind: "repository" };
     return guarded(request, target, async (record) => {
+      let tasksProject: TasksProject | undefined;
+      if (options.tasksIntegration === "enabled") {
+        if (!options.tasksProjectLookup) {
+          return completeIntent(store, record, actionError(
+            "internal",
+            "Native Tasks drafting is unavailable because the linked Tasks project lookup is not configured.",
+            request.idempotencyKey,
+          ));
+        }
+        try {
+          tasksProject = (await options.tasksProjectLookup(request.repositoryKey)) ?? undefined;
+        } catch (error) {
+          return completeIntent(store, record, actionError(
+            "internal",
+            `Could not load the linked Tasks project: ${errorMessage(error)}`,
+            request.idempotencyKey,
+          ));
+        }
+        if (!tasksProject) {
+          return completeIntent(store, record, actionError(
+            "not-found",
+            `No Tasks project is linked to repository '${request.repositoryKey}'.`,
+            request.idempotencyKey,
+          ));
+        }
+      }
       let spawned: { id: string };
       try {
         spawned = await threads.spawn({
           projectId: entry.projectId,
           environment: spawnEnvironment(entry),
-          prompt: draftTasksPrompt(entry.configuration, action.goal, action.planPath),
+          prompt: draftTasksPrompt(entry.configuration, action.goal, action.planPath, tasksProject),
           // The schema guarantees the triple arrives all-or-none; the keys
           // stay absent entirely when no pin is set so the project's stored
           // execution defaults apply.

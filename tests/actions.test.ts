@@ -11,6 +11,7 @@ import { createRepositoryActionExecutor } from "../src/actions/repository.js";
 import { createBbInteractionActionExecutor } from "../src/actions/interactions.js";
 import type { DispatchEngine } from "../src/dispatch/index.js";
 import type { PendingInteractionReader } from "../src/ports.js";
+import type { TasksIntegrationMode, TasksProject } from "../src/tasks/index.js";
 import {
   FakeFileSystem,
   cleanupStorages,
@@ -437,7 +438,10 @@ function pendingContract(interaction: FakePendingInteraction): PendingInteractio
   };
 }
 
-function makeInteractionHarness(interactions: FakePendingInteraction[] = []) {
+function makeInteractionHarness(
+  interactions: FakePendingInteraction[] = [],
+  options: { readonly tasksIntegration?: TasksIntegrationMode; readonly tasksProject?: TasksProject | null } = {},
+) {
   const store = makeStore();
   const files = new FakeFileSystem();
   files.seedProtocol();
@@ -484,6 +488,7 @@ function makeInteractionHarness(interactions: FakePendingInteraction[] = []) {
     reconcile: vi.fn(async () => undefined),
   };
   const setDispatchMode = vi.fn(async () => undefined);
+  const tasksProjectLookup = vi.fn(async () => options.tasksProject ?? null);
   const entry = makeRegistryEntry();
   const executor = createBbInteractionActionExecutor({
     threads: threads as never,
@@ -493,8 +498,10 @@ function makeInteractionHarness(interactions: FakePendingInteraction[] = []) {
     repositoryLookup: (key) => (key === "monorepo" ? entry : null),
     dispatch,
     setDispatchMode,
+    tasksIntegration: options.tasksIntegration,
+    tasksProjectLookup,
   });
-  return { store, files, spawn, threads, resolve, dispatch, setDispatchMode, executor, entry };
+  return { store, files, spawn, threads, resolve, dispatch, setDispatchMode, tasksProjectLookup, executor, entry };
 }
 
 let interactionUuid = 0;
@@ -923,6 +930,57 @@ describe("BB interaction action executor", () => {
     const replay = await harness.executor.execute(request);
     expect(replay).toMatchObject({ ok: true, result: { threadId: "thr_recommend" } });
     expect(harness.spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses native Tasks records in enabled recommendation and draft prompts", async () => {
+    const harness = makeInteractionHarness([], {
+      tasksIntegration: "enabled",
+      tasksProject: {
+        id: "tasks-project",
+        name: "Factory Tasks",
+        prefix: "FAC",
+        color: "#123456",
+        linkedBbProjectId: "project-1",
+      },
+    });
+    const questionResult = await harness.executor.execute(bbRequest({
+      kind: "recommend-question",
+      questionId: "Q6",
+      providerId: "codex",
+      model: "gpt-5",
+      reasoningLevel: "medium",
+    }));
+    expect(questionResult).toMatchObject({ ok: true, result: { action: "recommend-question" } });
+    const questionPrompt = vi.mocked(harness.spawn).mock.calls[0]![0].prompt as string;
+    expect(questionPrompt).toContain("Tasks question card T1");
+    expect(questionPrompt).toContain("and its blocker record");
+    expect(questionPrompt).not.toContain("Read plans/factory/questions.md");
+    expect(questionPrompt).not.toContain("Read plans/factory/queue.md");
+
+    const approvalResult = await harness.executor.execute(bbRequest({
+      kind: "recommend-approval",
+      queueItemId: "T1",
+      providerId: "codex",
+      model: "gpt-5",
+      reasoningLevel: "medium",
+    }));
+    expect(approvalResult).toMatchObject({ ok: true, result: { action: "recommend-approval" } });
+    const approvalPrompt = vi.mocked(harness.spawn).mock.calls[1]![0].prompt as string;
+    expect(approvalPrompt).toContain("Tasks card T1");
+    expect(approvalPrompt).toContain("factory ledger");
+    expect(approvalPrompt).not.toContain("Read plans/factory/queue.md");
+
+    const draftResult = await harness.executor.execute(bbRequest({
+      kind: "draft-tasks",
+      goal: "Break the hosting rollout into native Tasks cards",
+    }));
+    expect(draftResult).toMatchObject({ ok: true, result: { action: "draft-tasks" } });
+    const draftPrompt = vi.mocked(harness.spawn).mock.calls[2]![0].prompt as string;
+    expect(draftPrompt).toContain("bb tasks create");
+    expect(draftPrompt).toContain("Factory Tasks (FAC, id tasks-project)");
+    expect(draftPrompt).not.toContain("Append new queue entries");
+    expect(draftPrompt).not.toContain("git add plans/factory/queue.md");
+    expect(harness.tasksProjectLookup).toHaveBeenCalledWith("monorepo");
   });
 
   it("omits the provider pin keys when draft-tasks carries none", async () => {

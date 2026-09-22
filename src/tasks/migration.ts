@@ -61,7 +61,7 @@ function defaultMetadata(task: Pick<TasksTask, "title" | "priority">): FactoryTa
     priority: task.priority === "urgent" ? 1 : task.priority === "high" ? 2 : task.priority === "medium" ? 3 : task.priority === "low" ? 4 : 5,
     dependsOn: [],
     risk: "low",
-    planPath: "plans/factory/queue.md",
+    planPath: "native Tasks card",
     acceptance: [],
     validate: [],
     notes: null,
@@ -78,7 +78,14 @@ export function parseFactoryTaskMetadata(task: Pick<TasksTask, "title" | "priori
   return parsed.success ? parsed.data : defaultMetadata(task);
 }
 
-export function parseFactoryQuestionMetadata(task: Pick<TasksTask, "description">): Pick<FactoryTaskMetadata, "questionId" | "questionDate" | "questionText"> | null {
+export interface FactoryQuestionMetadata {
+  readonly questionId: string;
+  readonly questionDate: string;
+  readonly questionText: string;
+  readonly context: string | null;
+}
+
+export function parseFactoryQuestionMetadata(task: Pick<TasksTask, "description">): FactoryQuestionMetadata | null {
   const marker = markerValue(task.description, QUESTION_MARKER);
   if (!marker || typeof marker !== "object") return null;
   const parsed = z.object({
@@ -86,7 +93,16 @@ export function parseFactoryQuestionMetadata(task: Pick<TasksTask, "description"
     questionDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u),
     questionText: z.string().trim().min(1),
   }).safeParse(marker);
-  return parsed.success ? parsed.data : null;
+  if (!parsed.success) return null;
+  const markerMatch = task.description?.match(new RegExp(`<!-- ${QUESTION_MARKER} (\\{[^\\n]+\\}) -->`, "u"));
+  const body = markerMatch && task.description
+    ? task.description.slice((markerMatch.index ?? 0) + markerMatch[0].length).trim()
+    : "";
+  const questionOffset = body.indexOf(parsed.data.questionText);
+  const context = questionOffset < 0
+    ? null
+    : body.slice(questionOffset + parsed.data.questionText.length).trim() || null;
+  return { ...parsed.data, context };
 }
 
 export function renderFactoryTaskDescription(metadata: FactoryTaskMetadata, body?: string): string {
@@ -230,14 +246,14 @@ export async function projectTasks(
   const now = input.now ?? (() => new Date());
   const questions = blockers.map((blocker) => {
     const task = taskById.get(blocker.taskId);
-    const metadata = task ? parseFactoryTaskMetadata(task) : null;
+    const metadata = task ? parseFactoryQuestionMetadata(task) : null;
     const value = {
       id: blocker.blockerId,
       date: metadata?.questionDate ?? dateFromProvenance(blocker, now()),
       classification: "blocking" as const,
       dashboardId: task?.key ?? blocker.taskId,
       question: blocker.questionText,
-      context: metadata?.questionText === blocker.questionText ? "Native Tasks blocker" : "Factory Tasks blocker",
+      context: metadata?.context ?? "No additional context provided.",
       assumed: null,
       recommended: null,
       answer: blocker.state === "open" ? null : blocker.answerText,
@@ -275,6 +291,9 @@ export async function projectTasks(
       blockedBy: taskBlockers.map((blocker) => blocker.blockerId),
       eligible: task.status === "todo" && reasons.length === 0,
       eligibilityReasons: reasons,
+      factoryMetadataPresent: metadata.dashboardId !== null,
+      description: task.description ?? null,
+      labels: [...(labelNamesByTask.get(task.id) ?? new Set<string>())].sort(),
     };
     return queueEntrySchema.parse(value);
   });
