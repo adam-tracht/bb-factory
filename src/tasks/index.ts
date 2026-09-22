@@ -376,7 +376,9 @@ export class TasksClient {
       optionalFields({
         name: input.name,
         prefix: input.prefix,
-        color: input.color,
+        // The server requires color (non-blank, no default); the CLI hides this
+        // by defaulting to blue, so the adapter does the same.
+        color: input.color ?? "blue",
         linkedBbProjectId: input.linkedBbProjectId,
       }),
       tasksProjectResultSchema,
