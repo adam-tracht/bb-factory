@@ -853,7 +853,6 @@ export interface OperationalTransaction {
   getCurrentOwnership(repositoryKey: RepositoryKey): OwnershipLease | null;
   getReconciliation(runId: string): ReconciliationMetadata | null;
   getStopIntent(runId: string): StopIntent | null;
-  getSettlementMutationIntent(runId: string, attemptId: string): SettlementMutationIntent | null;
   listSettlementMutationIntents(runId: string): SettlementMutationIntent[];
   assertGlobalCapacity(limit: number, excludingRunId?: string, nowMs?: number): void;
   assertRepositoryCapacity(repositoryKey: RepositoryKey, limit: number, excludingRunId?: string, nowMs?: number): void;
@@ -931,7 +930,6 @@ export interface OperationalStateStore extends OperationalStateReader {
   getLeaseForRun(runId: string): OwnershipLease | null;
   getReconciliation(runId: string): ReconciliationMetadata | null;
   getStopIntent(runId: string): StopIntent | null;
-  getSettlementMutationIntent(runId: string, attemptId: string): SettlementMutationIntent | null;
   listSettlementMutationIntents(runId: string): SettlementMutationIntent[];
   findRunIdByIdempotencyKey(idempotencyKey: IdempotencyKey): string | null;
   listActiveRuns(repositoryKey: RepositoryKey): OperationalRunSummary[];
@@ -1289,10 +1287,6 @@ class OperationalSqliteStore implements OperationalStateStore {
     return readStopIntent(this.db, runId);
   }
 
-  getSettlementMutationIntent(runId: string, attemptId: string): SettlementMutationIntent | null {
-    return readSettlementMutationIntent(this.db, runId, attemptId);
-  }
-
   listSettlementMutationIntents(runId: string): SettlementMutationIntent[] {
     return readSettlementMutationIntents(this.db, runId);
   }
@@ -1380,7 +1374,6 @@ class OperationalSqliteStore implements OperationalStateStore {
       getCurrentOwnership: (repositoryKey) => readCurrentOwnership(this.db, repositoryKey),
       getReconciliation: (runId) => readReconciliation(this.db, runId),
       getStopIntent: (runId) => readStopIntent(this.db, runId),
-      getSettlementMutationIntent: (runId, attemptId) => readSettlementMutationIntent(this.db, runId, attemptId),
       listSettlementMutationIntents: (runId) => readSettlementMutationIntents(this.db, runId),
       assertGlobalCapacity: (limit, excludingRunId, nowMs) => assertGlobalCapacity(this.db, limit, excludingRunId, nowMs),
       assertRepositoryCapacity: (repositoryKey, limit, excludingRunId, nowMs) => assertRepositoryCapacity(this.db, repositoryKey, limit, excludingRunId, nowMs),

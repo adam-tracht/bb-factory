@@ -7,7 +7,7 @@ const TASKS_PAGE_LIMIT = 500;
 const TASKS_STALE_RESTARTS = 1;
 const FACTORY_SETTLEMENT_MARKER_PREFIX = "factory-settled:";
 const FACTORY_SETTLEMENT_MARKER_MAX_LENGTH = 128;
-const FACTORY_SETTLEMENT_MARKER_PATTERN = /(?<!\S)factory-settled:\S+/gu;
+const FACTORY_SETTLEMENT_MARKER_PATTERN = /(?<!\S)factory-settled:[A-Za-z0-9_-]+/gu;
 
 function normalizeSettlementMarkerText(value: string): string {
   return value.replace(/\s+/gu, " ").trim();
@@ -19,21 +19,10 @@ export function parseFactorySettlementMarkers(description: string | null | undef
   return [...normalized.matchAll(FACTORY_SETTLEMENT_MARKER_PATTERN)].map((match) => match[0]);
 }
 
-/** Remove only standalone Factory settlement marker lines from a description. */
+/** Remove Factory settlement marker tokens while preserving human text. */
 export function stripFactorySettlementMarkers(description: string | null | undefined): string | null {
   if (description === null || description === undefined) return null;
-  const lines = description.split(/\r?\n/gu);
-  let removedMarker = false;
-  const keptLines = lines.filter((line) => {
-    const normalizedLine = normalizeSettlementMarkerText(line);
-    const markers = parseFactorySettlementMarkers(line);
-    const isMarkerLine = markers.length === 1 && markers[0] === normalizedLine;
-    if (isMarkerLine) removedMarker = true;
-    return !isMarkerLine;
-  });
-  if (!removedMarker) return description;
-  const stripped = keptLines.join("\n");
-  return stripped.endsWith("\n") ? stripped.slice(0, -1) : stripped;
+  return description.replace(FACTORY_SETTLEMENT_MARKER_PATTERN, "").trimEnd();
 }
 
 /** Stable, bounded attribution text written with Factory's settlement mutation. */

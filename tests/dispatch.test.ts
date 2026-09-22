@@ -10,7 +10,7 @@ import { projectTasks } from "../src/tasks/migration.js";
 import { createScheduler, schedulerTick, cronMatches } from "../src/schedule/index.js";
 import { dispatchRunOccupiesSlot, QUARANTINE_ABANDONMENT_GRACE_MS, RECONCILIATION_GRACE_MS } from "../src/dispatch/types.js";
 import type { DispatchContext } from "../src/dispatch/types.js";
-import { deriveTasksContentRevision, factorySettlementMarker, type TasksClient, type TasksTask, type TasksTaskThread } from "../src/tasks/index.js";
+import { deriveTasksContentRevision, factorySettlementMarker, parseFactorySettlementMarkers, stripFactorySettlementMarkers, type TasksClient, type TasksTask, type TasksTaskThread } from "../src/tasks/index.js";
 import {
   CHECKOUT,
   FakeFileSystem,
@@ -486,6 +486,49 @@ describe("dispatch engine", () => {
     })).not.toBe(originalRevision);
   });
 
+  it("matches and strips joined markers without removing same-line human text", () => {
+    const marker = factorySettlementMarker("attempt-joined");
+    const markerFreeDescription = "Factory run card\nHuman note";
+    const markedDescription = `${markerFreeDescription} ${marker}`;
+
+    expect(parseFactorySettlementMarkers(markedDescription)).toEqual([marker]);
+    expect(stripFactorySettlementMarkers(markedDescription)).toBe(markerFreeDescription);
+    expect(deriveTasksContentRevision({
+      title: "Sample task",
+      description: markedDescription,
+      dueDate: null,
+      labelIds: [],
+      parentTaskId: null,
+    })).toBe(deriveTasksContentRevision({
+      title: "Sample task",
+      description: markerFreeDescription,
+      dueDate: null,
+      labelIds: [],
+      parentTaskId: null,
+    }));
+  });
+
+  it("uses symmetric trailing-whitespace handling for marker-free and stripped descriptions", () => {
+    const marker = factorySettlementMarker("attempt-whitespace");
+    const markerFreeDescription = "Factory run card\nHuman note\n";
+    const markedDescription = `${markerFreeDescription}\n${marker}`;
+
+    expect(stripFactorySettlementMarkers(markerFreeDescription)).toBe(stripFactorySettlementMarkers(markedDescription));
+    expect(deriveTasksContentRevision({
+      title: "Sample task",
+      description: markerFreeDescription,
+      dueDate: null,
+      labelIds: [],
+      parentTaskId: null,
+    })).toBe(deriveTasksContentRevision({
+      title: "Sample task",
+      description: markedDescription,
+      dueDate: null,
+      labelIds: [],
+      parentTaskId: null,
+    }));
+  });
+
   it("accepts a settlement marker from an earlier attempt of the same run", async () => {
     const harness = makeHarness();
     makeTasksReady(harness);
@@ -687,6 +730,8 @@ describe("dispatch engine", () => {
     };
 
     await expect(runCase((marker) => `Factory run card\n\t  ${marker}  \t`, "104")).resolves.toBe("completed");
+    await expect(runCase((marker) => `Factory run card\n${marker}.`, "106")).resolves.toBe("completed");
+    await expect(runCase((marker) => `Factory run card\nx${marker}`, "107")).resolves.toBe("reconciliation-required");
     await expect(runCase((marker) => `Factory run card\n${marker}X`, "105")).resolves.toBe("reconciliation-required");
   });
 
@@ -741,12 +786,12 @@ describe("dispatch engine", () => {
     expect(detail.summary.status).toBe("completed");
     expect(tasks.clientTask.status).toBe("done");
     expect(tasks.clientTask.description).toContain(factorySettlementMarker(detail.attempts[0]!.attemptId));
-    expect(harness.store.getSettlementMutationIntent(runId, detail.attempts[0]!.attemptId)).toMatchObject({
+    expect(harness.store.listSettlementMutationIntents(runId)).toEqual([expect.objectContaining({
       runId,
       taskId: "task-1",
       cardStatusAtIssue: "in_review",
       marker: factorySettlementMarker(detail.attempts[0]!.attemptId),
-    });
+    })]);
   });
 
   it("does not attribute an externally completed Tasks card to Factory settlement", async () => {
@@ -786,7 +831,7 @@ describe("dispatch engine", () => {
     const detail = (await harness.store.getRun({ repositoryKey: "monorepo", runId })).run!;
     expect(detail.summary.status).toBe("reconciliation-required");
     expect(tasks.calls.updateTask).toHaveLength(0);
-    expect(harness.store.getSettlementMutationIntent(runId, detail.attempts[0]!.attemptId)).toBeNull();
+    expect(harness.store.listSettlementMutationIntents(runId)).toHaveLength(0);
   });
 
   it("does not attribute an externally completed card when an unfulfilled intent exists", async () => {
