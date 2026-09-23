@@ -49,3 +49,15 @@ question: `bb plugin types --check .` is a required repo standard check and fail
 context: plans/factory/repo.md standard checks table and the dependency rule; package.json devDependencies on `factory`; Q2 is the 0.4.84 to 0.4.87 precedent, approved 2026-09-14.
 recommended: Yes; authorize the repin to 0.4.104 and rerun the full validation suite, matching the Q2 resolution.
 answer: 2026-09-22 approved by the human operator in thread thr_2fccwau2pk. Repinned @get-bb/plugin-sdk to 0.4.104 on `factory`; no other dependency changed. The repin surfaced one break: 0.4.104 adds a required `lifecycleOwnerThreadId` to the SDK thread type, so the `makeThread` fixture in tests/interactions-read.test.ts needed the field. Full suite green afterwards: 602 tests, typecheck, lint, build, `bb plugin types --check .`, `git diff --check`. Resolved.
+
+## Q7 2026-09-23 blocking BBF-0049
+question: BBF-0049's only remaining work is the Go-live / cutover section of plans/native-tasks-migration.md: dependency declaration for the tasks plugin (install and startup check plus an enable offer, never silent) and per-repo cutover starting with bb-factory itself, ending in deletion of the legacy direct-spawn and markdown-protocol code after one release. Every leg is gated: the dependency declaration is a dependency change, and cutover changes dispatch behavior. May the Go-live and cutover phase proceed, and under what `approved:` scope? This is the actionable form of the gate Q4 recorded as an assumption.
+context: plans/native-tasks-migration.md "Go-live / cutover (sequence last)"; queue entry BBF-0049; implementation is complete and reviewed on branch `factory-tasks` in worktree /Users/adamtracht/Desktop/Code/bb-factory-tasks at 47c4b9f.
+recommended: Yes. Approve with a scope covering all three legs, for example `approved: tasks dependency declaration, per-repo cutover starting with bb-factory, legacy direct-spawn and markdown-protocol deletion after one release`; narrow the line if any leg should stay human-run.
+answer:
+
+## Q8 2026-09-23 blocking BBF-0007
+question: BBF-0007's acceptance criteria are all protected operations. The release side is already done: the repo is public at adam-tracht/bb-factory and tags v0.1.0 through v0.1.9 are pushed. What remains is authoring entries/bb-factory.json (v2 entry with icon, screenshots, and overview) in a fork of get-bb/marketplace and submitting it via PR or the registry intake form per the registry README at submit time. May a run create the fork entry and open the submission, and under what `approved:` scope?
+context: queue entry BBF-0007; PLAN.md Phase 6 deliverable 7; the submit-a-plugin skill covers the mechanics.
+recommended: Yes. Approve with a scope like `approved: marketplace fork entry, submission PR`; the registry README decides PR versus intake form at submit time.
+answer:
