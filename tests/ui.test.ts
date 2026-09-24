@@ -1892,7 +1892,7 @@ describe("Factory guarded actions", () => {
     }
   });
 
-  it("disables run-now and offers resume while dispatch is paused", async () => {
+  it("keeps run-now usable and offers resume while dispatch is paused", async () => {
     const { FactoryView } = await import("../src/ui/FactoryView.js");
     const rpc = baseRpc();
     const slot = renderSlot<FactoryViewProps, FactoryRpcContract>(
@@ -1902,13 +1902,19 @@ describe("Factory guarded actions", () => {
     );
     try {
       const runNow = await slot.findByRole("button", { name: "Run now" });
-      expect((runNow as HTMLButtonElement).disabled).toBe(true);
-      expect(runNow.getAttribute("title")).toContain("paused");
-      const header = slot.container.querySelector("header")!;
-      fireEvent.click(within(header as HTMLElement).getByRole("button", { name: "Resume global dispatch" }));
+      expect((runNow as HTMLButtonElement).disabled).toBe(false);
+      expect(runNow.getAttribute("title")).toBe("Start a run immediately");
+      fireEvent.click(runNow);
+      const dialog = await slot.findByRole("alertdialog");
+      fireEvent.click(within(dialog as HTMLElement).getByRole("button", { name: "Run now" }));
       await vi.waitFor(() => {
-        expect(rpc.factory_action).toHaveBeenCalledWith(expect.objectContaining({ action: { kind: "resume" } }));
+        expect(rpc.factory_action).toHaveBeenCalledWith(expect.objectContaining({
+          repositoryKey: "demo",
+          action: { kind: "run-now" },
+        }));
       });
+      const header = slot.container.querySelector("header")!;
+      expect(within(header as HTMLElement).getByRole("button", { name: "Resume global dispatch" })).toBeTruthy();
     } finally {
       slot.lifecycle.unmount();
     }

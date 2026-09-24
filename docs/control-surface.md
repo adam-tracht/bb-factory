@@ -216,10 +216,12 @@ The shell chip reports "Global dispatch active", "Global dispatch paused", or
 "Repository dispatch paused"; its "Pause global dispatch"/"Resume global
 dispatch" control always edits the global mode, while the Settings Repository
 card edits only the selected repository's pause flag. New runs require global
-dispatch to be enabled and the repository pause flag to be false. The mobile
-operations bar uses the same scoped chip labels and global button labels. The
-card also provides an optional editable "Display name" field; clearing it
-restores the repository key as the visible fallback. The repository key
+dispatch to be enabled and the repository pause flag to be false only when
+they are scheduled starts; confirmed Run now remains an explicit ad hoc
+dispatch while the schedule is paused. The mobile operations bar uses the same
+scoped chip labels and global button labels. The card also provides an
+optional editable "Display name" field; clearing it restores the repository key
+as the visible fallback. The repository key
 remains read-only technical identity, and the other read-only identity fields
 collapse into a "Repository details" disclosure. `describeSchedule` (`src/schedule/describe.ts`) renders a
 five-field cron as a sentence ("Every 10 minutes between 01:00 and 05:59,

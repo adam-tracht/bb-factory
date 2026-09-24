@@ -370,10 +370,10 @@ export async function startRun(ctx: DispatchContext, input: StartRunInput): Prom
     return alreadyRecorded(priorRunId, prior?.summary.repositoryRevision ?? null);
   }
 
-  if (ctx.settings.dispatchMode !== "enabled") {
+  if (input.trigger !== "manual" && ctx.settings.dispatchMode !== "enabled") {
     return noSpawn(actionError("paused", "Dispatch is paused. Set dispatchMode to enabled before starting runs."));
   }
-  if (entry.dispatchPaused === true) {
+  if (input.trigger !== "manual" && entry.dispatchPaused === true) {
     return noSpawn(actionError("paused", `Dispatch is paused for repository '${input.repositoryKey}'. Resume it in Settings before starting runs.`));
   }
   const configuration = entry.configuration;

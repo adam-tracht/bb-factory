@@ -170,7 +170,9 @@ then, in order:
 
 1. Replays the recorded result if this request was seen before, so
    retries and double-clicks never double-dispatch.
-2. Refuses when dispatch is paused globally or for the repository.
+2. For scheduled starts only, refuses when dispatch is paused globally or
+   for the repository. **Run now** still starts an ad hoc run while the
+   schedule is off.
 3. Loads a fresh protocol snapshot and rejects if the repository revision
    moved since the request.
 4. Runs host preflight: connected host online, checkout present, on the
@@ -284,7 +286,11 @@ One plugin-owned scheduler evaluates a five-field cron expression in
 - **Concurrency**: `concurrencyLimit` (default 1) caps simultaneous runs.
   The per-repository lease allows exactly one active run regardless.
 - **Pause**: prevents new dispatch only. Active work and queued intent are
-  untouched.
+  untouched. Manual **Run now** requests are explicit ad hoc dispatches and
+  still run while scheduled dispatch is paused.
+- **Ready-work gate**: scheduled dispatch starts only when at least one
+  queue entry is currently eligible. It does not spend a run slot on an
+  empty or blocked queue.
 - **At-least-once**: scheduling may fire more than once for a window
   (restart, replay, reload), but the durable intent and lease mean a
   duplicate wakeup produces a replay, not a second run.

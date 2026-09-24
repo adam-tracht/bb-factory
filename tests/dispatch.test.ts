@@ -193,13 +193,41 @@ const MANUAL_REQUEST = {
   idempotencyKey: "bbf:v1:monorepo:run-now:823e4567-e89b-42d3-a456-426614174000" as never,
 };
 
+const READY_QUEUE = [
+  "# Queue",
+  "",
+  "## T1 Sample task",
+  "status: ready",
+  "priority: 2",
+  "depends_on: none",
+  "risk: low",
+  "plan: plans/factory/plan-t1.md",
+  "approved: adam",
+  "acceptance:",
+  "- the task is done",
+  "validate:",
+  "- pnpm test",
+  "notes: none",
+  "",
+].join("\n");
+
 describe("dispatch engine", () => {
-  it("refuses to dispatch while paused", async () => {
+  it("allows manual run-now while scheduled dispatch is paused", async () => {
     const { engine, threads, store } = makeHarness({ settings: { dispatchMode: "paused" } });
     const result = await engine.requestRun(MANUAL_REQUEST);
-    expect(result).toMatchObject({ ok: false, error: { category: "paused" } });
-    expect(threads.threads.size).toBe(0);
-    expect(store.listActiveRuns("monorepo")).toHaveLength(0);
+    expect(result).toMatchObject({ ok: true, result: { status: "accepted", action: "run-now" } });
+    expect(threads.threads.size).toBe(1);
+    expect(store.listActiveRuns("monorepo")).toHaveLength(1);
+  });
+
+  it("allows manual run-now while repository scheduled dispatch is paused", async () => {
+    const { engine, threads, store } = makeHarness({
+      entry: { ...makeRegistryEntry(), dispatchPaused: true },
+    });
+    const result = await engine.requestRun(MANUAL_REQUEST);
+    expect(result).toMatchObject({ ok: true, result: { status: "accepted", action: "run-now" } });
+    expect(threads.threads.size).toBe(1);
+    expect(store.listActiveRuns("monorepo")).toHaveLength(1);
   });
 
   it("starts a run: durable intent, lease, attempt, and spawned worker", async () => {
@@ -221,23 +249,7 @@ describe("dispatch engine", () => {
   it("starts a run that claims an eligible queue item", async () => {
     const { engine, files, store } = makeHarness({ settings: { providerPreference: "codex" } });
     files.seed("plans/factory/questions.md", "# Questions\n");
-    files.seed("plans/factory/queue.md", [
-      "# Queue",
-      "",
-      "## T1 Sample task",
-      "status: ready",
-      "priority: 2",
-      "depends_on: none",
-      "risk: low",
-      "plan: plans/factory/plan-t1.md",
-      "approved: adam",
-      "acceptance:",
-      "- the task is done",
-      "validate:",
-      "- pnpm test",
-      "notes: none",
-      "",
-    ].join("\n"));
+    files.seed("plans/factory/queue.md", READY_QUEUE);
     const result = await engine.requestRun(MANUAL_REQUEST);
     expect(result).toMatchObject({ ok: true, result: { status: "accepted", action: "run-now" } });
     if (!result.ok) throw new Error("expected success");
@@ -1888,10 +1900,12 @@ describe("scheduler", () => {
   });
 
   it("starts a scheduled run inside the night window", async () => {
-    const { ctx, threads, store, clock } = makeHarness({
+    const { ctx, threads, store, clock, files } = makeHarness({
       now: new Date(2026, 8, 10, 2, 0),
       settings: { scheduleCron: "* * * * *", nightWindowEndHour: 6 },
     });
+    files.seed("plans/factory/questions.md", "# Questions\n");
+    files.seed("plans/factory/queue.md", READY_QUEUE);
     const result = await schedulerTick(ctx, "monorepo", ["monorepo"]);
     expect(result.action).toBe("started");
     expect(threads.threads.size).toBe(1);
@@ -1905,6 +1919,17 @@ describe("scheduler", () => {
     const held = await schedulerTick(ctx, "monorepo", ["monorepo"]);
     expect(held.action).toBe("skipped");
     expect(held.reason).toContain("ownership");
+  });
+
+  it("skips a scheduled run when there are no ready tasks", async () => {
+    const { ctx, threads, store } = makeHarness({
+      now: new Date(2026, 8, 10, 2, 0),
+      settings: { scheduleCron: "* * * * *", nightWindowEndHour: 6 },
+    });
+    const result = await schedulerTick(ctx, "monorepo", ["monorepo"]);
+    expect(result).toEqual({ repositoryKey: "monorepo", action: "skipped", reason: "no ready tasks" });
+    expect(threads.threads.size).toBe(0);
+    expect(store.listActiveRuns("monorepo")).toHaveLength(0);
   });
 
   it("allows another repository to recover at global concurrency one", async () => {
@@ -1925,7 +1950,7 @@ describe("scheduler", () => {
       ["plans/factory/repo.md", "# Repo\n"],
       ["plans/factory/current.md", "# Current\n\nstate: no-op\n"],
       ["plans/factory/questions.md", "# Questions\n"],
-      ["plans/factory/queue.md", "# Queue\n"],
+      ["plans/factory/queue.md", READY_QUEUE],
       ["plans/README.md", "# Dashboard\n\n| id | work item | status | next action | evidence and canonical detail |\n|---|---|---|---|---|\n| T1 | Sample task | open | run | queue |\n"],
     ] as const) harness.files.seed(path, content, "/repo-other");
     const entries = new Map([["monorepo", makeRegistryEntry()], ["other", otherEntry]]);
