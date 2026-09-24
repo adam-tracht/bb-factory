@@ -784,14 +784,6 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
   const selectedRepositoryLabel = selectedConfiguration
     ? repositoryLabel(selectedConfiguration.repositoryKey, selectedEntry?.displayName)
     : null;
-  const runNowDisabledReason = !settings
-    ? null
-    : settings.dispatch.mode !== "enabled"
-      ? "Dispatch is paused. Resume first."
-      : settings.dispatch.repositoryPaused
-        ? "Dispatch is paused for this repository. Turn it on in Settings."
-        : null;
-
   let content: ReturnType<typeof h>;
   if (data.repositories.status === "loading" || data.repositories.status === "idle") {
     content = h(LoadingNotice, { label: "Loading repositories" });
@@ -1010,8 +1002,8 @@ export function FactoryView({ subPath = "", panelPath = "factory" }: FactoryView
     onResume: () => void submitAction({ kind: "resume" }, "dispatch", repoKey, snapshot, scopeSection),
     runNow: dispatch && activeRun === null
       ? {
-          disabled: runNowDisabledReason !== null,
-          reason: runNowDisabledReason,
+          disabled: false,
+          reason: null,
           confirmTitle: `Run the foreman on ${selectedRepositoryLabel ?? "this repository"}?`,
           confirmBody: `Starts a foreman run on ${selectedRepositoryLabel ?? "the repository"} now, ignoring the night window and minimum gap.${canPickProvider ? "" : ` ${providerLine}`}`,
           providers: health?.providers ?? [],

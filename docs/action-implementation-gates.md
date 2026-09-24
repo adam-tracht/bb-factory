@@ -65,7 +65,8 @@ actor identity. Verified against the installed `@get-bb/plugin-sdk@0.4.47`.
   durable run intents, worker start, lifecycle reconciliation, runtime caps,
   cancellation, bounded retry, and startup recovery. The scheduler
   (`src/schedule/`) applies night-window, spacing, provider-alternation, and
-  night-stop policy in the shell dispatcher's order.
+  night-stop policy in the shell dispatcher's order, and skips dispatch when
+  the protocol snapshot has no eligible ready queue entries.
 
 Run completion is correlated before it becomes terminal: the observed worker,
 active attempt, current lease, fresh current state, and attributable immutable

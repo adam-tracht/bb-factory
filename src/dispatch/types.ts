@@ -13,6 +13,7 @@ import type {
   RepositoryRegistryEntry,
 } from "../contracts.js";
 import type { FactoryHealthReader, ProtocolReader } from "../ports.js";
+import { sameRevision } from "../actions/results.js";
 
 export type DispatchSdk = Pick<BbPluginApi["sdk"], "threads" | "files">;
 
@@ -110,6 +111,21 @@ export function boundedDiagnostic(value: string, maxLength: number): string {
 /** Compare persisted JSON-shaped values without duplicating field walkers. */
 export function sameJson(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+/** Compare canonical record links across a stableJson round trip. */
+export function sameCanonicalRecords(
+  left: readonly CanonicalFileRecordLink[],
+  right: readonly CanonicalFileRecordLink[],
+): boolean {
+  return left.length === right.length && left.every((record, index) => {
+    const candidate = right[index];
+    return candidate !== undefined
+      && record.relativePath === candidate.relativePath
+      && record.recordType === candidate.recordType
+      && record.recordId === candidate.recordId
+      && sameRevision(record.repositoryRevision, candidate.repositoryRevision);
+  });
 }
 
 export function dispatcherNowSeconds(now: () => Date): number {

@@ -73,6 +73,16 @@ export async function schedulerTick(
   const lease = ctx.store.getCurrentOwnership(repositoryKey);
   if (lease && lease.status !== "released") return skip(`an active run '${lease.runId}' holds ownership`);
 
+  const entry = ctx.repositoryLookup(repositoryKey);
+  if (!entry) return skip(`repository '${repositoryKey}' is not configured`);
+  let snapshot;
+  try {
+    snapshot = await ctx.protocolReader.loadSnapshot(entry.configuration);
+  } catch (error) {
+    return skip(`could not read the repository protocol: ${errorMessage(error)}`);
+  }
+  if (!snapshot.queue.some((item) => item.eligible)) return skip("no ready tasks");
+
   const activeAcross = allRepositoryKeys.reduce((count, key) => count + ctx.store.listActiveRuns(key).length, 0);
   if (activeAcross >= settings.concurrencyLimit) return skip("the concurrency limit is reached");
 
@@ -82,6 +92,7 @@ export async function schedulerTick(
     repositoryKey,
     trigger: "schedule",
     idempotencyKey,
+    preflightedSnapshot: snapshot,
   });
   if (started.result.ok) return { repositoryKey, action: "started", reason: started.result.result.message };
   return skip(started.result.error.message);
