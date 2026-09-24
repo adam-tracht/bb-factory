@@ -60,6 +60,19 @@ Pin a release tag:
 bb plugin install git:github.com/adam-tracht/bb-factory@v0.1.7
 ```
 
+## Commands
+
+Validate protocol files on the checkout resolved from the current BB thread:
+
+```sh
+bb factory validate
+```
+
+Without a thread, pass the remote checkout and connected host explicitly:
+`bb factory validate --path <checkout> --host <id>`. Add `--json` for structured
+diagnostics. Run this before commits that touch `plans/` and after the final
+`current.md` write.
+
 ## Quickstart
 
 1. Open the Factory view, click **Add repository**, then **Choose

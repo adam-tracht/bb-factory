@@ -5,6 +5,10 @@ surface as implemented in `src/ui/`; it does not approve a rollout or change
 any repository policy. Action-layer guards live in
 [action-implementation-gates.md](action-implementation-gates.md).
 
+The server-side `bb factory validate` command reads the same remote checkout
+protocol files as the repository reader, reports every parse and frozen-schema
+problem, and supports `--path`, `--host`, and `--json` for agent use.
+
 ## Scopes and routes
 
 `src/ui/routes.ts` parses the panel subPath into a section plus a scope:

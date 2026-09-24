@@ -46,7 +46,7 @@ export interface StartRunResult {
 }
 
 export const FOREMAN_PROMPT =
-  "Factory run. Read plans/factory/foreman.md first, then plans/factory/repo.md, and execute one run following the protocol. Your thread id is in $BB_THREAD_ID.";
+  "Factory run. Read plans/factory/foreman.md first, then plans/factory/repo.md, and execute one run following the protocol. Run `bb factory validate` before every commit that touches plans/ and again after the final current.md write; fix every reported problem before committing or finishing. Your thread id is in $BB_THREAD_ID.";
 
 function runTitle(repositoryKey: string, displayName: string | undefined, providerId: string): string {
   return `factory foreman: ${repositoryLabel(repositoryKey, displayName)} ${providerId}`;

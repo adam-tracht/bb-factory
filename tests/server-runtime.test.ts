@@ -72,6 +72,7 @@ function makeBb(initialSettings: unknown) {
     sdk: {},
     storage: {},
     status: { needsConfiguration: vi.fn() },
+    cli: { register: vi.fn() },
     rpc: { register: vi.fn() },
     realtime: { publish: vi.fn() },
     events: { on: vi.fn() },
@@ -79,7 +80,7 @@ function makeBb(initialSettings: unknown) {
     log: { info: vi.fn(), error: vi.fn() },
     onDispose: vi.fn(),
   };
-  return { bb: bb as never, settingsApi, status: bb.status, rpc: bb.rpc };
+  return { bb: bb as never, settingsApi, status: bb.status, rpc: bb.rpc, cli: bb.cli };
 }
 
 function fakeActionComposition() {
@@ -166,6 +167,20 @@ describe("server invalid configuration state", () => {
     expect(handlers.factory_repositories({ selectedRepositoryKey: null })).toMatchObject({
       selectedRepositoryKey: "data-platform",
       repositories: [expect.objectContaining({ configuration: expect.objectContaining({ repositoryKey: "data-platform" }) })],
+    });
+  });
+});
+
+describe("server CLI registration", () => {
+  it("registers one discoverable factory validate command", async () => {
+    const harness = makeBb(validSettings);
+    await plugin(harness.bb);
+
+    expect(harness.cli.register).toHaveBeenCalledOnce();
+    expect(harness.cli.register.mock.calls[0]![0]).toMatchObject({
+      name: "factory",
+      summary: expect.stringContaining("validate"),
+      commands: [expect.objectContaining({ name: "validate", usage: expect.stringContaining("bb factory validate") })],
     });
   });
 });

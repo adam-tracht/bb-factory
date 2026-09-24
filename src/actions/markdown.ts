@@ -1,4 +1,5 @@
 import { ProtocolError } from "../protocol/errors.js";
+import { PROTOCOL_PATHS } from "../protocol/paths.js";
 
 interface SectionSpan {
   readonly heading: string;
@@ -92,7 +93,11 @@ export function writeQueueApproval(content: string, queueItemId: string, approve
   const withStatus = setSectionField(lines, span, "status", "ready").join("\n");
   const adjusted = findSectionById(withStatus, queueItemId);
   if (!adjusted) {
-    throw new ProtocolError("malformed-protocol", `Queue item '${queueItemId}' could not be re-located after its status write`);
+    throw new ProtocolError("malformed-protocol", `Queue item '${queueItemId}' could not be re-located after its status write`, {
+      path: PROTOCOL_PATHS.queue,
+      rule: "queue-target",
+      hint: "restore the queue item heading before retrying the action",
+    });
   }
   return setSectionField(withStatus.split("\n"), adjusted, "approved", approvedText).join("\n");
 }

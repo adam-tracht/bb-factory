@@ -119,7 +119,7 @@ describe("repository protocol reader", () => {
       "plans/factory/done.md": archiveTask("TASK-ready", "done (run 20260910T053015Z)"),
     }).loadSnapshot(configuration)).rejects.toMatchObject({
       code: "malformed-protocol",
-      message: "Duplicate queue item 'TASK-ready' across queue.md and done.md",
+      message: "plans/factory/done.md:1: Duplicate queue item 'TASK-ready' across queue.md and done.md (rule duplicate-id). Fix: keep each queue item id in only one of queue.md or done.md",
     });
   });
 

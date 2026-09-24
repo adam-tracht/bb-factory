@@ -7,6 +7,14 @@ export {
 } from "./dependencies.js";
 export { ProtocolError, asProtocolError, type ProtocolErrorCode } from "./errors.js";
 export {
+  formatProtocolDiagnostic,
+  protocolErrorFromDiagnostic,
+  validateProtocolFiles,
+  type ProtocolDiagnostic,
+  type ProtocolFileContents,
+  type ProtocolValidationOptions,
+} from "./validation.js";
+export {
   confinedPath,
   decodeFileContent,
   digestText,

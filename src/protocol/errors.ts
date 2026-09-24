@@ -11,6 +11,9 @@ export type ProtocolErrorCode =
 export interface ProtocolErrorOptions {
   readonly cause?: unknown;
   readonly path?: string;
+  readonly line?: number;
+  readonly rule?: string;
+  readonly hint?: string;
   readonly repositoryKey?: string;
   readonly details?: Readonly<Record<string, string>>;
 }
@@ -18,16 +21,29 @@ export interface ProtocolErrorOptions {
 export class ProtocolError extends Error {
   readonly code: ProtocolErrorCode;
   readonly path: string | undefined;
+  readonly line: number | undefined;
+  readonly rule: string | undefined;
+  readonly hint: string | undefined;
   readonly repositoryKey: string | undefined;
   readonly details: Readonly<Record<string, string>> | undefined;
+  readonly rawMessage: string;
 
   constructor(code: ProtocolErrorCode, message: string, options: ProtocolErrorOptions = {}) {
-    super(message, { cause: options.cause });
+    const location = options.path === undefined
+      ? ""
+      : `${options.path}${options.line === undefined ? "" : `:${options.line}`}: `;
+    const rule = options.rule === undefined ? "" : ` (rule ${options.rule})`;
+    const hint = options.hint === undefined ? "" : `. Fix: ${options.hint}`;
+    super(`${location}${message}${rule}${hint}`, { cause: options.cause });
     this.name = "ProtocolError";
     this.code = code;
     this.path = options.path;
+    this.line = options.line;
+    this.rule = options.rule;
+    this.hint = options.hint;
     this.repositoryKey = options.repositoryKey;
     this.details = options.details;
+    this.rawMessage = message;
   }
 }
 

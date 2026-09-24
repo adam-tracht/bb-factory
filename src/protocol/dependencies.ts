@@ -18,25 +18,37 @@ const QUALIFIED_DEPENDENCY_RE =
 const NAMED_DELIVERABLE_RE = /\b[A-Za-z][A-Za-z0-9]*(?:[_-][A-Za-z0-9]+)+\b/gu;
 const MARKDOWN_WRAPPER_CHAR_RE = /[\x60*[\](){}<>]/gu;
 
-function policyError(message: string, path: string): ProtocolError {
-  return new ProtocolError("malformed-protocol", message, { path });
+function policyError(message: string, path: string, line: number, rule: string, hint: string): ProtocolError {
+  return new ProtocolError("malformed-protocol", message, { path, line, rule, hint });
 }
 
 export function parseRepositoryPolicy(content: string, path: string): ProtocolRepositoryPolicy {
   const qualifiedDependencies: ProtocolRepositoryPolicy["qualifiedDependencies"][number][] = [];
   const seenRepositoryKeys = new Set<string>();
 
-  for (const line of content.split(/\r?\n/u)) {
+  for (const [index, line] of content.split(/\r?\n/u).entries()) {
     if (!line.toLowerCase().includes(POLICY_LINE_MARKER)) {
       continue;
     }
     const match = line.match(QUALIFIED_DEPENDENCY_RE);
     if (!match) {
-      throw policyError("Cross-repository dependency policy is malformed in '" + path + "'", path);
+      throw policyError(
+        "Cross-repository dependency policy is malformed",
+        path,
+        index + 1,
+        "dependency-policy",
+        "include a valid repository key and dependency item in the policy line",
+      );
     }
     const repositoryKey = match[1];
     if (seenRepositoryKeys.has(repositoryKey)) {
-      throw policyError("Cross-repository policy repeats repository '" + repositoryKey + "' in '" + path + "'", path);
+      throw policyError(
+        `Cross-repository policy repeats repository '${repositoryKey}'`,
+        path,
+        index + 1,
+        "duplicate-id",
+        "keep each cross-repository policy entry unique",
+      );
     }
     seenRepositoryKeys.add(repositoryKey);
     const lowerLine = line.toLowerCase();
