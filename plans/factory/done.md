@@ -772,3 +772,43 @@ validate:
 - pnpm typecheck
 - pnpm lint
 notes: Motivation: in practice queue entries are never hand-written; an agent drafts them. `draft` status (BBF-0013) already makes agent-authored entries safe, so no new guarded RPC is needed; the thread commits like the foreman does. Keep the spawn advisory and repository-scoped; no All-scope variant.
+
+## BBF-0050 Validate protocol writes before settlement
+status: done (interactive session 2026-09-24)
+priority: 2
+depends_on: none
+risk: medium
+plan: plans/factory/queue.md (this entry)
+approved: user direction 2026-09-24 (build the fix directly; no gated actions)
+acceptance:
+- A plugin CLI command, bb factory validate, runs the same parsers and frozen-schema checks the plugin uses to load a repository against a checkout's protocol files, reading through the BB files API on the invoking host.
+- It reports every problem in every file as path:line, message, rule, and fix hint, and exits 1; a clean checkout prints protocol ok and exits 0.
+- The foreman spawn prompt, templates/foreman.md, and plans/factory/foreman.md require running it before every commit touching plans/ and after the final current.md write, and tell workers to escape literal pipes in dashboard cells.
+- Tests cover a pipe inside an evidence cell, a pipe used as a sentence separator, and state idle in current.md.
+validate:
+- pnpm test
+- pnpm typecheck
+- pnpm lint
+- pnpm build
+- bb plugin types --check .
+- git diff --check
+notes: Workers commit and push their own protocol writes, so the plugin cannot reject a bad write after the fact; the check runs in the worker before the commit instead. No automatic repair: the plugin never rewrites worker files. Repository load stays strict; tolerating a bad current.md would need a change to the frozen snapshot contract.
+
+## BBF-0051 Show the parse diagnostic on failed-safe runs
+status: done (interactive session 2026-09-24)
+priority: 2
+depends_on: BBF-0050
+risk: low
+plan: plans/factory/queue.md (this entry)
+approved: user direction 2026-09-24 (build the fix directly; no gated actions)
+acceptance:
+- Every malformed-protocol error carries the file, line, rule, and fix hint, and its message reads path:line: message (rule id). Fix: hint.
+- The load-error banner, error notices, and failed-safe settlement reasons show that message, wrapped without truncation.
+- Queue field errors report the field's own line.
+validate:
+- pnpm test
+- pnpm typecheck
+- pnpm lint
+- pnpm build
+- git diff --check
+notes: The diagnostic travels in the error message, so every existing surface shows it without new UI plumbing and without a contract change.
