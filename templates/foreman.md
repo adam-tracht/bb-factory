@@ -80,6 +80,8 @@ Other closed lists:
   attributable to a worker and cannot settle a run.
 - `risk:` exactly `low`, `medium`, or `high`. `priority:` a single digit 1 to 5.
 
+Before every commit that touches `plans/`, run `bb factory validate` and fix every reported problem. After the final `current.md` write, run it again and fix every reported problem before finishing. In a dashboard table, escape a literal pipe inside a cell as `\|` and never use ` | ` as a separator inside a cell.
+
 ## Run loop
 
 ### 1. Preflight
@@ -127,7 +129,7 @@ Run every validation command on the queue entry, plus the repo's standard checks
 
 ### 6. Commit
 
-One commit per completed task: `factory: <ID> <one-line summary>`. Include the dashboard row update and the queue entry update (`status: done (run <timestamp>)`) in the same commit, per the repo's tracking rules. Then cut the entire entry out of `plans/factory/queue.md` and append it verbatim to `plans/factory/done.md` (create the file with a one-line heading `# Completed factory tasks` if it does not exist). `queue.md` holds open work only; `done.md` is for the plugin and the human, and the foreman never reads it. A `depends_on` that names a task not present in `queue.md` counts as satisfied once that task is in `done.md`. Push: `git push origin factory`.
+Before making this commit, run `bb factory validate` and fix every reported problem. One commit per completed task: `factory: <ID> <one-line summary>`. Include the dashboard row update and the queue entry update (`status: done (run <timestamp>)`) in the same commit, per the repo's tracking rules. Then cut the entire entry out of `plans/factory/queue.md` and append it verbatim to `plans/factory/done.md` (create the file with a one-line heading `# Completed factory tasks` if it does not exist). `queue.md` holds open work only; `done.md` is for the plugin and the human, and the foreman never reads it. A `depends_on` that names a task not present in `queue.md` counts as satisfied once that task is in `done.md`. Push: `git push origin factory`.
 
 Repeat from Claim while you have budget (see Hard limits). Before writing the run record, ask: did this run do a night's worth of work? If a task finished in under 20 minutes and eligible work remains, you are not done.
 
@@ -136,7 +138,7 @@ Repeat from Claim while you have budget (see Hard limits). Before writing the ru
 1. Write `plans/factory/runs/<UTC timestamp>-<thread id>.md`: tasks attempted, outcome per task, validation results, workers used (provider, model, rough duration), questions raised, anything the next foreman should know. If the outcome is uncertain, use `state: failed-safe`.
 2. Remove `plans/factory/lock`.
 3. Commit the run record: `factory: run record <timestamp>`. Push it with `git push origin factory`.
-4. Overwrite `plans/factory/current.md`: three to six lines for a human, then the last line exactly `state: <success|blocked|failed-safe|no-op>`. This must be the final repository write of the run. After this write, do not remove files, commit, or push.
+4. Overwrite `plans/factory/current.md`: three to six lines for a human, then the last line exactly `state: <success|blocked|failed-safe|no-op>`. After this final write, run `bb factory validate`, fix every reported problem, and then finish without another repository write. This must be the final repository write of the run. After this write, do not remove files, commit, or push.
    - `success`: at least one task reached done.
    - `blocked`: nothing could proceed without a human.
    - `failed-safe`: something went wrong and you reverted to a clean state.

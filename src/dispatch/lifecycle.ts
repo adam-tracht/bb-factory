@@ -190,7 +190,12 @@ async function postRunRecords(
           throw new ProtocolError(
             "malformed-protocol",
             `The targeted immutable run-record search for '${prefix}' was truncated`,
-            { path: PROTOCOL_PATHS.runs, repositoryKey: run.repositoryKey },
+            {
+              path: PROTOCOL_PATHS.runs,
+              rule: "run-record-search-limit",
+              hint: "reduce matching immutable run records before retrying settlement",
+              repositoryKey: run.repositoryKey,
+            },
           );
         }
         for (const relativePath of page.paths) {
@@ -217,7 +222,12 @@ async function postRunRecords(
         throw new ProtocolError(
           "malformed-protocol",
           `The worker-targeted immutable run-record search for '${threadId}' was truncated`,
-          { path: PROTOCOL_PATHS.runs, repositoryKey: run.repositoryKey },
+          {
+            path: PROTOCOL_PATHS.runs,
+            rule: "run-record-search-limit",
+            hint: "reduce matching immutable run records before retrying settlement",
+            repositoryKey: run.repositoryKey,
+          },
         );
       }
       for (const relativePath of page.paths) {

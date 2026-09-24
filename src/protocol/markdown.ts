@@ -4,10 +4,43 @@ import type {
 } from "./types.js";
 import { ProtocolError } from "./errors.js";
 
+const HINTS = {
+  dashboardColumns: "escape a literal pipe inside a cell as \\|",
+  dashboardTable: "add the canonical dashboard table with id and status columns",
+  dashboardId: "add a non-empty dashboard id to every row",
+  duplicate: "keep each protocol id unique",
+  fields: "add the required protocol fields to the section",
+  fence: "close the Markdown code fence",
+  questionHeading: "use Q<n> <YYYY-MM-DD> <blocking|assumption> <dashboard-id>",
+  queueHeading: "use <id> <title> for the queue section heading",
+  queueRisk: "set risk to low, medium, or high",
+  priority: "set priority to an integer from 1 to 5",
+  dependencies: "use none or a comma-separated list of unique dependency ids",
+  requiredField: "add the required field with a non-empty value",
+  currentState: "end the file with state: success, blocked, failed-safe, or no-op",
+} as const;
+
 interface MarkdownSection {
   readonly heading: string;
   readonly startLine: number;
   readonly lines: readonly string[];
+}
+
+export interface MarkdownParseOptions {
+  readonly onError?: (error: ProtocolError) => void;
+}
+
+interface ParsedFields {
+  readonly values: Map<string, string | string[]>;
+  readonly lines: Map<string, number>;
+}
+
+function reportParseError(error: unknown, options: MarkdownParseOptions): void {
+  if (error instanceof ProtocolError && options.onError) {
+    options.onError(error);
+    return;
+  }
+  throw error;
 }
 
 function sectionsOutsideFences(content: string, path: string): MarkdownSection[] {
@@ -47,27 +80,35 @@ function sectionsOutsideFences(content: string, path: string): MarkdownSection[]
     sections.push({ ...current, lines: [...current.lines] });
   }
   if (fence) {
-    throw new ProtocolError("malformed-protocol", "Unterminated Markdown fence in '" + path + "'", { path });
+    throw new ProtocolError("malformed-protocol", "Unterminated Markdown fence", {
+      path,
+      line: lines.length,
+      rule: "markdown-fence",
+      hint: HINTS.fence,
+    });
   }
   return sections;
 }
 
-function parseFields(lines: readonly string[], path: string): Map<string, string | string[]> {
+function parseFields(lines: readonly string[], path: string, line: number): ParsedFields {
   const fields = new Map<string, string | string[]>();
+  const fieldLines = new Map<string, number>();
   let activeList: string | undefined;
   let activeScalar: string | undefined;
 
-  for (const line of lines) {
-    const fieldMatch = line.match(/^([a-z][a-z_-]*)\s*:\s*(.*)$/u);
+  for (const [index, sourceLine] of lines.entries()) {
+    const fieldLine = line + index + 1;
+    const fieldMatch = sourceLine.match(/^([a-z][a-z_-]*)\s*:\s*(.*)$/u);
     if (fieldMatch) {
       const [, field, value] = fieldMatch;
       activeList = undefined;
       activeScalar = field;
       fields.set(field, value.trim());
+      fieldLines.set(field, fieldLine);
       continue;
     }
 
-    const bulletMatch = line.match(/^\s*-\s+(.*)$/u);
+    const bulletMatch = sourceLine.match(/^\s*-\s+(.*)$/u);
     if (bulletMatch && (activeScalar === "acceptance" || activeScalar === "validate")) {
       activeList = activeScalar;
       const existing = fields.get(activeList);
@@ -77,45 +118,55 @@ function parseFields(lines: readonly string[], path: string): Map<string, string
       continue;
     }
 
-    if (line.trim() && activeScalar && activeScalar !== "acceptance" && activeScalar !== "validate") {
+    if (sourceLine.trim() && activeScalar && activeScalar !== "acceptance" && activeScalar !== "validate") {
       const existing = fields.get(activeScalar);
       if (typeof existing === "string") {
-        fields.set(activeScalar, `${existing}\n${line.trim()}`.trim());
+        fields.set(activeScalar, `${existing}\n${sourceLine.trim()}`.trim());
       }
-    } else if (line.trim() && activeList) {
+    } else if (sourceLine.trim() && activeList) {
       const existing = fields.get(activeList);
       if (Array.isArray(existing) && existing.length > 0) {
-        existing[existing.length - 1] = `${existing[existing.length - 1]}\n${line.trim()}`.trim();
+        existing[existing.length - 1] = `${existing[existing.length - 1]}\n${sourceLine.trim()}`.trim();
       }
     }
   }
 
   if (fields.size === 0) {
-    throw new ProtocolError("malformed-protocol", `Section at line ${lines.length} in '${path}' has no fields`, {
+    throw new ProtocolError("malformed-protocol", "Protocol section has no fields", {
       path,
+      line,
+      rule: "section-fields",
+      hint: HINTS.fields,
     });
   }
-  return fields;
+  return { values: fields, lines: fieldLines };
 }
 
-function requiredString(fields: Map<string, string | string[]>, field: string, path: string): string {
-  const value = fields.get(field);
+function fieldLine(fields: ParsedFields, field: string, fallback: number): number {
+  return fields.lines.get(field) ?? fallback;
+}
+
+function requiredString(fields: ParsedFields, field: string, path: string, line: number): string {
+  const value = fields.values.get(field);
   if (typeof value !== "string" || !value.trim()) {
-    throw new ProtocolError("malformed-protocol", `Missing non-empty '${field}:' in '${path}'`, {
+    throw new ProtocolError("malformed-protocol", `Missing non-empty '${field}:'`, {
       path,
+      line,
+      rule: "required-field",
+      hint: HINTS.requiredField,
       details: { field },
     });
   }
   return value.trim();
 }
 
-function optionalString(fields: Map<string, string | string[]>, field: string): string | null {
-  const value = fields.get(field);
+function optionalString(fields: ParsedFields, field: string): string | null {
+  const value = fields.values.get(field);
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-function listField(fields: Map<string, string | string[]>, field: string): string[] {
-  const value = fields.get(field);
+function listField(fields: ParsedFields, field: string): string[] {
+  const value = fields.values.get(field);
   if (!value) {
     return [];
   }
@@ -128,8 +179,11 @@ function listField(fields: Map<string, string | string[]>, field: string): strin
 function parseHeader(header: string, path: string, lineNumber: number): { id: string; title: string } {
   const match = header.match(/^(\S+)\s+(.+?)\s*$/u);
   if (!match) {
-    throw new ProtocolError("malformed-protocol", `Queue heading at line ${lineNumber} must contain an id and title`, {
+    throw new ProtocolError("malformed-protocol", "Queue heading must contain an id and title", {
       path,
+      line: lineNumber,
+      rule: "queue-heading",
+      hint: HINTS.queueHeading,
     });
   }
   return { id: match[1], title: match[2].trim() };
@@ -179,11 +233,16 @@ function parseBlockedBy(value: string | string[] | undefined): string[] {
     .filter(Boolean);
 }
 
-function parseRisk(value: string, path: string): "low" | "medium" | "high" {
+function parseRisk(value: string, path: string, line: number): "low" | "medium" | "high" {
   if (value === "low" || value === "medium" || value === "high") {
     return value;
   }
-  throw new ProtocolError("malformed-protocol", `Unsupported queue risk '${value}' in '${path}'`, { path });
+  throw new ProtocolError("malformed-protocol", `Unsupported queue risk '${value}'`, {
+    path,
+    line,
+    rule: "queue-risk",
+    hint: HINTS.queueRisk,
+  });
 }
 
 export interface ParsedQuestion {
@@ -196,47 +255,65 @@ export interface ParsedQuestion {
   readonly assumed: string | null;
   readonly recommended?: string | null;
   readonly answer: string | null;
+  readonly line: number;
 }
 
-export function parseQuestions(content: string, path: string): readonly ParsedQuestion[] {
+export function parseQuestions(
+  content: string,
+  path: string,
+  options: MarkdownParseOptions = {},
+): readonly ParsedQuestion[] {
   const output: ParsedQuestion[] = [];
   const seen = new Set<string>();
   for (const section of sectionsOutsideFences(content, path)) {
-    const match = section.heading.match(/^(\S+)\s+(\d{4}-\d{2}-\d{2})\s+(blocking|assumption)\s+(\S+)$/u);
-    if (!match) {
-      if (/^Q\d+(?:\s|$)/u.test(section.heading)) {
-        throw new ProtocolError("malformed-protocol", "Question heading '" + section.heading + "' is malformed in '" + path + "' (expected 'Q<n> <YYYY-MM-DD> <blocking|assumption> <dashboard-id>' with a single id)", {
+    try {
+      const match = section.heading.match(/^(\S+)\s+(\d{4}-\d{2}-\d{2})\s+(blocking|assumption)\s+(\S+)$/u);
+      if (!match) {
+        if (/^Q\d+(?:\s|$)/u.test(section.heading)) {
+          throw new ProtocolError("malformed-protocol", `Question heading '${section.heading}' is malformed; expected a single id`, {
+            path,
+            line: section.startLine,
+            rule: "question-heading",
+            hint: HINTS.questionHeading,
+          });
+        }
+        continue;
+      }
+      const [, id, date, classification, dashboardId] = match;
+      if (seen.has(id)) {
+        throw new ProtocolError("malformed-protocol", `Duplicate question '${id}'`, {
           path,
+          line: section.startLine,
+          rule: "duplicate-id",
+          hint: HINTS.duplicate,
         });
       }
-      continue;
-    }
-    const [, id, date, classification, dashboardId] = match;
-    if (seen.has(id)) {
-      throw new ProtocolError("malformed-protocol", `Duplicate question '${id}' in '${path}'`, { path });
-    }
-    seen.add(id);
-    const fields = parseFields(section.lines, path);
-    const recommendedValue = fields.get("recommended");
-    const questionBase = {
-      id,
-      date,
-      classification: classification as "blocking" | "assumption",
-      dashboardId,
-      question: requiredString(fields, "question", path),
-      context: requiredString(fields, "context", path),
-      assumed: optionalString(fields, "assumed"),
-      answer: optionalString(fields, "answer"),
-    };
-    if (recommendedValue !== undefined) {
-      output.push({
-        ...questionBase,
-        recommended: typeof recommendedValue === "string" && recommendedValue.trim()
-          ? recommendedValue.trim()
-          : null,
-      });
-    } else {
-      output.push(questionBase);
+      seen.add(id);
+      const fields = parseFields(section.lines, path, section.startLine);
+      const recommendedValue = fields.values.get("recommended");
+      const questionBase = {
+        id,
+        date,
+        classification: classification as "blocking" | "assumption",
+        dashboardId,
+        question: requiredString(fields, "question", path, fieldLine(fields, "question", section.startLine)),
+        context: requiredString(fields, "context", path, fieldLine(fields, "context", section.startLine)),
+        assumed: optionalString(fields, "assumed"),
+        answer: optionalString(fields, "answer"),
+      };
+      if (recommendedValue !== undefined) {
+        output.push({
+          ...questionBase,
+          recommended: typeof recommendedValue === "string" && recommendedValue.trim()
+            ? recommendedValue.trim()
+            : null,
+          line: section.startLine,
+        });
+      } else {
+        output.push({ ...questionBase, line: section.startLine });
+      }
+    } catch (error) {
+      reportParseError(error, options);
     }
   }
   return output;
@@ -261,17 +338,25 @@ export interface ParsedQueueEntry {
   readonly acceptance: readonly string[];
   readonly validate: readonly string[];
   readonly notes: string | null;
+  readonly line: number;
+  readonly path: string;
+  readonly fieldLines: ReadonlyMap<string, number>;
 }
 
-function parsePriority(value: string, path: string): number {
+function parsePriority(value: string, path: string, line: number): number {
   const priority = Number(value);
   if (!Number.isInteger(priority) || priority < 1 || priority > 5) {
-    throw new ProtocolError("malformed-protocol", `Queue priority '${value}' is not an integer from 1 to 5`, { path });
+    throw new ProtocolError("malformed-protocol", `Queue priority '${value}' is not an integer from 1 to 5`, {
+      path,
+      line,
+      rule: "queue-priority",
+      hint: HINTS.priority,
+    });
   }
   return priority;
 }
 
-function parseDependencies(value: string, path: string): readonly string[] {
+function parseDependencies(value: string, path: string, line: number): readonly string[] {
   if (value.trim() === "none") {
     return [];
   }
@@ -281,47 +366,82 @@ function parseDependencies(value: string, path: string): readonly string[] {
     dependencies.includes("none") ||
     new Set(dependencies).size !== dependencies.length
   ) {
-    throw new ProtocolError("malformed-protocol", "Invalid dependency list '" + value + "' in '" + path + "'", { path });
+    throw new ProtocolError("malformed-protocol", `Invalid dependency list '${value}'`, {
+      path,
+      line,
+      rule: "queue-dependencies",
+      hint: HINTS.dependencies,
+    });
   }
   return dependencies;
 }
 
-export function parseQueue(content: string, path: string): readonly ParsedQueueEntry[] {
+export function parseQueue(
+  content: string,
+  path: string,
+  options: MarkdownParseOptions = {},
+): readonly ParsedQueueEntry[] {
   const output: ParsedQueueEntry[] = [];
   const seen = new Set<string>();
   for (const section of sectionsOutsideFences(content, path)) {
-    if (section.heading.startsWith("<DASHBOARD-ID>")) {
-      continue;
+    try {
+      if (section.heading.startsWith("<DASHBOARD-ID>")) {
+        continue;
+      }
+      const hasProtocolField = section.lines.some((line) => /^[a-z][a-z_-]*\s*:/u.test(line));
+      const looksLikeDashboardId = /^[A-Za-z0-9]+(?:[-.][A-Za-z0-9]+)+(?:\s|$)/u.test(section.heading);
+      if (!hasProtocolField && !looksLikeDashboardId) {
+        continue;
+      }
+      const { id, title } = parseHeader(section.heading, path, section.startLine);
+      if (seen.has(id)) {
+        throw new ProtocolError("malformed-protocol", `Duplicate queue item '${id}'`, {
+          path,
+          line: section.startLine,
+          rule: "duplicate-id",
+          hint: HINTS.duplicate,
+        });
+      }
+      seen.add(id);
+      const fields = parseFields(section.lines, path, section.startLine);
+      const statusLine = fieldLine(fields, "status", section.startLine);
+      const statusValue = requiredString(fields, "status", path, statusLine);
+      const status = parseStatus(statusValue);
+      const approved = requiredString(fields, "approved", path, fieldLine(fields, "approved", section.startLine));
+      output.push({
+        id,
+        title,
+        status,
+        blockedBy: parseBlockedBy(fields.values.get("blocked-by") ?? fields.values.get("blocked_by")),
+        priority: parsePriority(
+          requiredString(fields, "priority", path, fieldLine(fields, "priority", section.startLine)),
+          path,
+          fieldLine(fields, "priority", section.startLine),
+        ),
+        dependsOn: parseDependencies(
+          requiredString(fields, "depends_on", path, fieldLine(fields, "depends_on", section.startLine)),
+          path,
+          fieldLine(fields, "depends_on", section.startLine),
+        ),
+        risk: parseRisk(
+          requiredString(fields, "risk", path, fieldLine(fields, "risk", section.startLine)),
+          path,
+          fieldLine(fields, "risk", section.startLine),
+        ),
+        planPath: requiredString(fields, "plan", path, fieldLine(fields, "plan", section.startLine)),
+        approved: approved.toLowerCase() === "none"
+          ? { kind: "none" }
+          : { kind: "explicit", text: approved },
+        acceptance: listField(fields, "acceptance"),
+        validate: listField(fields, "validate"),
+        notes: optionalString(fields, "notes"),
+        line: section.startLine,
+        path,
+        fieldLines: new Map(fields.lines),
+      });
+    } catch (error) {
+      reportParseError(error, options);
     }
-    const hasProtocolField = section.lines.some((line) => /^[a-z][a-z_-]*\s*:/u.test(line));
-    const looksLikeDashboardId = /^[A-Za-z0-9]+(?:[-.][A-Za-z0-9]+)+(?:\s|$)/u.test(section.heading);
-    if (!hasProtocolField && !looksLikeDashboardId) {
-      continue;
-    }
-    const { id, title } = parseHeader(section.heading, path, section.startLine);
-    if (seen.has(id)) {
-      throw new ProtocolError("malformed-protocol", `Duplicate queue item '${id}' in '${path}'`, { path });
-    }
-    seen.add(id);
-    const fields = parseFields(section.lines, path);
-    const status = parseStatus(requiredString(fields, "status", path));
-    const approved = requiredString(fields, "approved", path);
-    output.push({
-      id,
-      title,
-      status,
-      blockedBy: parseBlockedBy(fields.get("blocked-by") ?? fields.get("blocked_by")),
-      priority: parsePriority(requiredString(fields, "priority", path), path),
-      dependsOn: parseDependencies(requiredString(fields, "depends_on", path), path),
-      risk: parseRisk(requiredString(fields, "risk", path), path),
-      planPath: requiredString(fields, "plan", path),
-      approved: approved.toLowerCase() === "none"
-        ? { kind: "none" }
-        : { kind: "explicit", text: approved },
-      acceptance: listField(fields, "acceptance"),
-      validate: listField(fields, "validate"),
-      notes: optionalString(fields, "notes"),
-    });
   }
   return output;
 }
@@ -330,10 +450,18 @@ export function parseCurrentState(content: string, path: string): {
   readonly state: "success" | "blocked" | "failed-safe" | "no-op";
   readonly lastRunAt: string | null;
 } {
-  const stateLine = [...content.split(/\r?\n/u)].reverse().find((line) => line.trim()) ?? null;
+  const lines = content.split(/\r?\n/u);
+  const stateLineIndex = [...lines.keys()].reverse().find((index) => lines[index]?.trim());
+  const stateLine = stateLineIndex === undefined ? null : lines[stateLineIndex];
   const stateMatch = stateLine?.match(/^state:\s*(success|blocked|failed-safe|no-op)\s*$/u);
   if (!stateMatch) {
-    throw new ProtocolError("malformed-protocol", `The last non-empty line in '${path}' must declare state`, { path });
+    const found = stateLine?.match(/^state:\s*(.*?)\s*$/u)?.[1]?.trim() ?? stateLine?.trim() ?? "<missing>";
+    throw new ProtocolError("malformed-protocol", `Current state '${found}' is invalid`, {
+      path,
+      ...(stateLineIndex === undefined ? {} : { line: stateLineIndex + 1 }),
+      rule: "current-state",
+      hint: HINTS.currentState,
+    });
   }
 
   const timestamp = content.match(
@@ -382,7 +510,17 @@ function splitTableRow(line: string): string[] {
   return cells;
 }
 
-function markdownTableLines(content: string): readonly string[][] {
+interface MarkdownTableRow {
+  readonly cells: readonly string[];
+  readonly line: number;
+}
+
+interface MarkdownTable {
+  readonly headers: readonly string[];
+  readonly rows: readonly MarkdownTableRow[];
+}
+
+function markdownTableLines(content: string, path: string, options: MarkdownParseOptions): MarkdownTable {
   const lines = content.split(/\r?\n/u);
   for (let index = 0; index < lines.length - 1; index += 1) {
     if (!/^\s*\|.*\|\s*$/u.test(lines[index]) || !/^\s*\|?\s*:?-{3,}/u.test(lines[index + 1])) {
@@ -392,7 +530,7 @@ function markdownTableLines(content: string): readonly string[][] {
     if (!headers.includes("id") || !headers.includes("status")) {
       continue;
     }
-    const rows: string[][] = [];
+    const rows: MarkdownTableRow[] = [];
     for (let rowIndex = index + 2; rowIndex < lines.length; rowIndex += 1) {
       if (!/^\s*\|.*\|\s*$/u.test(lines[rowIndex])) {
         break;
@@ -400,23 +538,37 @@ function markdownTableLines(content: string): readonly string[][] {
       const cells = splitTableRow(lines[rowIndex]);
       if (cells.some(Boolean)) {
         if (cells.length !== headers.length) {
-          throw new ProtocolError("malformed-protocol", "Canonical dashboard row has the wrong number of columns", {
-            path: "plans/README.md",
+          const error = new ProtocolError("malformed-protocol", `dashboard row has ${cells.length} columns, expected ${headers.length}`, {
+            path,
+            line: rowIndex + 1,
+            rule: "dashboard-column-count",
+            hint: HINTS.dashboardColumns,
           });
+          if (options.onError) {
+            options.onError(error);
+            continue;
+          }
+          throw error;
         }
-        rows.push(cells);
+        rows.push({ cells, line: rowIndex + 1 });
       }
     }
-    return [headers, ...rows];
+    return { headers, rows };
   }
   throw new ProtocolError("malformed-protocol", "Canonical dashboard does not contain an ID/status table", {
-    path: "plans/README.md",
+    path,
+    rule: "dashboard-table",
+    hint: HINTS.dashboardTable,
   });
 }
 
-export function parseDashboard(content: string, path: string): readonly DashboardRowProjection[] {
-  const table = markdownTableLines(content);
-  const headers = table[0] ?? [];
+export function parseDashboard(
+  content: string,
+  path: string,
+  options: MarkdownParseOptions = {},
+): readonly DashboardRowProjection[] {
+  const table = markdownTableLines(content, path, options);
+  const headers = table.headers;
   const indexOf = (name: string) => headers.indexOf(name);
   const idIndex = indexOf("id");
   const statusIndex = indexOf("status");
@@ -424,23 +576,39 @@ export function parseDashboard(content: string, path: string): readonly Dashboar
   const nextActionIndex = headers.findIndex((header) => header.includes("next action"));
   const evidenceIndex = headers.indexOf("evidence and canonical detail");
   const seen = new Set<string>();
-  return table.slice(1).map((cells) => {
-    const id = cells[idIndex]?.trim();
-    if (!id) {
-      throw new ProtocolError("malformed-protocol", `Dashboard row in '${path}' has no ID`, { path });
+  const output: DashboardRowProjection[] = [];
+  for (const { cells, line } of table.rows) {
+    try {
+      const id = cells[idIndex]?.trim();
+      if (!id) {
+        throw new ProtocolError("malformed-protocol", "Dashboard row has no ID", {
+          path,
+          line,
+          rule: "dashboard-id",
+          hint: HINTS.dashboardId,
+        });
+      }
+      if (seen.has(id)) {
+        throw new ProtocolError("malformed-protocol", `Duplicate dashboard ID '${id}'`, {
+          path,
+          line,
+          rule: "duplicate-id",
+          hint: HINTS.duplicate,
+        });
+      }
+      seen.add(id);
+      output.push({
+        id,
+        title: cells[titleIndex] ?? "",
+        status: cells[statusIndex] ?? "",
+        nextAction: nextActionIndex >= 0 ? cells[nextActionIndex] ?? "" : "",
+        evidence: evidenceIndex >= 0 ? cells[evidenceIndex] ?? "" : "",
+      });
+    } catch (error) {
+      reportParseError(error, options);
     }
-    if (seen.has(id)) {
-      throw new ProtocolError("malformed-protocol", `Duplicate dashboard ID '${id}' in '${path}'`, { path });
-    }
-    seen.add(id);
-    return {
-      id,
-      title: cells[titleIndex] ?? "",
-      status: cells[statusIndex] ?? "",
-      nextAction: nextActionIndex >= 0 ? cells[nextActionIndex] ?? "" : "",
-      evidence: evidenceIndex >= 0 ? cells[evidenceIndex] ?? "" : "",
-    };
-  });
+  }
+  return output;
 }
 
 export function parseRunRecord(content: string, relativePath: string, sha256: string): ImmutableRunRecord {

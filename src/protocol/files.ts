@@ -249,7 +249,12 @@ export async function listFiles(
     throw new ProtocolError(
       "malformed-protocol",
       `The immutable run-record directory '${options.relativePath}' contains more than ${options.limit ?? 1000} files`,
-      { path: options.relativePath, repositoryKey: options.repositoryKey },
+      {
+        path: options.relativePath,
+        rule: "run-record-limit",
+        hint: "reduce the number of immutable run records or increase the reader page limit",
+        repositoryKey: options.repositoryKey,
+      },
     );
   }
   return result.paths;

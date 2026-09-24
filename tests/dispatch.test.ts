@@ -243,6 +243,8 @@ describe("dispatch engine", () => {
     expect(detail.run?.lease?.status).toBe("held");
     expect(detail.run?.attempts).toHaveLength(1);
     expect(threads.threads.get("thread-1")?.prompt).toContain("foreman.md");
+    expect(threads.threads.get("thread-1")?.prompt).toContain("bb factory validate");
+    expect(threads.threads.get("thread-1")?.prompt).toContain("after the final current.md write");
     expect(store.getDispatcherState("monorepo").lastStartProvider).toBe("codex");
   });
 

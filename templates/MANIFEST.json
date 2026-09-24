@@ -4,7 +4,7 @@
     {
       "template": "foreman.md",
       "target": "plans/factory/foreman.md",
-      "sha256": "660ebd0cf209f88da3d16bcc91dbdc4648f4aa0a9de69c047be6d06bb3b3da59"
+      "sha256": "ffabdfda514f220eaba6956a5eea3e7a7d97c1f60033741bb879040e45c8fc44"
     },
     {
       "template": "repo.md",

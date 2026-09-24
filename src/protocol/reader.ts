@@ -2,12 +2,9 @@ import { createHash } from "node:crypto";
 
 import {
   protocolSnapshotSchema,
-  queueEntrySchema,
-  questionSchema,
   repositoryConfigurationSchema,
   type ProtocolSnapshot,
   type QueueEntry,
-  type Question,
   type RepositoryConfiguration,
   type RepositoryRevision,
 } from "../contracts.js";
@@ -34,6 +31,8 @@ import {
   type ParsedQueueEntry,
   type ParsedQuestion,
 } from "./markdown.js";
+import { protocolErrorFromDiagnostic, validateProtocolFiles } from "./validation.js";
+import { deriveQueueEligibility, queueValue, questionValue } from "./schema.js";
 import type {
   CanonicalDashboardProjection,
   ImmutableRunRecord,
@@ -51,32 +50,6 @@ function protocolDigest(files: readonly TextFile[]): string {
     .sort()
     .join("\n");
   return createHash("sha256").update(digests, "utf8").digest("hex");
-}
-
-function asQuestion(question: ParsedQuestion): Question {
-  const value = {
-    id: question.id,
-    date: question.date,
-    classification: question.classification,
-    dashboardId: question.dashboardId,
-    question: question.question,
-    context: question.context,
-    assumed: question.assumed,
-    ...(question.recommended === undefined ? {} : { recommended: question.recommended }),
-    answer: question.answer,
-  };
-  const parsed = questionSchema.safeParse(value);
-  if (!parsed.success) {
-    throw new ProtocolError("malformed-protocol", `Question '${question.id}' failed the frozen schema`, {
-      path: PROTOCOL_PATHS.questions,
-      details: { issue: parsed.error.issues.map((issue) => issue.message).join("; ") },
-    });
-  }
-  return parsed.data;
-}
-
-function questionIsOpen(question: ParsedQuestion): boolean {
-  return question.classification === "blocking" && question.answer === null;
 }
 
 async function dependencyIsSatisfied(
@@ -118,20 +91,6 @@ async function queueEntry(
   policy: ProtocolRepositoryPolicy,
   dependencyResolver: ProtocolDependencyResolver | undefined,
 ): Promise<QueueEntry> {
-  const referencedQuestionIds = new Set<string>(parsed.blockedBy);
-  if (parsed.status.kind === "blocked-by") {
-    referencedQuestionIds.add(parsed.status.questionId);
-  }
-  for (const question of questions) {
-    if (question.dashboardId === parsed.id && questionIsOpen(question)) {
-      referencedQuestionIds.add(question.id);
-    }
-  }
-
-  const eligibilityReasons: QueueEntry["eligibilityReasons"] = [];
-  if (parsed.status.kind !== "ready") {
-    eligibilityReasons.push("not-ready");
-  }
   const dependenciesSatisfied = await Promise.all(
     parsed.dependsOn.map((dependency) =>
       dependencyIsSatisfied(
@@ -144,67 +103,7 @@ async function queueEntry(
       ),
     ),
   );
-  if (dependenciesSatisfied.some((satisfied) => !satisfied)) {
-    eligibilityReasons.push("unmet-dependency");
-  }
-  const openQuestions = questions.filter(
-    (question) => referencedQuestionIds.has(question.id) && questionIsOpen(question),
-  );
-  const openQuestionIds = new Set(openQuestions.map((question) => question.id));
-  if (openQuestions.length > 0) {
-    eligibilityReasons.push("blocking-question");
-  }
-  const staleBlockingQuestionIds = [...referencedQuestionIds].filter((id) => !openQuestionIds.has(id));
-  if (parsed.status.kind === "blocked-by" && !openQuestionIds.has(parsed.status.questionId)) {
-    eligibilityReasons.push("stale-question-gate");
-  }
-  if (parsed.approved.kind === "none" && parsed.status.kind === "ready") {
-    eligibilityReasons.push(parsed.risk === "high" ? "high-risk-approval-missing" : "missing-authorization");
-  }
-
-  const status = parsed.status.kind === "ready"
-    ? { kind: "ready" as const }
-    : parsed.status.kind === "in-progress"
-      ? { kind: "in-progress" as const, detail: parsed.status.detail }
-      : parsed.status.kind === "done"
-        ? { kind: "done" as const, ...(parsed.status.detail ? { detail: parsed.status.detail } : {}) }
-        : parsed.status.kind === "draft"
-          ? { kind: "draft" as const }
-          : parsed.status.kind === "unknown"
-            ? { kind: "unknown" as const, raw: parsed.status.raw }
-          : {
-              kind: "blocked-by" as const,
-              questionId: parsed.status.questionId,
-              ...(parsed.status.detail ? { detail: parsed.status.detail } : {}),
-            };
-  const value = {
-    id: parsed.id,
-    title: parsed.title,
-    status,
-    priority: parsed.priority,
-    dependsOn: [...parsed.dependsOn],
-    risk: parsed.risk,
-    planPath: parsed.planPath,
-    approved: parsed.approved.kind === "none"
-      ? { kind: "none" as const, source: "none" as const }
-      : { kind: "explicit" as const, source: "queue.approved" as const, text: parsed.approved.text },
-    acceptance: [...parsed.acceptance],
-    validate: [...parsed.validate],
-    notes: parsed.notes,
-    blockingQuestionIds: [...referencedQuestionIds].filter((id) => openQuestionIds.has(id)),
-    staleBlockingQuestionIds,
-    blockedBy: [...referencedQuestionIds],
-    eligible: eligibilityReasons.length === 0,
-    eligibilityReasons,
-  };
-  const result = queueEntrySchema.safeParse(value);
-  if (!result.success) {
-    throw new ProtocolError("malformed-protocol", `Queue item '${parsed.id}' failed the frozen schema`, {
-      path: PROTOCOL_PATHS.queue,
-      details: { issue: result.error.issues.map((issue) => issue.message).join("; ") },
-    });
-  }
-  return result.data;
+  return queueValue(parsed, deriveQueueEligibility(parsed, questions, dependenciesSatisfied));
 }
 
 function validateMergeProjection(projection: ProtocolMergeProjection, repositoryKey: string): ProtocolMergeProjection {
@@ -216,6 +115,9 @@ function validateMergeProjection(projection: ProtocolMergeProjection, repository
     (projection.mainBehind > 0 && projection.safeFastForward)
   ) {
     throw new ProtocolError("malformed-protocol", "Merge projection contains invalid ancestry counts", {
+      path: PROTOCOL_PATHS.dashboard,
+      rule: "merge-projection",
+      hint: "refresh the read-only merge projection from the configured checkout",
       repositoryKey,
       details: { field: "mergeProjection" },
     });
@@ -225,6 +127,9 @@ function validateMergeProjection(projection: ProtocolMergeProjection, repository
     !/^[0-9a-f]{7,64}$/u.test(projection.gitCommit)
   ) {
     throw new ProtocolError("malformed-protocol", "Merge projection has an invalid Git commit", {
+      path: PROTOCOL_PATHS.dashboard,
+      rule: "merge-projection",
+      hint: "refresh the read-only merge projection from the configured checkout",
       repositoryKey,
       details: { field: "gitCommit" },
     });
@@ -232,6 +137,9 @@ function validateMergeProjection(projection: ProtocolMergeProjection, repository
   for (const commit of projection.taskCommits) {
     if (!/^[0-9a-f]{7,64}$/u.test(commit.sha) || !commit.subject.trim()) {
       throw new ProtocolError("malformed-protocol", "Merge projection has an invalid task commit", {
+        path: PROTOCOL_PATHS.dashboard,
+        rule: "merge-projection",
+        hint: "refresh the read-only merge projection from the configured checkout",
         repositoryKey,
         details: { field: "taskCommits" },
       });
@@ -309,6 +217,17 @@ export class RepositoryProtocolReader implements ProtocolReader {
       this.read(normalizedConfiguration, PROTOCOL_PATHS.current),
       this.read(normalizedConfiguration, PROTOCOL_PATHS.dashboard),
     ]);
+    const validationError = validateProtocolFiles({
+      repo: repo.content,
+      queue: queue.content,
+      ...(done ? { done: done.content } : {}),
+      questions: questions.content,
+      current: current.content,
+      dashboard: dashboard.content,
+    }, { strictQueueStatus: false })[0];
+    if (validationError) {
+      throw protocolErrorFromDiagnostic(validationError);
+    }
     // Repository-specific qualified dependency rules come from repo.md.
     const repositoryPolicy = parseRepositoryPolicy(repo.content, PROTOCOL_PATHS.repo);
     const parsedQuestions = parseQuestions(questions.content, PROTOCOL_PATHS.questions);
@@ -317,11 +236,16 @@ export class RepositoryProtocolReader implements ProtocolReader {
     const queueIds = new Set(queueEntries.map((entry) => entry.id));
     for (const entry of doneEntries) {
       if (queueIds.has(entry.id)) {
-        throw new ProtocolError("malformed-protocol", `Duplicate queue item '${entry.id}' across queue.md and done.md`);
+        throw new ProtocolError("malformed-protocol", `Duplicate queue item '${entry.id}' across queue.md and done.md`, {
+          path: PROTOCOL_PATHS.done,
+          line: entry.line,
+          rule: "duplicate-id",
+          hint: "keep each queue item id in only one of queue.md or done.md",
+        });
       }
     }
     const parsedQueue = [...queueEntries, ...doneEntries];
-    const questionsForSnapshot = parsedQuestions.map(asQuestion);
+    const questionsForSnapshot = parsedQuestions.map(questionValue);
     const queueForSnapshot = await Promise.all(
       parsedQueue.map((entry) =>
         queueEntry(
@@ -396,6 +320,9 @@ export class RepositoryProtocolReader implements ProtocolReader {
     const parsedSnapshot = protocolSnapshotSchema.safeParse(snapshotValue);
     if (!parsedSnapshot.success) {
       throw new ProtocolError("malformed-protocol", "Assembled protocol snapshot failed the frozen schema", {
+        path: PROTOCOL_PATHS.dashboard,
+        rule: "protocol-snapshot-schema",
+        hint: "correct the protocol fields that failed the frozen snapshot schema",
         repositoryKey: normalizedConfiguration.repositoryKey,
         details: { issue: parsedSnapshot.error.issues.map((issue) => issue.message).join("; ") },
       });

@@ -347,7 +347,7 @@ export function ErrorNotice({ message, onRetry }: { message: string; onRetry?: (
     h("div", { className: "flex items-start justify-between gap-3" },
       h("div", null,
         h("p", { className: "text-sm font-medium text-destructive" }, "Something failed to load"),
-        h("p", { className: "mt-1 text-xs text-destructive/80" }, message)),
+        h("p", { className: "mt-1 break-words whitespace-pre-wrap text-xs text-destructive/80" }, message)),
       onRetry ? h(ActionButton, { label: "Retry", variant: "secondary", size: "xs", onClick: onRetry }) : null),
   );
 }

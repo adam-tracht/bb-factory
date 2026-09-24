@@ -14,6 +14,7 @@ import { createActionComposition, createFactoryComposition, type FactoryComposit
 import { initializeOperationalStorage, type OperationalStateStore } from "./src/storage/index.js";
 import { registerFactoryLifecycle } from "./src/lifecycle/index.js";
 import { registerFactorySchedule } from "./src/schedule/index.js";
+import { registerFactoryCli } from "./src/cli.js";
 
 export function reportConfigurationStatus(
   bb: Pick<BbPluginApi, "pluginId" | "status">,
@@ -124,6 +125,7 @@ export default async function plugin(bb: BbPluginApi): Promise<void> {
       await settings.experimental_set(values);
     },
   }));
+  registerFactoryCli(bb);
 
   settings.onChange((next) => {
     try {

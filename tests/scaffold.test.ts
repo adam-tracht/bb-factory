@@ -279,6 +279,11 @@ describe("protocol template manifest", () => {
       expect(currentStep).toBeGreaterThan(recordStep);
       expect(content.indexOf("git push origin factory", recordStep)).toBeLessThan(currentStep);
       expect(content.slice(currentStep)).toContain("After this write, do not remove files, commit, or push.");
+      expect(content).toContain("bb factory validate");
+      expect(content).toContain("escape a literal pipe inside a cell as `\\|`");
+      expect(content).toContain("never use ` | ` as a separator inside a cell");
+      expect(content).toContain("state: failed-safe");
+      expect(content).toContain("state: no-op");
     }
   });
 });
